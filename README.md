@@ -16,7 +16,7 @@ claude plugin marketplace add cjsteigerwald/claude-crew
 # or from a local checkout
 claude plugin marketplace add /path/to/claude-crew
 
-claude plugin install claude-crew@claude-crew
+claude plugin install claude-crew@cjs-plugins
 ```
 
 ## Requirements
