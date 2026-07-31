@@ -1,0 +1,13 @@
+{
+  "name": "claude-crew",
+  "owner": {
+    "name": "Chris Steigerwald"
+  },
+  "plugins": [
+    {
+      "name": "claude-crew",
+      "source": "./claude-crew",
+      "description": "Tiered Claude delegate agents (scout/reader/implementer) with pinned Haiku/Sonnet/Opus models, so subagent work stops inheriting the expensive session model"
+    }
+  ]
+}
