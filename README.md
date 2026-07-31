@@ -11,8 +11,8 @@ cost ratios, and design rationale.
 ## Install
 
 ```bash
-# from GitHub (replace GH_USER with this repo's owner)
-claude plugin marketplace add GH_USER/claude-crew
+# from GitHub
+claude plugin marketplace add cjsteigerwald/claude-crew
 # or from a local checkout
 claude plugin marketplace add /path/to/claude-crew
 
