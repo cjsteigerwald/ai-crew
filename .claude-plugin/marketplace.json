@@ -8,6 +8,11 @@
       "name": "claude-crew",
       "source": "./claude-crew",
       "description": "Tiered Claude delegate agents (scout/reader/implementer) with pinned Haiku/Sonnet/Opus models, so subagent work stops inheriting the expensive session model"
+    },
+    {
+      "name": "codex-crew",
+      "source": "./codex-crew",
+      "description": "Codex (GPT-family) delegate agents with pinned models — implementer lanes (luna/terra/sol) and a read-only reviewer — riding the official Codex plugin's companion runtime for cross-model implementation and adversarial review"
     }
   ]
 }

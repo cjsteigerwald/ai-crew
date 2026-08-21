@@ -1,0 +1,355 @@
+#!/usr/bin/env bash
+# crew-codex — forward to the official codex plugin's companion runtime.
+# Resolves the runtime through installed_plugins.json so version bumps of
+# codex@openai-codex never break the crew agents.
+set -euo pipefail
+
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+INSTALLED_JSON="$CLAUDE_DIR/plugins/installed_plugins.json"
+CODEX_PLUGIN_ID="codex@openai-codex"
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "crew-codex: node is required (the codex companion runtime is a Node script)" >&2
+  exit 1
+fi
+
+if [[ ! -f "$INSTALLED_JSON" ]]; then
+  echo "crew-codex: $INSTALLED_JSON not found — install the official Codex plugin first: /plugin install $CODEX_PLUGIN_ID" >&2
+  exit 1
+fi
+
+if ! COMPANION_ROOT="$(node -e '
+  const fs = require("fs");
+  const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  const entries = (data.plugins || {})[process.argv[2]];
+  if (!Array.isArray(entries) || entries.length === 0 || !entries[0].installPath) process.exit(2);
+  process.stdout.write(entries[0].installPath);
+' "$INSTALLED_JSON" "$CODEX_PLUGIN_ID")"; then
+  echo "crew-codex: $CODEX_PLUGIN_ID is not installed — run: /plugin install $CODEX_PLUGIN_ID" >&2
+  exit 1
+fi
+
+COMPANION="$COMPANION_ROOT/scripts/codex-companion.mjs"
+if [[ ! -f "$COMPANION" ]]; then
+  echo "crew-codex: companion script missing at $COMPANION — the codex plugin layout changed; update codex-crew's resolver" >&2
+  exit 1
+fi
+
+# Job state must land in the codex plugin's data dir so /codex:status,
+# /codex:result and its SessionEnd cleanup see crew-launched jobs too.
+export CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA:-$CLAUDE_DIR/plugins/data/codex-openai-codex}"
+
+# Our own archive — the companion prunes at 50 jobs (deleting logs) and drops
+# a session's jobs at SessionEnd, so results are copied somewhere it can't reap.
+CREW_ARCHIVE_DIR="${CREW_CODEX_ARCHIVE_DIR:-$CLAUDE_DIR/plugins/data/codex-crew/jobs}"
+
+if [[ "${1:-}" == "--resolve" ]]; then
+  echo "$COMPANION"
+  exit 0
+fi
+
+# ---- await: poll a detached job toward terminal state, token-free ----------
+# Claude Code's Bash tool caps a single call at 600s, but codex jobs run for
+# hours. Each await call blocks up to --for seconds (default 540, safely under
+# that cap) and prints exactly ONE line; the caller loops until it stops
+# reporting RUNNING. Polling happens in-shell, so a multi-hour job costs no
+# model tokens while it runs. Exit: 0 completed, 1 failed/cancelled,
+# 2 job not found, 3 stale (process died silently), 4 hung (process alive but
+# the job log has not moved for CREW_CODEX_HUNG_SECS — a lost model turn),
+# 10 still running (call again).
+if [[ "${1:-}" == "await" ]]; then
+  shift
+  JOB_ID="${1:-}"
+  if [[ -z "$JOB_ID" || "$JOB_ID" == --* ]]; then
+    echo "crew-codex: await needs a job id — usage: crew-codex await <job-id> [--for <seconds>]" >&2
+    exit 2
+  fi
+  shift
+
+  FOR_SECS=540
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --for) FOR_SECS="${2:-540}"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  POLL_SECS="${CREW_CODEX_POLL_SECS:-5}"
+  # A live pid whose job log stops moving is a hung model turn, not progress
+  # (observed 2026-08-06: app-server lost the thread mid-turn — "thread not
+  # found" on cancel — while the pid idled forever, log frozen 27 min). BUT
+  # legitimate xhigh turns go silent for minutes mid-reasoning (>=188s observed
+  # in a healthy run), so the threshold must sit far above normal silence:
+  # 900s catches the real wedge in 15 min with ~5x margin over observed
+  # legitimate gaps. Callers should treat exit 4 as grounds for ONE more await
+  # before any destructive recovery.
+  HUNG_SECS="${CREW_CODEX_HUNG_SECS:-900}"
+  HUNG_POLL_SECS="${CREW_CODEX_HUNG_POLL_SECS:-30}"
+
+  deadline=$(( $(date +%s) + FOR_SECS ))
+  missing_streak=0
+  stale_streak=0
+
+  while :; do
+    snap="$(node "$COMPANION" status "$JOB_ID" --json 2>/dev/null || true)"
+    parsed="$(printf '%s' "$snap" | python3 -c '
+import json, sys
+try:
+    j = json.load(sys.stdin)["job"]
+except Exception:
+    print("MISSING\t-\t-\t-\t-")
+    raise SystemExit
+p = j.get("progressPreview") or []
+last = str(p[-1]) if p else "-"
+print("\t".join([
+    str(j.get("status", "?")),
+    str(j.get("elapsed", "?")),
+    str(j.get("logFile", "-")),
+    last.replace("\t", " ")[:80],
+    str(j.get("pid") or "-"),
+]))
+' 2>/dev/null || printf 'MISSING\t-\t-\t-\t-')"
+    IFS=$'\t' read -r jstatus jelapsed jlog jlast jpid <<<"$parsed"
+
+    case "$jstatus" in
+      queued|running)
+        missing_streak=0
+        ;;
+      completed|failed|cancelled)
+        mkdir -p "$CREW_ARCHIVE_DIR"
+        node "$COMPANION" result "$JOB_ID" >"$CREW_ARCHIVE_DIR/$JOB_ID.result.txt" 2>/dev/null || true
+        node "$COMPANION" result "$JOB_ID" --json >"$CREW_ARCHIVE_DIR/$JOB_ID.meta.json" 2>/dev/null || true
+        if [[ -f "$jlog" ]]; then
+          cp -f "$jlog" "$CREW_ARCHIVE_DIR/$JOB_ID.log" 2>/dev/null || true
+        fi
+        echo "DONE $jstatus | ${jelapsed} | archived: $CREW_ARCHIVE_DIR/$JOB_ID.result.txt"
+        if [[ "$jstatus" == "completed" ]]; then exit 0; fi
+        exit 1
+        ;;
+      *)
+        # Tolerate a couple of transient unreadable snapshots (state.json is
+        # rewritten in place) before declaring the job genuinely gone.
+        missing_streak=$(( missing_streak + 1 ))
+        if [[ $missing_streak -ge 3 ]]; then
+          echo "crew-codex: job $JOB_ID not found in codex state (pruned, session-cleaned, or wrong id)" >&2
+          exit 2
+        fi
+        ;;
+    esac
+
+    remaining=$(( deadline - $(date +%s) ))
+    if [[ $remaining -le 0 ]]; then
+      echo "RUNNING | ${jelapsed} | last: ${jlast}"
+      exit 10
+    fi
+
+    # Prefer waiting on the job's own process: tail --pid blocks in the kernel
+    # and wakes the instant it exits (verified: state.json is already terminal
+    # by then). Wait in bounded slices rather than to the deadline so an
+    # alive-but-wedged runtime gets caught by the frozen-log check below.
+    # Falls back to polling when the pid is absent or already gone.
+    if [[ "$jpid" =~ ^[0-9]+$ ]] && kill -0 "$jpid" 2>/dev/null; then
+      stale_streak=0
+      slice=$(( remaining < HUNG_POLL_SECS ? remaining : HUNG_POLL_SECS ))
+      timeout "$slice" tail --pid="$jpid" -f /dev/null 2>/dev/null || true
+      if [[ -n "$jlog" && "$jlog" != "-" && -f "$jlog" ]]; then
+        log_age=$(( $(date +%s) - $(stat -c %Y "$jlog" 2>/dev/null || date +%s) ))
+        if [[ $log_age -ge $HUNG_SECS ]]; then
+          echo "HUNG $JOB_ID | ${jelapsed} | pid $jpid alive but log frozen ${log_age}s (>=${HUNG_SECS}s) — likely a lost model turn; cancel the job, kill leftover app-server/broker processes, then re-dispatch on a fresh runtime" >&2
+          exit 4
+        fi
+      fi
+    else
+      if [[ "$jpid" =~ ^[0-9]+$ ]]; then
+        # Process is gone but the job never reached a terminal status — this is
+        # the signature of a silent death, so say so instead of waiting it out.
+        stale_streak=$(( stale_streak + 1 ))
+        if [[ $stale_streak -ge 3 ]]; then
+          echo "STALE $JOB_ID | ${jelapsed} | process $jpid is gone but status is still '$jstatus' — the job died without reporting; resume it or re-dispatch" >&2
+          exit 3
+        fi
+      fi
+      sleep "$POLL_SECS"
+    fi
+  done
+fi
+
+# ---- reap: sweep ALL state dirs for jobs stuck in running/queued -----------
+# The companion never marks a job failed when its runtime dies or wedges, so
+# "running" entries accumulate forever (6 found on 2026-08-06, oldest from
+# Jul 22). Reap marks a stuck job failed in place when its pid is dead, or —
+# for a live/unknown pid — when its log has not moved for
+# CREW_CODEX_REAP_LOG_AGE seconds (default 3600). --dry-run reports only.
+# Direct state mutation is safe here precisely because the runtime that owned
+# the file is gone or wedged; live healthy jobs are never touched, and a
+# workspace containing ANY live-pid job is skipped entirely (a live companion
+# session may rewrite that workspace's state.json at any moment).
+# BOTH records are updated per job: jobs/<id>.json AND the workspace's
+# state.json — the companion builds status/result/cancel from state.json, so
+# updating only the per-job file leaves a split brain that keeps lying.
+if [[ "${1:-}" == "reap" ]]; then
+  shift
+  DRY=0
+  [[ "${1:-}" == "--dry-run" ]] && DRY=1
+  REAP_LOG_AGE="${CREW_CODEX_REAP_LOG_AGE:-3600}" \
+  REAP_DRY="$DRY" \
+  python3 - "$CLAUDE_PLUGIN_DATA/state" <<'PY'
+import datetime, json, os, sys, time
+root = sys.argv[1]
+max_age = int(os.environ.get("REAP_LOG_AGE", "3600"))
+dry = os.environ.get("REAP_DRY") == "1"
+now = time.time()
+reaped = kept = skipped = 0
+
+def pid_alive(pid):
+    if not isinstance(pid, int):
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+def stuck_reason(job):
+    """None if the job looks healthy; else a short reason string."""
+    pid = job.get("pid")
+    log = job.get("logFile")
+    log_age = None
+    if log and os.path.isfile(log):
+        log_age = now - os.path.getmtime(log)
+    if isinstance(pid, int) and not pid_alive(pid):
+        return "process dead"
+    if log_age is not None and log_age >= max_age:
+        return f"log frozen {int(log_age)}s"
+    if log_age is None:
+        try:
+            created = datetime.datetime.fromisoformat(
+                job.get("createdAt", "").replace("Z", "+00:00"))
+            if (now - created.timestamp()) >= max_age:
+                return "no activity since creation"
+        except Exception:
+            pass
+    return None
+
+if not os.path.isdir(root):
+    print(f"reap: no state dir at {root}")
+    raise SystemExit(0)
+stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+for state_dir in sorted(os.listdir(root)):
+    ws = os.path.join(root, state_dir)
+    jobs_dir = os.path.join(ws, "jobs")
+    if not os.path.isdir(jobs_dir):
+        continue
+    jobs = {}
+    for name in sorted(os.listdir(jobs_dir)):
+        if name.endswith(".json"):
+            path = os.path.join(jobs_dir, name)
+            try:
+                with open(path) as f:
+                    jobs[path] = json.load(f)
+            except Exception:
+                pass
+    stuck = {p: j for p, j in jobs.items()
+             if j.get("status") in ("running", "queued")}
+    if not stuck:
+        continue
+    # A workspace with ANY live-pid running job may have a live companion
+    # session that rewrites state.json at will — never race it.
+    live = [j.get("id") for j in stuck.values() if pid_alive(j.get("pid"))]
+    if live:
+        for p, j in stuck.items():
+            why = stuck_reason(j)
+            if why and j.get("id") not in live:
+                print(f"skipped: {state_dir}/{j.get('id')} ({why}) — workspace has live job(s) {live}, not touching its state")
+                skipped += 1
+            else:
+                print(f"kept: {state_dir}/{j.get('id')} (pid alive)")
+                kept += 1
+        continue
+    to_reap = {p: (j, stuck_reason(j)) for p, j in stuck.items()}
+    to_reap = {p: (j, why) for p, (j, why) in to_reap.items() if why}
+    for p, (j, why) in to_reap.items():
+        verb = "would reap" if dry else "reaped"
+        print(f"{verb}: {state_dir}/{j.get('id')} ({j.get('status')}, {why})")
+        reaped += 1
+    for p, j in stuck.items():
+        if p not in to_reap:
+            print(f"kept: {state_dir}/{j.get('id')} (no stuck signal)")
+            kept += 1
+    if dry or not to_reap:
+        continue
+    reaped_ids = set()
+    for p, (j, why) in to_reap.items():
+        j.update(status="failed", phase="reaped", reapedAt=stamp, reapReason=why)
+        j["pid"] = None
+        with open(p, "w") as f:
+            json.dump(j, f, indent=2)
+        reaped_ids.add(j.get("id"))
+        log = j.get("logFile")
+        if log and os.path.isfile(log):
+            with open(log, "a") as f:
+                f.write(f"[{stamp}] crew-codex reap: marked failed ({why}).\n")
+    # Mirror into the workspace's state.json — the authoritative registry the
+    # companion serves status/result/cancel from. Only the reaped entries are
+    # touched; everything else round-trips untouched.
+    state_path = os.path.join(ws, "state.json")
+    if os.path.isfile(state_path):
+        try:
+            with open(state_path) as f:
+                state = json.load(f)
+            entries = state if isinstance(state, list) else state.get("jobs", [])
+            changed = False
+            for e in entries:
+                if isinstance(e, dict) and e.get("id") in reaped_ids:
+                    e.update(status="failed", phase="reaped",
+                             reapedAt=stamp, updatedAt=stamp)
+                    e["pid"] = None
+                    changed = True
+            if changed:
+                tmp = state_path + ".reap-tmp"
+                with open(tmp, "w") as f:
+                    json.dump(state, f, indent=2)
+                os.replace(tmp, state_path)
+        except Exception as exc:
+            print(f"warning: could not update {state_path}: {exc}")
+print(f"reap summary: {reaped} {'flagged' if dry else 'reaped'}, {kept} kept, {skipped} skipped (live workspace)")
+PY
+  exit 0
+fi
+
+# Bounded retry on model-capacity rejection. The capacity error is an
+# admission-time rejection (the turn never starts), so retrying is write-safe.
+# Jittered backoff so parallel fan-outs don't thundering-herd the quota window.
+# Overridable for tests: CREW_CODEX_RETRY_DELAYS="0 0" collapses the waits.
+RETRY_DELAYS=(${CREW_CODEX_RETRY_DELAYS:-5 15 45})
+MAX_ATTEMPTS=$(( ${#RETRY_DELAYS[@]} + 1 ))
+CAPACITY_PATTERN="at capacity"
+
+TMP_OUT="$(mktemp)" TMP_ERR="$(mktemp)"
+trap 'rm -f "$TMP_OUT" "$TMP_ERR"' EXIT
+
+attempt=1
+while :; do
+  rc=0
+  node "$COMPANION" "$@" >"$TMP_OUT" 2>"$TMP_ERR" || rc=$?
+
+  if [[ $rc -eq 0 ]] || ! grep -qi "$CAPACITY_PATTERN" "$TMP_OUT" "$TMP_ERR"; then
+    break
+  fi
+
+  if [[ $attempt -ge $MAX_ATTEMPTS ]]; then
+    echo "crew-codex: model still at capacity after $MAX_ATTEMPTS attempts — giving up" >&2
+    break
+  fi
+
+  base=${RETRY_DELAYS[$((attempt - 1))]}
+  delay=$(( base + (base > 0 ? RANDOM % (base / 2 + 1) : 0) ))
+  echo "crew-codex: model at capacity (attempt $attempt/$MAX_ATTEMPTS); retrying in ${delay}s" >&2
+  sleep "$delay"
+  attempt=$((attempt + 1))
+done
+
+cat "$TMP_OUT"
+cat "$TMP_ERR" >&2
+exit $rc
