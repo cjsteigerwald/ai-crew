@@ -3,6 +3,6 @@
   "version": "0.1.0",
   "description": "Tiered Claude delegate agents with pinned models (Haiku/Sonnet/Opus) so subagent work stops inheriting the expensive session model.",
   "author": {
-    "name": "Sidkik"
+    "name": "Chris Steigerwald"
   }
 }
