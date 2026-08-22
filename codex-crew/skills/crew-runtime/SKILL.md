@@ -23,7 +23,7 @@ Primary helper — `crew-codex`, on PATH while the plugin is enabled:
   Exit 3 (STALE) means the process vanished without ever reporting terminal —
   report it verbatim; that job needs a resume or re-dispatch, not more waiting.
   Exit 4 (HUNG) means the pid is alive but the job log has not moved for
-  `CREW_CODEX_HUNG_SECS` (default 300) — the signature of a lost model turn
+  `CREW_CODEX_HUNG_SECS` (default 900) — the signature of a lost model turn
   (app-server keeps the pid alive forever; cancel later says "thread not
   found"). Recovery: `cancel` the job, kill leftover `app-server`/`broker`/
   `code-mode-host` processes so the wedged runtime is not reused by the next
