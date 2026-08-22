@@ -32,9 +32,9 @@ dispatch brief that explicitly names a model or effort overrides them
 
 ```bash
 # from GitHub
-claude plugin marketplace add cjsteigerwald/claude-crew
+claude plugin marketplace add cjsteigerwald/ai-crew
 # or from a local checkout
-claude plugin marketplace add /path/to/claude-crew
+claude plugin marketplace add /path/to/ai-crew
 
 claude plugin install codex-crew@cjs-plugins
 ```
