@@ -172,16 +172,26 @@ session cleanup.
 job records failed once their process is dead or their log has frozen. Two
 opt-in sweeps handle what dies around them:
 
-- `--brokers` kills brokers whose `--cwd` workspace is gone (a deleted worktree
-  leaves its broker resident forever), children first and **by pid only** — a
-  pattern kill would destroy other workspaces' healthy brokers — then removes
-  `/tmp/cxc-*` socket dirs nothing is holding. Refused outright (exit 3) while
-  any job anywhere is non-terminal.
+- `--brokers` **reports and never kills.** It finds brokers whose `--cwd`
+  workspace is gone (a deleted worktree leaves its broker resident forever) and
+  prints the pid, the cwd and a paste-ready `pkill -P <pid>; kill -TERM <pid>`
+  for you to run yourself. A cwd that cannot be *proven* absent is reported
+  `unknown`, never as a candidate. It removes no socket dirs.
+  Why no kill: the automated version failed open five distinct times in five
+  review rounds (each fix reintroducing the fault one level up — `isdir`, then
+  `exists`, both of which return False for permission-denied), and the
+  scan-then-kill race cannot be closed from outside the broker. On a machine
+  running several Claude Code sessions at once, a candidate may be serving
+  another session's in-flight review. The decision is yours; the evidence is
+  printed. `--dry-run` is accepted with `--brokers` but has nothing to change.
 - `--state` prunes state dirs whose recorded cwd is gone and that hold no
-  non-terminal job; a dir whose cwd cannot be parsed is reported `unresolved`
-  and never pruned.
+  non-terminal job and no live pid. A dir whose cwd cannot be parsed is
+  reported `unresolved`; one whose records cannot be read or parsed — including
+  an unreadable directory or an unrecognized `state.json` shape — is reported
+  `blocked`. Neither is ever pruned: it deletes the registry the companion
+  serves `status`/`result`/`cancel` from, which may belong to another session.
 
-Both are destructive, so dry-run first: `crew-codex reap --brokers --state --dry-run`.
+`--state` is irreversible, so dry-run first: `crew-codex reap --state --dry-run`.
 
 **Results survive.** On terminal state `await` archives the result, metadata
 and log to `~/.claude/plugins/data/codex-crew/jobs/`, which the companion's

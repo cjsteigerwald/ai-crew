@@ -5,11 +5,46 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CREW="$HERE/../bin/crew-codex"
+REPO="$(cd "$HERE/.." && pwd)"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+# chmod before rm: several cases create mode-000 fixtures to prove that
+# "unreadable" never reads as "absent", and rm -rf cannot descend into one.
+trap 'chmod -R u+rwX "$TMP" 2>/dev/null || true; rm -rf "$TMP"' EXIT
+
+# ⚠️ SHARED-STATE SAFETY. This machine runs several Claude Code sessions at
+# once, and every one of them keeps job registries under
+# ~/.claude/plugins/data/codex-openai-codex/state. If any of these variables
+# leaked in from the invoking shell, a reap case below would sweep, chmod or
+# DELETE another live session's state. Every case sets what it needs against a
+# fixture under $TMP; nothing may be inherited.
+unset CLAUDE_PLUGIN_DATA CREW_CODEX_ARCHIVE_DIR CREW_CODEX_BROKER_PATTERN \
+      CREW_CODEX_SOCKET_GLOB CREW_CODEX_REAP_LOG_AGE CREW_CODEX_POLL_SECS \
+      CREW_CODEX_HUNG_SECS CREW_CODEX_HUNG_POLL_SECS CREW_CODEX_RETRY_DELAYS \
+      CLAUDE_CONFIG_DIR
+# Default CODEX_HOME to an empty fixture too: the dispatch stamp reads
+# config.toml from it, and reading the developer's real codex config would make
+# effortConfig assertions depend on the machine.
+mkdir -p "$TMP/no-codex-home"
+export CODEX_HOME="$TMP/no-codex-home"
+
+# ⚠️ EVERY `reap --brokers` case must pin CREW_CODEX_BROKER_PATTERN. The default
+# is the real `app-server-broker` pattern, so an unpinned case would pgrep the
+# live brokers of every other Claude Code session on this machine and print
+# them as candidates. $NOMATCH is for the cases that only exercise the registry
+# survey and want zero process discovery.
+NOMATCH="crewtest-nomatch-$$"
 
 pass=0
 fail=0
+skipped=0
+
+# A skip is NOT a pass. Cases that cannot run (root defeats chmod 000, say)
+# print SKIP and increment nothing but the skip counter, so a suite that
+# silently stopped testing something cannot report a full green.
+skip() {
+  echo "SKIP: $1 ($2)"
+  skipped=$((skipped + 1))
+}
 
 check() {
   local name="$1" expected_exit="$2" grep_for="$3" actual_exit="$4" output="$5"
@@ -26,7 +61,15 @@ check() {
 # usage guards is that a help/--effort request never becomes a dispatch at all.
 check_no_dispatch() {
   local name="$1" record="$2"
-  if [[ ! -s "$record" ]]; then
+  # A MISSING record is not an empty one: it means the fake companion was never
+  # wired up (or the case forgot to truncate it), so "nothing was dispatched"
+  # would be asserted by a file that never existed. Fail instead of passing on
+  # the absence — the same absent-vs-unreadable confusion this release exists
+  # to remove from the reap paths.
+  if [[ ! -f "$record" ]]; then
+    echo "FAIL: $name (no invocation record at $record — this assertion proved nothing)"
+    fail=$((fail + 1))
+  elif [[ ! -s "$record" ]]; then
     echo "PASS: $name"
     pass=$((pass + 1))
   else
@@ -561,19 +604,29 @@ out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/sweep-data" \
 check "state dry-run flags the dead-cwd dir" 0 "would prune state dir: $SWEEP/dead-ws" "$rc" "$out"
 check "state dry-run keeps the live-cwd dir" 0 "state kept: live-ws" "$rc" "$out"
 check "state dry-run reports the unresolvable dir" 0 "state unresolved: unresolved-ws" "$rc" "$out"
-check "state dry-run refuses a dir with a non-terminal job" 0 "state kept: busy-ws .* non-terminal" "$rc" "$out"
-check "state dry-run summary counts" 0 "reap state summary: 1 would prune, 1 kept (cwd alive), 1 kept (non-terminal jobs), 1 unresolved" "$rc" "$out"
+check "state dry-run refuses a dir with a non-terminal job" 0 "state blocked: busy-ws .* non-terminal" "$rc" "$out"
+check "state dry-run summary counts" 0 "reap state summary: 1 would prune, 1 kept (cwd alive), 1 blocked (non-terminal, live pid or unreadable), 1 unresolved" "$rc" "$out"
 if [[ -d "$SWEEP/dead-ws" ]]; then
   echo "PASS: state dry-run deleted nothing"; pass=$((pass + 1))
 else
   echo "FAIL: state dry-run deleted a state dir"; fail=$((fail + 1))
 fi
 
-# Case 35: --brokers is REFUSED outright while any job is non-terminal
+# Case 35: --brokers is REPORT-ONLY. It no longer refuses (there is no kill to
+# refuse) and it no longer opens a gate — it prints an advisory survey that
+# names every non-terminal record, so a human deciding whether to kill a pid
+# sees that another session may own it.
 out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/sweep-data" \
+  CREW_CODEX_BROKER_PATTERN="$NOMATCH" \
   bash "$CREW" reap --brokers --dry-run 2>&1)" && rc=0 || rc=$?
-check "brokers sweep refused under a live job" 3 "REFUSED" "$rc" "$out"
-check "brokers refusal names the offending job" 3 "busy-ws/task-busy-1(running)" "$rc" "$out"
+check "brokers sweep announces report-only" 0 "REPORT ONLY" "$rc" "$out"
+check "brokers survey names the non-terminal job" 0 "busy-ws/task-busy-1(running)" "$rc" "$out"
+check "brokers accepts a redundant --dry-run" 0 "dry-run is redundant with --brokers" "$rc" "$out"
+if ! grep -qi "REFUSED" <<<"$out"; then
+  echo "PASS: brokers no longer refuses on a live job"; pass=$((pass + 1))
+else
+  echo "FAIL: brokers still refuses (output: $out)"; fail=$((fail + 1))
+fi
 
 # Case 36: unknown reap flags are rejected, not silently treated as a real run
 out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/sweep-data" \
@@ -600,24 +653,65 @@ mkdir -p "$TMP/sockets/cxc-held" "$TMP/sockets/cxc-idle"
 echo "$$" > "$TMP/sockets/cxc-held/broker.pid"
 echo 99999999 > "$TMP/sockets/cxc-idle/broker.pid"
 
-# Case 37: --brokers --dry-run classifies by cwd liveness and kills NOTHING
+# Case 37: --brokers classifies by cwd liveness, prints a paste-ready command
+# for the human, and touches NOTHING — no kill, no socket removal. This is the
+# real (non-dry) sweep; the whole point is that it is safe to run.
 out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/sweep-clean" \
   CREW_CODEX_BROKER_PATTERN="$BROKER_PAT" CREW_CODEX_SOCKET_GLOB="$TMP/sockets/cxc-*" \
-  bash "$CREW" reap --brokers --dry-run 2>&1)" && rc=0 || rc=$?
-check "broker with a dead cwd is flagged" 0 "would reap broker: pid $DEADCWD_PID" "$rc" "$out"
-check "broker with a live cwd is kept" 0 "broker kept: pid $LIVECWD_PID" "$rc" "$out"
+  bash "$CREW" reap --brokers 2>&1)" && rc=0 || rc=$?
+check "broker with a dead cwd is a candidate" 0 "broker candidate: pid $DEADCWD_PID" "$rc" "$out"
+check "candidate carries a paste-ready kill command" 0 "pkill -P $DEADCWD_PID; kill -TERM $DEADCWD_PID" "$rc" "$out"
+check "candidate warns it may be another session's" 0 "may belong to ANOTHER Claude Code session" "$rc" "$out"
+check "broker with a live cwd is not a candidate" 0 "broker live: pid $LIVECWD_PID" "$rc" "$out"
 check "non-serve process is skipped" 0 "broker skipped: pid $NOTBROKER_PID" "$rc" "$out"
-check "broker summary counts" 0 "reap brokers summary: 1 flagged, 1 kept (cwd alive), 1 skipped" "$rc" "$out"
-check "held socket dir kept" 0 "socket kept: $TMP/sockets/cxc-held" "$rc" "$out"
-check "idle socket dir flagged" 0 "would remove socket dir: $TMP/sockets/cxc-idle" "$rc" "$out"
+check "broker summary counts" 0 "reap brokers summary: 1 reported (nothing killed), 1 live (cwd exists), 0 unknown (cwd unreadable), 1 skipped" "$rc" "$out"
+check "brokers survey reports a clean registry honestly" 0 "registry survey: every job record read cleanly and is terminal" "$rc" "$out"
 if kill -0 "$DEADCWD_PID" 2>/dev/null && kill -0 "$LIVECWD_PID" 2>/dev/null \
-   && kill -0 "$NOTBROKER_PID" 2>/dev/null && [[ -d "$TMP/sockets/cxc-idle" ]]; then
-  echo "PASS: brokers dry-run killed nothing and removed nothing"; pass=$((pass + 1))
+   && kill -0 "$NOTBROKER_PID" 2>/dev/null; then
+  echo "PASS: real brokers sweep killed nothing"; pass=$((pass + 1))
 else
-  echo "FAIL: brokers dry-run had side effects"; fail=$((fail + 1))
+  echo "FAIL: real brokers sweep killed a process"; fail=$((fail + 1))
+fi
+# Socket dirs are in a namespace shared with every other session, so the sweep
+# must leave BOTH of them alone — including the one nothing is holding.
+if [[ -d "$TMP/sockets/cxc-idle" && -d "$TMP/sockets/cxc-held" ]]; then
+  echo "PASS: brokers sweep removed no socket dir"; pass=$((pass + 1))
+else
+  echo "FAIL: brokers sweep removed a socket dir"; fail=$((fail + 1))
+fi
+if ! grep -qE "socket (kept|removed)|would remove socket" <<<"$out"; then
+  echo "PASS: socket sweep is gone from the output entirely"; pass=$((pass + 1))
+else
+  echo "FAIL: socket sweep output still present"; fail=$((fail + 1))
 fi
 kill "$DEADCWD_PID" "$LIVECWD_PID" "$NOTBROKER_PID" 2>/dev/null || true
 wait "$DEADCWD_PID" "$LIVECWD_PID" "$NOTBROKER_PID" 2>/dev/null || true
+
+# Case 37b: a cwd that cannot be PROVEN absent is UNKNOWN, never a candidate.
+# os.path.isdir returns False for permission-denied, which is what reported a
+# workspace we merely cannot see as one that is gone.
+BROKER_PAT_U="crewtest-unknown-$$"
+printf '#!/usr/bin/env bash\nsleep 60\n' > "$TMP/$BROKER_PAT_U.sh"
+mkdir -p "$TMP/unreadable-parent/ws"
+chmod 000 "$TMP/unreadable-parent" 2>/dev/null || true
+bash "$TMP/$BROKER_PAT_U.sh" serve --cwd "$TMP/unreadable-parent/ws" & UNKNOWN_PID=$!
+sleep 0.5
+out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/sweep-clean" \
+  CREW_CODEX_BROKER_PATTERN="$BROKER_PAT_U" \
+  bash "$CREW" reap --brokers 2>&1)" && rc=0 || rc=$?
+chmod 755 "$TMP/unreadable-parent" 2>/dev/null || true
+if [[ "$(id -u)" == "0" ]]; then
+  skip "unreadable cwd classified UNKNOWN" "running as root, chmod 000 is not enforced"
+else
+  check "unreadable cwd is UNKNOWN, not a candidate" 0 "broker unknown: pid $UNKNOWN_PID" "$rc" "$out"
+  if ! grep -q "broker candidate: pid $UNKNOWN_PID" <<<"$out"; then
+    echo "PASS: unreadable cwd was never offered as a kill candidate"; pass=$((pass + 1))
+  else
+    echo "FAIL: unreadable cwd offered as a candidate (output: $out)"; fail=$((fail + 1))
+  fi
+fi
+kill "$UNKNOWN_PID" 2>/dev/null || true
+wait "$UNKNOWN_PID" 2>/dev/null || true
 
 # Case 38: a real --state sweep removes exactly the dead-cwd dir
 out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/sweep-clean" \
@@ -629,27 +723,28 @@ else
   echo "FAIL: state sweep removed the wrong dirs"; fail=$((fail + 1))
 fi
 
-# Case 40: the pre-kill re-validation fails SAFE. This runs the real (non-dry)
-# broker sweep, but with a pgrep regex that the fixed-string re-check cannot
-# match — exactly what a recycled pid looks like — so the process must survive.
-# It is the only non-dry-run broker case, and it is designed to kill nothing.
+# Case 40: THE assertion the report-only design rests on — a REAL (non-dry)
+# --brokers sweep against a process that is a textbook reap candidate (broker
+# pattern, `serve` verb, --cwd that does not exist) leaves it ALIVE. The old
+# code killed exactly this process. A candidate may be another session's broker,
+# so the only correct action is to print the command and stop.
 printf '#!/usr/bin/env bash\nsleep 60\n' > "$TMP/crewtest-broker2-$$.sh"
 bash "$TMP/crewtest-broker2-$$.sh" serve --endpoint "unix:$TMP/none.sock" --cwd "$GONE_WS" & SURVIVOR_PID=$!
 sleep 0.5
 out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/sweep-clean" \
-  CREW_CODEX_BROKER_PATTERN="crewtest-brok.r2-$$" CREW_CODEX_SOCKET_GLOB="$TMP/sockets/cxc-*" \
+  CREW_CODEX_BROKER_PATTERN="crewtest-broker2-$$" \
   bash "$CREW" reap --brokers 2>&1)" && rc=0 || rc=$?
-check "pid recycle re-check blocks the kill" 0 "broker skipped: pid $SURVIVOR_PID (exited or pid recycled" "$rc" "$out"
+check "real sweep reports the candidate" 0 "broker candidate: pid $SURVIVOR_PID" "$rc" "$out"
+sleep 1   # a TERM+KILL tree kill would have finished well inside this
 if kill -0 "$SURVIVOR_PID" 2>/dev/null; then
-  echo "PASS: re-validation failure left the process alive"; pass=$((pass + 1))
+  echo "PASS: real --brokers sweep left the candidate process ALIVE"; pass=$((pass + 1))
 else
-  echo "FAIL: re-validation failure still killed the process"; fail=$((fail + 1))
+  echo "FAIL: real --brokers sweep killed the candidate process"; fail=$((fail + 1))
 fi
-# Same run exercised the REAL socket sweep against the throwaway glob.
-if [[ ! -d "$TMP/sockets/cxc-idle" && -d "$TMP/sockets/cxc-held" ]]; then
-  echo "PASS: socket sweep removed only the unheld dir"; pass=$((pass + 1))
+if ! grep -qE "reaped broker|would reap broker" <<<"$out"; then
+  echo "PASS: no reap verb remains in the broker output"; pass=$((pass + 1))
 else
-  echo "FAIL: socket sweep removed the wrong dirs"; fail=$((fail + 1))
+  echo "FAIL: broker output still claims to reap (output: $out)"; fail=$((fail + 1))
 fi
 kill "$SURVIVOR_PID" 2>/dev/null || true
 wait "$SURVIVOR_PID" 2>/dev/null || true
@@ -942,10 +1037,12 @@ check "minimal on a 5.6 model still dispatches" 0 "RENDERED Adversarial Review" 
 out="$(run_effort adversarial-review --effort none "focus")" && rc=0 || rc=$?
 check "none with no --model warns (config default is 5.6)" 0 "no --model given" "$rc" "$out"
 out="$(run_effort adversarial-review --effort low --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
-if ! grep -q "GPT-5.6 family" <<<"$out"; then
-  echo "PASS: low on a 5.6 model warns about nothing"; pass=$((pass + 1))
+# The positive half matters: an absence check alone passes when the dispatch
+# failed outright and printed nothing at all.
+if grep -q "RENDERED Adversarial Review" <<<"$out" && ! grep -q "GPT-5.6 family" <<<"$out"; then
+  echo "PASS: low on a 5.6 model dispatches and warns about nothing"; pass=$((pass + 1))
 else
-  echo "FAIL: low on a 5.6 model warned spuriously"; fail=$((fail + 1))
+  echo "FAIL: low on a 5.6 model warned spuriously or did not dispatch (out: $out)"; fail=$((fail + 1))
 fi
 
 # Case 48: WITHOUT --effort the dispatch is an unchanged vendor passthrough.
@@ -1122,46 +1219,132 @@ if [[ -n "$sidecar" ]]; then
 fi
 
 # Case 55: a live job recorded ONLY in state.json, in a workspace with NO jobs/
-# directory, must still hold the --brokers kill gate shut. The gate used to
-# `continue` past such a workspace before reading state.json, bypassing the
-# union in exactly the split-brain case it exists for.
+# directory, must block the IRREVERSIBLE --state prune. The union used to
+# `continue` past such a workspace before reading state.json, missing exactly
+# the split-brain case it exists for — and the dir it would delete is the
+# registry another session's companion serves status/result/cancel from.
 mkdir -p "$TMP/state-only/state/ghost"
 echo '{"jobs":[{"id":"ghost-1","status":"running","workspaceRoot":"/nonexistent-ghost"}]}' \
   > "$TMP/state-only/state/ghost/state.json"
 out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/state-only" \
-  bash "$CREW" reap --brokers --dry-run 2>&1)" && rc=0 || rc=$?
-if [[ "$rc" != "0" ]] && grep -q "ghost-1" <<<"$out"; then
-  echo "PASS: state.json-only live job blocks the broker sweep"; pass=$((pass + 1))
+  bash "$CREW" reap --state 2>&1)" && rc=0 || rc=$?
+if grep -q "state blocked: ghost" <<<"$out" && grep -q "ghost-1" <<<"$out" \
+   && [[ -f "$TMP/state-only/state/ghost/state.json" ]]; then
+  echo "PASS: state.json-only live job blocks the prune"; pass=$((pass + 1))
 else
-  echo "FAIL: state-only live job did not block the sweep (exit=$rc; output: $out)"; fail=$((fail + 1))
+  echo "FAIL: state-only live job did not block the prune (exit=$rc; output: $out)"; fail=$((fail + 1))
 fi
+# The same workspace is surfaced by the --brokers advisory survey, which now
+# reports rather than gates.
+out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/state-only" \
+  CREW_CODEX_BROKER_PATTERN="$NOMATCH" \
+  bash "$CREW" reap --brokers 2>&1)" && rc=0 || rc=$?
+check "brokers survey surfaces a state.json-only live job" 0 "ghost/ghost-1(running)" "$rc" "$out"
 
-# Case 56: the kill gate must fail CLOSED on registries it cannot parse or read.
-# isdir/isfile return False for permission-denied too, so "unreadable" used to be
-# indistinguishable from "absent" -- and absent opens the gate.
+# Case 56: the --state prune must fail CLOSED on registries it cannot parse or
+# read. os.path.isdir/isfile/exists return False for permission-denied too, so
+# "unreadable" used to be indistinguishable from "absent" — and absent is the
+# answer that lets an rmtree proceed. Every fixture here lives under $TMP; none
+# of them touches the real, session-shared plugin data dir.
+state_blocks() {
+  # name, fixture root, grep pattern -> asserts blocked AND still on disk
+  local name="$1" root="$2" want="$3" ws="$4" o r
+  o="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$root" \
+    bash "$CREW" reap --state 2>&1)" && r=0 || r=$?
+  if [[ "$r" == 0 ]] && grep -q "state blocked" <<<"$o" && grep -q "$want" <<<"$o" && [[ -d "$ws" ]]; then
+    echo "PASS: $name"; pass=$((pass + 1))
+  else
+    echo "FAIL: $name (exit=$r; still on disk: $([[ -d "$ws" ]] && echo yes || echo NO); out: $o)"
+    fail=$((fail + 1))
+  fi
+}
+
+# 56a: a non-list `jobs` value. It used to fall through the isinstance check and
+# read as an empty registry — a fail-open in front of an irreversible delete.
 mkdir -p "$TMP/gate-malformed/state/ws-a"
-echo '{"jobs":{"id":"live","status":"running"}}' > "$TMP/gate-malformed/state/ws-a/state.json"
-out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/gate-malformed" \
-  bash "$CREW" reap --brokers --dry-run 2>&1)" && rc=0 || rc=$?
-if [[ "$rc" != "0" ]] && grep -q "unrecognized schema" <<<"$out"; then
-  echo "PASS: malformed state.json blocks the kill gate"; pass=$((pass + 1))
-else
-  echo "FAIL: malformed state.json did not block (exit=$rc; out: $out)"; fail=$((fail + 1))
-fi
+echo '{"jobs":{"id":"live","status":"running"},"workspaceRoot":"/nonexistent-a"}' \
+  > "$TMP/gate-malformed/state/ws-a/state.json"
+state_blocks "unrecognized state.json schema blocks the prune" \
+  "$TMP/gate-malformed" "unrecognized schema" "$TMP/gate-malformed/state/ws-a"
 
+# 56b: unparseable JSON. `load()` returned None for this exactly as it did for
+# "file absent", and nonterminal_jobs read None as "no jobs".
+mkdir -p "$TMP/gate-unparseable/state/ws-c/jobs"
+echo '{"jobs":[{"id":"c1","status":"completed","workspaceRoot":"/nonexistent-c"}]}' \
+  > "$TMP/gate-unparseable/state/ws-c/state.json"
+printf '{"id":"c1", TRUNCATED' > "$TMP/gate-unparseable/state/ws-c/jobs/c1.json"
+state_blocks "unparseable job record blocks the prune" \
+  "$TMP/gate-unparseable" "unparseable JSON" "$TMP/gate-unparseable/state/ws-c"
+
+# 56c: a mode-000 jobs/ dir. Absent and unreadable must not be the same answer.
 mkdir -p "$TMP/gate-denied/state/ws-b/jobs"
+echo '{"jobs":[{"id":"x","status":"completed","workspaceRoot":"/nonexistent-b"}]}' \
+  > "$TMP/gate-denied/state/ws-b/state.json"
 echo '{"id":"x","status":"completed"}' > "$TMP/gate-denied/state/ws-b/jobs/x.json"
 chmod 000 "$TMP/gate-denied/state/ws-b/jobs" 2>/dev/null || true
 out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/gate-denied" \
-  bash "$CREW" reap --brokers --dry-run 2>&1)" && rc=0 || rc=$?
+  bash "$CREW" reap --state 2>&1)" && rc=0 || rc=$?
+# Restored unconditionally and immediately: a mode-000 dir left behind would
+# defeat this suite's own cleanup.
 chmod 755 "$TMP/gate-denied/state/ws-b/jobs" 2>/dev/null || true
-if [[ "$rc" != "0" ]] && grep -q "unlistable" <<<"$out"; then
-  echo "PASS: unreadable jobs dir blocks the kill gate"; pass=$((pass + 1))
-elif [[ "$(id -u)" == "0" ]]; then
-  echo "PASS: unreadable jobs dir (skipped — running as root, chmod 000 is not enforced)"; pass=$((pass + 1))
+if [[ "$(id -u)" == "0" ]]; then
+  skip "unreadable jobs dir blocks the prune" "running as root, chmod 000 is not enforced"
+elif grep -q "state blocked" <<<"$out" && grep -q "jobs/(unreadable: PermissionError)" <<<"$out" \
+     && [[ -d "$TMP/gate-denied/state/ws-b" ]]; then
+  echo "PASS: unreadable jobs dir blocks the prune"; pass=$((pass + 1))
 else
   echo "FAIL: unreadable jobs dir did not block (exit=$rc; out: $out)"; fail=$((fail + 1))
 fi
+
+# Case 56d: THE reproduction. A mode-000 WORKSPACE dir (one level up from the
+# fix that failed) holding a running job. os.path.exists returns False for it,
+# which emptied the live list and let the old sweep proceed. --brokers must
+# report it as unreadable — never as an empty workspace — and must kill nothing.
+mkdir -p "$TMP/gate-ws000/state/ws-live/jobs"
+cat > "$TMP/gate-ws000/state/ws-live/state.json" <<EOF
+{"jobs":[{"id":"live-000","status":"running","workspaceRoot":"$GONE_WS"}]}
+EOF
+cat > "$TMP/gate-ws000/state/ws-live/jobs/live-000.json" <<EOF
+{"id":"live-000","status":"running","workspaceRoot":"$GONE_WS"}
+EOF
+BROKER_PAT_W="crewtest-ws000-$$"
+printf '#!/usr/bin/env bash\nsleep 60\n' > "$TMP/$BROKER_PAT_W.sh"
+bash "$TMP/$BROKER_PAT_W.sh" serve --cwd "$GONE_WS" & WS000_PID=$!
+sleep 0.5
+chmod 000 "$TMP/gate-ws000/state/ws-live" 2>/dev/null || true
+out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/gate-ws000" \
+  CREW_CODEX_BROKER_PATTERN="$BROKER_PAT_W" \
+  bash "$CREW" reap --brokers 2>&1)" && rc=0 || rc=$?
+outstate="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/gate-ws000" \
+  bash "$CREW" reap --state 2>&1)" && rcs=0 || rcs=$?
+chmod 755 "$TMP/gate-ws000/state/ws-live" 2>/dev/null || true
+if [[ "$(id -u)" == "0" ]]; then
+  skip "mode-000 workspace with a running job" "running as root, chmod 000 is not enforced"
+else
+  if grep -q "unreadable: PermissionError" <<<"$out" \
+     && grep -q "registry survey: non-terminal or unreadable" <<<"$out"; then
+    echo "PASS: mode-000 workspace reported unreadable, never as empty"; pass=$((pass + 1))
+  else
+    echo "FAIL: mode-000 workspace was not reported unreadable (exit=$rc; out: $out)"; fail=$((fail + 1))
+  fi
+  if grep -q "every job record read cleanly" <<<"$out"; then
+    echo "FAIL: mode-000 workspace claimed to be a clean/empty registry"; fail=$((fail + 1))
+  else
+    echo "PASS: mode-000 workspace never claimed a clean registry"; pass=$((pass + 1))
+  fi
+  if grep -q "state blocked: ws-live" <<<"$outstate" && [[ -d "$TMP/gate-ws000/state/ws-live" ]]; then
+    echo "PASS: mode-000 workspace blocked the --state prune"; pass=$((pass + 1))
+  else
+    echo "FAIL: mode-000 workspace did not block the prune (exit=$rcs; out: $outstate)"; fail=$((fail + 1))
+  fi
+fi
+if kill -0 "$WS000_PID" 2>/dev/null; then
+  echo "PASS: mode-000 sweep left the matching broker process alive"; pass=$((pass + 1))
+else
+  echo "FAIL: mode-000 sweep killed the broker process"; fail=$((fail + 1))
+fi
+kill "$WS000_PID" 2>/dev/null || true
+wait "$WS000_PID" 2>/dev/null || true
 
 # Case 57: content that is ONLY collector skip markers must refuse. fileCount is
 # positive, content is a non-empty string, and there is still nothing to review --
@@ -1194,10 +1377,73 @@ if [[ "$rc" != "0" ]] && grep -q "every changed file" <<<"$out"; then
 else
   echo "FAIL: all-skipped content not refused (exit=$rc; out: $out)"; fail=$((fail + 1))
 fi
+# The refusal names the PATH and the counts, never the captured marker text.
+# The marker text is rendered from a file the collector read, so echoing it
+# copies content fragments into stderr and into job logs.
+if grep -q "big.txt" <<<"$out" && ! grep -q "99999 bytes exceeds" <<<"$out"; then
+  echo "PASS: refusal names the file, not the marker text"; pass=$((pass + 1))
+else
+  echo "FAIL: refusal leaked marker text or dropped the path (out: $out)"; fail=$((fail + 1))
+fi
 if [[ ! -f "$TMP/effort/turn.json" ]]; then
   echo "PASS: all-skipped content started no turn"; pass=$((pass + 1))
 else
   echo "FAIL: all-skipped content started a turn"; fail=$((fail + 1))
+fi
+
+# Case 57b: SKIP-MARKER COLLISION. The vendor inlines small untracked files RAW
+# inside a fence, so a reviewed file whose own content contains a
+# `(skipped: ...)` line used to be counted as a collector marker. With
+# fileCount 2 and one real marker, the naive whole-blob regex found 2 and
+# refused a diff that is perfectly reviewable. A marker counts only directly
+# under a `### <changed path>` heading.
+cp -r "$TMP/effort/install" "$TMP/effort/collide-install"
+cat > "$TMP/effort/collide-install/scripts/lib/git.mjs" <<'EOF'
+export function resolveReviewTarget(cwd, options = {}) {
+  const base = options.base ?? "main";
+  return { mode: "branch", label: `branch diff against ${base}`, baseRef: base, explicit: true };
+}
+export function collectReviewContext(cwd, target) {
+  const content = [
+    "## Untracked Files",
+    "",
+    "### real.txt",
+    "(skipped: binary file)",
+    "",
+    "### doc.md",
+    "```",
+    "Notes on the collector output format:",
+    "### phantom.txt",
+    "(skipped: this line is FILE CONTENT, not a collector marker)",
+    "```",
+    ""
+  ].join("\n");
+  return {
+    cwd, repoRoot: cwd, branch: "stub", target, fileCount: 2, diffBytes: 0,
+    inputMode: "inline-diff", collectionGuidance: "STUB-GUIDANCE",
+    content, summary: "s", changedFiles: ["real.txt", "doc.md"]
+  };
+}
+EOF
+mkdir -p "$TMP/collide/plugins"
+echo "{\"version\":2,\"plugins\":{\"codex@openai-codex\":[{\"installPath\":\"$TMP/effort/collide-install\"}]}}" > "$TMP/collide/plugins/installed_plugins.json"
+: > "$INVOKED_E"; rm -f "$TMP/effort/turn.json"
+out="$(CLAUDE_CONFIG_DIR="$TMP/collide" CREW_TEST_INVOKED="$INVOKED_E" \
+  CREW_TEST_TURN_RECORD="$TMP/effort/turn.json" CREW_TEST_STATE_DIR="$STATE_E" \
+  CREW_TEST_JOB_SUFFIX="collide" CREW_CODEX_ARCHIVE_DIR="$ARC_E" \
+  CODEX_HOME="$TMP/effort/codex-home" CREW_CODEX_RETRY_DELAYS="0" \
+  bash "$CREW" adversarial-review --effort high "focus" 2>&1)" && rc=0 || rc=$?
+check "content-embedded skip marker does not refuse the review" 0 "RENDERED Adversarial Review" "$rc" "$out"
+if python3 -c "
+import json
+p = json.load(open('$TMP/effort/turn.json'))['prompt']
+assert '1 of 2 changed file(s)' in p, p
+assert 'real.txt' in p.split('GUIDE=')[1].split('INPUT=')[0], p
+assert 'phantom.txt' not in p.split('GUIDE=')[1].split('INPUT=')[0], p
+"; then
+  echo "PASS: only the structural marker was counted (1 of 2, real.txt)"; pass=$((pass + 1))
+else
+  echo "FAIL: skip-marker accounting wrong (turn: $(cat "$TMP/effort/turn.json" 2>/dev/null))"; fail=$((fail + 1))
 fi
 
 # Case 58: the sidecar must not re-parse post-sentinel focus text as routing
@@ -1218,16 +1464,69 @@ else
   echo "FAIL: sidecar leaked post-sentinel tokens: $(cat "$sc" 2>/dev/null)"; fail=$((fail + 1))
 fi
 
+# Case 58b: the option table is PER SUBCOMMAND. `--base` is a review flag the
+# task parser has never heard of, so `task --base=<secret>` is prompt TEXT —
+# but one shared table recognized the prefix and archived the whole token, with
+# no `--` sentinel needed, into storage that outlives session cleanup.
+arc="$TMP/stamp/arc58b"
+out="$(run_stamp "$arc" "Codex Task started in the background as task-sec11-sec22." \
+  task --base=AKIAIOSFODNN7SECRETV --model gpt-5.6-luna "do a thing")" && rc=0 || rc=$?
+sc="$arc/task-sec11-sec22.dispatch.json"
+if [[ -f "$sc" ]] && ! grep -q "AKIAIOSFODNN7SECRETV" "$sc"; then
+  echo "PASS: task --base=<secret> is not archived"; pass=$((pass + 1))
+else
+  echo "FAIL: task --base=<secret> reached the sidecar: $(cat "$sc" 2>/dev/null)"; fail=$((fail + 1))
+fi
+if [[ -f "$sc" ]] && python3 -c "
+import json
+d = json.load(open('$sc'))
+assert d['argv'] == ['task', '--model', 'gpt-5.6-luna', '<redacted: 2 positional token(s)>'], d
+"; then
+  echo "PASS: task sidecar kept its own routing flags and shaped the rest"; pass=$((pass + 1))
+else
+  echo "FAIL: task sidecar argv wrong: $(cat "$sc" 2>/dev/null)"; fail=$((fail + 1))
+fi
+# ...and the boundary holds in the other direction: --prompt-file is a task
+# flag, so on a review it is unrecognized text and must be redacted.
+arc="$TMP/stamp/arc58c"
+out="$(run_stamp "$arc" "Adversarial Review started in the background as review-sec33-sec44." \
+  adversarial-review --prompt-file /internal/INC-999 --base main)" && rc=0 || rc=$?
+sc="$arc/review-sec33-sec44.dispatch.json"
+if [[ -f "$sc" ]] && ! grep -q "INC-999" "$sc" && grep -q -- "--base" "$sc"; then
+  echo "PASS: review sidecar redacts a task-only flag but keeps --base"; pass=$((pass + 1))
+else
+  echo "FAIL: review sidecar mis-classified --prompt-file: $(cat "$sc" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
 # Case 59: agent-definition consistency. Every command governed by the
 # launch/await/result loop must carry --background; the adversarial command lost
 # it once when --model/--effort were added, silently breaking the lane.
-if grep -q 'adversarial-review --background --model' codex-crew/agents/codex-reviewer.md; then
+#
+# ⚠️ ANCHORED TO $HERE, not to the invoker's cwd. These two greps used to name
+# `codex-crew/agents/codex-reviewer.md` relatively: run the suite from anywhere
+# but the repo root and the first assertion false-FAILED while the second
+# passed VACUOUSLY — `! grep -q` succeeds on grep's exit 2 for a missing file,
+# so "the naive probe is gone" was reported by a grep that read no file at all.
+REVIEWER_MD="$REPO/agents/codex-reviewer.md"
+if [[ -f "$REVIEWER_MD" ]]; then
+  echo "PASS: reviewer agent definition is where the suite expects it"; pass=$((pass + 1))
+else
+  echo "FAIL: reviewer agent definition missing at $REVIEWER_MD"; fail=$((fail + 1))
+fi
+if grep -q 'adversarial-review --background --model' "$REVIEWER_MD"; then
   echo "PASS: reviewer lane adversarial command is detached"; pass=$((pass + 1))
 else
   echo "FAIL: reviewer lane adversarial command lost --background"; fail=$((fail + 1))
 fi
-if ! grep -q "grep -q -- '--effort'" codex-crew/agents/codex-reviewer.md; then
-  echo "PASS: reviewer lane uses the driver-filename probe"; pass=$((pass + 1))
+# Assert the probe that SHOULD be there, not merely the absence of the old one:
+# deleting the probe outright satisfies an absence check.
+if grep -qF "grep -q 'review-with-effort' \"\$(command -v crew-codex)\"" "$REVIEWER_MD"; then
+  echo "PASS: reviewer lane carries the exact driver-filename probe"; pass=$((pass + 1))
+else
+  echo "FAIL: reviewer lane lost the driver-filename probe"; fail=$((fail + 1))
+fi
+if ! grep -q "grep -q -- '--effort'" "$REVIEWER_MD"; then
+  echo "PASS: reviewer lane no longer uses the naive --effort probe"; pass=$((pass + 1))
 else
   echo "FAIL: reviewer lane still uses the naive --effort probe"; fail=$((fail + 1))
 fi
@@ -1265,5 +1564,5 @@ check_no_dispatch "background dispatch bypassed the vendor companion" "$INVOKED_
 
 
 echo
-echo "$pass passed, $fail failed"
+echo "$pass passed, $fail failed, $skipped skipped"
 [[ "$fail" -eq 0 ]]

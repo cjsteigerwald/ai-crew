@@ -63,20 +63,27 @@ Primary helper — `crew-codex`, on PATH while the plugin is enabled:
   for jobs stuck in `running`/`queued` whose process is dead or whose log has
   been frozen past `CREW_CODEX_REAP_LOG_AGE` (default 3600s), and mark them
   failed in place. The companion never does this itself, so stuck entries
-  otherwise accumulate forever and make `/codex:status` lie. Two further
-  sweeps are opt-in, because they are destructive in ways the job sweep is not:
-  - `--brokers` kills broker processes whose `--cwd` workspace no longer exists
-    (delete a worktree and its broker stays resident forever), children first
-    and **by pid only** — never a pattern kill, which would take out every
-    other workspace's healthy broker — then removes `/tmp/cxc-*` socket dirs
-    that nothing is holding. It REFUSES the whole sweep (exit 3) while any job
-    anywhere is non-terminal: nothing maps a job to the broker serving it, so
-    one live job makes every broker unprovable.
-  - `--state` prunes state dirs whose recorded cwd is gone and that hold no
-    non-terminal job. This deletes job history and logs — dry-run it first. A
-    dir whose cwd cannot be parsed is reported `unresolved` and never pruned.
-  Both compose with `--dry-run`, and plain `reap` behaves exactly as before.
-  Main-thread housekeeping, not for crew agents mid-job.
+  otherwise accumulate forever and make `/codex:status` lie. A workspace that
+  holds a live-pid job, or whose records cannot be read, is skipped whole —
+  the state dir is shared with every other Claude Code session on the machine.
+  Two further sweeps are opt-in:
+  - `--brokers` **reports only — it kills nothing.** It lists broker processes
+    whose `--cwd` workspace no longer exists (delete a worktree and its broker
+    stays resident forever) and prints a paste-ready
+    `pkill -P <pid>; kill -TERM <pid>` for a human to run after confirming the
+    pid. A cwd that cannot be *proven* absent is reported `unknown`, never as a
+    candidate, and no socket dir is removed. The automated kill was withdrawn
+    after failing open five distinct times (permission-denied reading as
+    "workspace gone" twice over) plus an unclosable scan-then-kill race; a
+    candidate may be another session's live broker. `--dry-run` is accepted
+    here and has no effect.
+  - `--state` prunes state dirs whose recorded cwd is gone, that hold no
+    non-terminal job and no live pid, and whose records were all read and
+    parsed. This deletes job history and logs — dry-run it first. A dir whose
+    cwd cannot be parsed is `unresolved`; one that cannot be read or parsed is
+    `blocked`. Neither is ever pruned.
+  `--state` composes with `--dry-run`, and plain `reap` behaves exactly as
+  before. Main-thread housekeeping, not for crew agents mid-job.
 - `crew-codex result <job-id>` — the finished job's output (plus its resume id)
 - `crew-codex --resolve` — print the resolved companion script path (diagnostics only)
 
