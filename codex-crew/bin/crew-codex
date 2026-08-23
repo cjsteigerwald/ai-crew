@@ -1034,11 +1034,9 @@ for state_dir in state_dirs:
     state_path = os.path.join(ws, "state.json")
     state = None
     state_entries = []
-    state_raw = None
     try:
         with open(state_path) as f:
-            state_raw = f.read()
-        state = json.loads(state_raw)
+            state = json.load(f)
     except (FileNotFoundError, NotADirectoryError):
         state = None
     except (OSError, ValueError) as exc:
@@ -1125,48 +1123,58 @@ for state_dir in state_dirs:
     # companion serves status/result/cancel from. Already read and shape-checked
     # above; only the reaped entries are touched and everything else round-trips
     # untouched.
-    if state is not None:
+    if state is not None and reaped_ids:
         try:
-            changed = False
-            for e in state_entries:
-                if isinstance(e, dict) and e.get("id") in reaped_ids:
-                    e.update(status="failed", phase="reaped",
-                             reapedAt=stamp, updatedAt=stamp)
-                    e["pid"] = None
-                    changed = True
-            if changed:
-                # ⚠️ COMPARE AND SWAP. state.json is the shared, vendor-owned
-                # registry and every other Claude Code session on this machine
-                # writes to it. Everything above was computed from a snapshot
-                # read earlier in this sweep; if the file has moved on since,
-                # writing that snapshot back DELETES whatever they recorded in
-                # between — a job queued after the read simply vanishes, and
-                # await then reports it missing and invites a duplicate
-                # dispatch. Re-read and abort on any difference.
-                #
-                # This NARROWS the window, it does not close it: another writer
-                # can still land between this read and the replace below.
-                # Closing it needs a lock the vendor honours, which does not
-                # exist. Treat an aborted mirror as unfinished work.
-                try:
-                    with open(state_path) as f:
-                        current_raw = f.read()
-                except OSError as exc:
-                    print(f"warning: could not re-read {state_path} before mirroring ({exc.__class__.__name__}); not writing")
-                    skipped += 1
-                    current_raw = None
-                    raise_abort = True
-                else:
-                    raise_abort = current_raw != state_raw
-                    if raise_abort:
-                        print(f"skipped: {state_dir} — state.json changed while this sweep ran, not mirroring into another session's registry")
-                        skipped += 1
-                if not raise_abort:
+            # ⚠️ MERGE INTO A FRESH READ. Never write back the snapshot the
+            # classification above ran on. state.json is the shared registry
+            # every other Claude Code session on this machine writes to, and a
+            # snapshot writeback DELETES whatever they recorded while this
+            # sweep was busy — a job queued after the read simply vanishes,
+            # await then reports it missing, and a duplicate dispatch follows.
+            # Re-reading here means a concurrently added job survives, because
+            # it is present in what we are about to write.
+            with open(state_path) as f:
+                fresh = json.load(f)
+            if isinstance(fresh, list):
+                fresh_entries = fresh
+            elif isinstance(fresh, dict) and isinstance(fresh.get("jobs"), list):
+                fresh_entries = fresh["jobs"]
+            elif isinstance(fresh, dict) and not fresh:
+                fresh_entries = []
+            else:
+                raise ValueError("state.json schema changed under the sweep")
+            # Abort only for a genuine conflict: an entry this sweep is about
+            # to mark failed whose status somebody else has already moved. A
+            # blanket abort-on-any-difference would fire constantly in a busy
+            # state root and mirror nothing, which is its own kind of lying.
+            was = {e.get("id"): e.get("status")
+                   for e in state_entries if isinstance(e, dict)}
+            conflicts = [e.get("id") for e in fresh_entries
+                         if isinstance(e, dict) and e.get("id") in reaped_ids
+                         and e.get("status") != was.get(e.get("id"))]
+            if conflicts:
+                print(f"skipped: {state_dir} — {conflicts} changed status while this sweep ran, not overwriting another session's update")
+                skipped += 1
+            else:
+                changed = False
+                for e in fresh_entries:
+                    if isinstance(e, dict) and e.get("id") in reaped_ids:
+                        e.update(status="failed", phase="reaped",
+                                 reapedAt=stamp, updatedAt=stamp)
+                        e["pid"] = None
+                        changed = True
+                if changed:
+                    # Residual, irreducible from outside: another writer can
+                    # still land between the read above and this replace. That
+                    # window is one in-memory read-modify-write with no I/O in
+                    # it, where the old one spanned the whole classification
+                    # and per-job rewrite phase. Closing it entirely needs a
+                    # lock the vendor companion does not take.
                     tmp = state_path + ".reap-tmp"
                     with open(tmp, "w") as f:
-                        json.dump(state, f, indent=2)
+                        json.dump(fresh, f, indent=2)
                     os.replace(tmp, state_path)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             # The per-job files now say "failed" and the registry the companion
             # actually serves does not. That is unfinished work, not a clean
             # sweep, so it counts toward the non-zero exit below.

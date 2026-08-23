@@ -1711,6 +1711,67 @@ if [[ -n "$sidecar" ]]; then
   fi
 fi
 
+# Case 54z: reap must MERGE into a fresh read of state.json, never write back
+# the snapshot it classified from. This is the difference between "another
+# session's job survives the sweep" and "it silently disappears from the
+# registry that await and status are served from".
+#
+# The ordering here is deterministic, not a sleep race. The reaped job's
+# logFile is a FIFO, and reap appends to it between rewriting jobs/*.json and
+# mirroring into state.json. Opening a FIFO for write BLOCKS until a reader
+# opens it — and the reader below opens it only AFTER injecting a new job into
+# state.json. So the injection is guaranteed to land after reap took its
+# snapshot and before reap mirrors. A snapshot writeback deletes job-injected;
+# a merge keeps it.
+MERGE_DATA="$TMP/merge-data"
+mkdir -p "$MERGE_DATA/state/repo-m/jobs"
+MERGE_FIFO="$MERGE_DATA/state/repo-m/jobs/dead.fifo"
+mkfifo "$MERGE_FIFO"
+# Frozen log age, not just a dead pid: reapability must not depend on whether
+# this machine has recycled the throwaway pid, because if the job is NOT
+# reaped then reap never writes to the FIFO and the reader below would block
+# forever. Every wait in this case is bounded for the same reason.
+touch -d '2 hours ago' "$MERGE_FIFO"
+DEAD_PID3=$(bash -c 'echo $$')
+cat > "$MERGE_DATA/state/repo-m/jobs/dead.json" <<EOF
+{"id":"job-m-dead","status":"running","pid":$DEAD_PID3,"logFile":"$MERGE_FIFO","createdAt":"2026-07-01T00:00:00Z"}
+EOF
+cat > "$MERGE_DATA/state/repo-m/state.json" <<EOF
+[{"id":"job-m-dead","status":"running","pid":$DEAD_PID3}]
+EOF
+(
+  # Wait for reap to rewrite jobs/dead.json. That write happens AFTER reap has
+  # taken its state.json snapshot and BEFORE the log append, so seeing it
+  # proves the snapshot is already in hand — injecting before this point just
+  # puts the new job INTO the snapshot and tests nothing. No sleep race: reap
+  # is blocked opening the FIFO below and cannot reach the mirror until this
+  # subshell opens it for reading.
+  for _ in $(seq 1 600); do
+    grep -q 'reaped' "$MERGE_DATA/state/repo-m/jobs/dead.json" 2>/dev/null && break
+    sleep 0.05
+  done
+  python3 - "$MERGE_DATA/state/repo-m/state.json" <<'INJECT' || true
+import json, sys
+p = sys.argv[1]
+entries = json.load(open(p))
+entries.append({"id": "job-injected", "status": "running", "pid": 1})
+json.dump(entries, open(p, "w"), indent=2)
+INJECT
+  timeout 60 cat "$MERGE_FIFO" >/dev/null 2>&1 || true
+) &
+MERGE_READER=$!
+out="$(timeout 90 env CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$MERGE_DATA" \
+  bash "$CREW" reap 2>&1)" && rc=0 || rc=$?
+wait "$MERGE_READER" 2>/dev/null || true
+if [[ "$rc" == 124 ]]; then
+  echo "FAIL: reap hung against a FIFO logFile"; fail=$((fail + 1))
+elif grep -q '"id": "job-injected"' "$MERGE_DATA/state/repo-m/state.json" \
+   && grep -q '"status": "failed"' "$MERGE_DATA/state/repo-m/state.json"; then
+  echo "PASS: reap merged into a fresh read and kept a concurrently added job"; pass=$((pass + 1))
+else
+  echo "FAIL: reap clobbered a concurrent registry write (exit=$rc; output: $out; state: $(cat "$MERGE_DATA/state/repo-m/state.json"))"; fail=$((fail + 1))
+fi
+
 # Case 55: a live job recorded ONLY in state.json, in a workspace with NO jobs/
 # directory, must block the IRREVERSIBLE --state prune. The union used to
 # `continue` past such a workspace before reading state.json, missing exactly
