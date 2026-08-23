@@ -13,13 +13,27 @@ Primary helper — `crew-codex`, on PATH while the plugin is enabled:
 
 - `crew-codex task [--background] [--write] [--resume-last] [--model <m>] [--effort <none|minimal|low|medium|high|xhigh>] "<prompt>"`
 - `crew-codex review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <m>]`
-- `crew-codex adversarial-review [--wait|--background] [--base <ref>] [--scope <...>] [--model <m>] [focus text]`
-  The review path takes **no `--effort`**. codex-companion parses only the
-  flags above and folds every other argument into the focus text, so
-  `--effort high` there changes the prompt, not the reasoning effort.
-  `crew-codex` rejects it (exit 2) rather than dispatching. Review effort comes
-  from `model_reasoning_effort` in `${CODEX_HOME:-~/.codex}/config.toml`; only
-  `task` accepts a per-dispatch `--effort`.
+- `crew-codex adversarial-review [--wait|--background] [--base <ref>] [--scope <...>] [--model <m>] [--effort <none|minimal|low|medium|high|xhigh>] [focus text]`
+  **`--effort` is honored on `adversarial-review` only.** codex-companion still
+  cannot set reasoning effort on any review path, so when (and only when)
+  `--effort` is present `crew-codex` runs the dispatch through its own driver,
+  `lib/review-with-effort.mjs`, which composes the codex plugin's *exported*
+  modules — no vendor file is patched — and threads the effort into the turn the
+  companion leaves `null`. Without `--effort` the dispatch is a verbatim
+  companion passthrough that runs at `model_reasoning_effort` from
+  `${CODEX_HOME:-~/.codex}/config.toml`, exactly as before.
+  The driver also detaches properly under `--background` (the vendor's
+  adversarial review is foreground-only, so a plain Bash call to it dies at the
+  120s tool timeout and orphans the job), and stamps the effort and model into
+  the job record itself.
+  If a codex plugin upgrade renames one of the modules it imports, the driver
+  fails **loudly** — naming the version, module and symbol — and exits non-zero.
+  It never silently falls back to the vendor path, because that would run the
+  review at an effort you did not ask for while reporting success. Re-run
+  without `--effort` to use the vendor path deliberately.
+- `crew-codex review` (the native reviewer) still takes **no `--effort`** and
+  rejects it with exit 2: it runs through a different companion code path
+  (`runAppServerReview`) that the driver does not model.
 - `crew-codex task --help` / `-h` — intercepted too: the companion has no help
   handler for `task` either, so this used to dispatch a real job whose prompt was
   the literal string `--help`. A bare `help` is NOT intercepted for `task` — a
@@ -89,10 +103,12 @@ Execution rules:
   `/codex:cancel`); a crew agent only awaits the one job it launched.
 - Every `task`/`review`/`adversarial-review` dispatch also drops
   `<id>.dispatch.json` in the crew archive below, recording the model, the requested
-  effort and the `model_reasoning_effort` actually in force. Review job records
-  carry neither model nor effort (task records do, under
-  `storedJob.request`), and review effort lives only in the codex config, so
-  for a review this sidecar is the sole proof of what it ran at.
+  effort and the `model_reasoning_effort` actually in force. Companion-written
+  review job records carry neither model nor effort (task records do, under
+  `storedJob.request`), so for a vendor-path review this sidecar is the sole
+  proof of what it ran at. An `adversarial-review --effort` dispatch is stamped
+  twice over: the sidecar records it flag-sourced, and the job record itself
+  carries `effort`, `model` and `codexPluginVersion`.
 - Results are archived by `await` on terminal state to
   `~/.claude/plugins/data/codex-crew/jobs/<id>.{result.txt,meta.json,log}`,
   which the companion's 50-job pruner cannot delete. Jobs still die with the
@@ -113,4 +129,13 @@ frontier coding tier, **terra** = balanced everyday mid tier, **luna** =
 fast/affordable low tier. Other known models (Codex CLI 0.144.0): gpt-5.5,
 gpt-5.4, gpt-5.4-mini, gpt-5.3-codex-spark. All listed models accept up to
 `xhigh`; the companion runtime rejects the registry's higher `max`/`ultra`
-efforts — `xhigh` is the ceiling through this plugin.
+efforts — `xhigh` is the ceiling through this plugin, and `crew-codex`'s effort
+driver keeps that same ceiling rather than widening it.
+
+The practical **floor** is narrower than the validator's: the GPT-5.6 family
+(sol/terra/luna) returns a 400 on `reasoning.effort` for `none` and `minimal`,
+so the usable ladder there is `low|medium|high|xhigh`. Both values are still
+accepted — the validator mirrors the runtime's contract, not one family's — but
+`crew-codex` warns on stderr before dispatching when `none`/`minimal` is paired
+with a `gpt-5.6*` model or with no `--model` at all (the config default is a
+5.6 model). The job then fails at the API, not in the wrapper.

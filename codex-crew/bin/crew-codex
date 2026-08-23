@@ -7,6 +7,8 @@ set -euo pipefail
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 INSTALLED_JSON="$CLAUDE_DIR/plugins/installed_plugins.json"
 CODEX_PLUGIN_ID="codex@openai-codex"
+# Our own code, shipped beside this script — currently just the effort driver.
+CREW_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib"
 
 # ---- usage guards: a help request must never become a dispatch -------------
 # codex-companion has NO per-subcommand help handler, and its review parser
@@ -17,7 +19,10 @@ CODEX_PLUGIN_ID="codex@openai-codex"
 # twice on 2026-08-22 — and `--effort high` was swallowed into the prompt
 # while the turn still ran at whatever effort the codex config carried.
 # Both are intercepted here, before the companion is even resolved: printing
-# usage must not depend on the codex plugin being installed.
+# usage must not depend on the codex plugin being installed. `--effort` on
+# `adversarial-review` is no longer an error — it is now a routing decision
+# (see the effort-routing block further down) — but it is still parsed here so
+# an invalid value is rejected before anything is dispatched.
 crew_usage() {
   cat <<'USAGE'
 crew-codex <subcommand> [args...]
@@ -35,13 +40,16 @@ Subcommands crew-codex handles itself:
 
 Everything else (task, review, adversarial-review, status, result, cancel,
 setup, transfer) is forwarded verbatim to the codex plugin's companion
-runtime. Run `crew-codex review --help` for the review path's real flags.
+runtime — with ONE exception: `adversarial-review --effort <e>` runs on
+crew-codex's own driver, because the companion cannot set reasoning effort on
+a review. Run `crew-codex adversarial-review --help` for that path's flags.
 USAGE
 }
 
 review_usage() {
+  local sub="$1"
   cat <<USAGE
-crew-codex $1 [flags] [focus text]
+crew-codex $sub [flags] [focus text]
 
 Flags codex-companion actually parses on the review path:
   --base <ref>                  diff base (default: main)
@@ -50,14 +58,46 @@ Flags codex-companion actually parses on the review path:
   --cwd <path>                  workspace root
   --json                        machine-readable output
   --wait | --background         run inline, or detach and return a job id
+USAGE
+
+  if [[ "$sub" == "adversarial-review" ]]; then
+    cat <<USAGE
   [focus text]                  every remaining word becomes the review focus
 
-The review path accepts NO --effort flag. Unknown arguments are not rejected
-there — they are folded into the focus text — so an --effort flag would change
-the PROMPT and never the reasoning effort. Review effort comes from
-model_reasoning_effort in ${CODEX_HOME:-$HOME/.codex}/config.toml. When you
-need a per-dispatch effort, use: crew-codex task --effort <e> ...
+Flag crew-codex adds on top of the companion:
+  --effort <none|minimal|low|medium|high|xhigh>
+                                per-dispatch reasoning effort. codex-companion
+                                still does not parse this — crew-codex routes
+                                the dispatch to its own driver
+                                (lib/review-with-effort.mjs), which composes the
+                                codex plugin's exported modules and threads the
+                                effort into the turn the companion leaves null.
+                                The driver also detaches properly under
+                                --background and stamps effort + model into the
+                                job record, which vendor review records lack.
+
+Validator ceiling is xhigh — the registry's max/ultra tiers are refused here.
+Practical FLOOR on the gpt-5.6 family (sol/terra/luna) is low: 5.6 models
+return a 400 on reasoning.effort for 'none' and 'minimal', so those two are
+accepted (other model families may take them) but warned about, and the job
+fails at the API rather than in the wrapper.
+
+WITHOUT --effort this is a verbatim codex-companion passthrough and the turn
+runs at model_reasoning_effort from ${CODEX_HOME:-$HOME/.codex}/config.toml.
 USAGE
+  else
+    cat <<USAGE
+  [focus text]                  every remaining word becomes the review focus
+
+The native review path accepts NO --effort flag. It runs through the
+companion's built-in reviewer (runAppServerReview), a different code path that
+crew-codex's effort driver does not model, and unknown arguments there are not
+rejected — they are folded into the review request — so an --effort flag would
+change the request and never the reasoning effort. Use
+'crew-codex adversarial-review --effort <e>' for per-dispatch effort, or set
+model_reasoning_effort in ${CODEX_HOME:-$HOME/.codex}/config.toml.
+USAGE
+  fi
 }
 
 task_usage() {
@@ -74,8 +114,10 @@ Flags codex-companion parses on the task path:
   --prompt-file <path>          read the prompt from a file
   [prompt]                      every remaining word becomes the prompt
 
-Unlike the review path, task DOES accept --effort, so this is the only
-dispatch mode with per-job control over reasoning effort.
+Unlike the native review path, task DOES accept --effort — codex-companion
+parses it here itself. The other dispatch mode with per-job effort control is
+'crew-codex adversarial-review --effort <e>', which crew-codex drives itself
+because the companion cannot set effort on a review.
 USAGE
 }
 
@@ -83,6 +125,12 @@ if [[ $# -eq 0 || "${1:-}" == "--help" || "${1:-}" == "-h" || "${1:-}" == "help"
   crew_usage
   exit 0
 fi
+
+# Set by the review guard below and read by the effort-routing block after the
+# companion is resolved. Declared here because `set -u` is on and the guard
+# only runs for the two review subcommands.
+REVIEW_EFFORT=""
+REVIEW_EFFORT_SEEN=0
 
 if [[ "$1" == "review" || "$1" == "adversarial-review" ]]; then
   # EXACT matches only, and only for these two subcommands. Focus text is free
@@ -96,15 +144,50 @@ if [[ "$1" == "review" || "$1" == "adversarial-review" ]]; then
       --help|-h|help) review_usage "$1"; exit 0 ;;
     esac
   done
+  # Collect --effort in BOTH spellings, last occurrence wins — the same rule
+  # the companion's own parser applies, so what we validate and route on is
+  # what would actually take effect.
+  effort_pending=0
   for arg in "$@"; do
+    if [[ $effort_pending -eq 1 ]]; then
+      REVIEW_EFFORT="$arg"
+      effort_pending=0
+      continue
+    fi
     case "$arg" in
-      --effort|--effort=*)
-        echo "crew-codex: $1 does not accept --effort. codex-companion has no such option on the review path, so '$arg' would be swallowed into the review's focus text and the turn would still run at the config's reasoning effort — silently wrong, not an error." >&2
-        echo "crew-codex: set model_reasoning_effort in ${CODEX_HOME:-$HOME/.codex}/config.toml, or use 'crew-codex task --effort <e>' (the task path does support it)." >&2
+      --effort) effort_pending=1; REVIEW_EFFORT_SEEN=1 ;;
+      --effort=*) REVIEW_EFFORT="${arg#--effort=}"; REVIEW_EFFORT_SEEN=1 ;;
+    esac
+  done
+  if [[ $effort_pending -eq 1 ]]; then
+    echo "crew-codex: --effort was given without a value." >&2
+    exit 2
+  fi
+
+  # The native reviewer is a DIFFERENT companion code path (runAppServerReview,
+  # companion:1002) that takes a review target rather than a prompt+turn, so
+  # crew-codex's effort driver does not model it. Refuse rather than pretend.
+  if [[ $REVIEW_EFFORT_SEEN -eq 1 && "$1" == "review" ]]; then
+    echo "crew-codex: review does not accept --effort. The native reviewer runs through codex-companion's runAppServerReview path, which takes no reasoning effort, and unknown arguments there are folded into the review request instead of rejected — so '--effort $REVIEW_EFFORT' would change the request and the turn would still run at the config's effort. Silently wrong, not an error." >&2
+    echo "crew-codex: --effort IS supported on 'crew-codex adversarial-review --effort <e>' (crew-codex drives that turn itself). Otherwise set model_reasoning_effort in ${CODEX_HOME:-$HOME/.codex}/config.toml, or use 'crew-codex task --effort <e>'." >&2
+    exit 2
+  fi
+
+  # Validated here, before the companion is resolved and long before anything
+  # is dispatched, so a typo costs nothing. The driver re-validates against the
+  # same list; this copy exists so `--effort bogus` never reaches node at all.
+  # Ceiling is xhigh on purpose — the registry's max/ultra tiers are untested
+  # through this path and the driver bypasses the vendor's own validator.
+  if [[ $REVIEW_EFFORT_SEEN -eq 1 ]]; then
+    case "$REVIEW_EFFORT" in
+      none|minimal|low|medium|high|xhigh) ;;
+      *)
+        echo "crew-codex: invalid --effort '$REVIEW_EFFORT'. Valid values: none|minimal|low|medium|high|xhigh." >&2
+        echo "crew-codex: xhigh is the ceiling through this plugin — the registry's max/ultra tiers are not accepted here." >&2
         exit 2
         ;;
     esac
-  done
+  fi
 fi
 
 if [[ "$1" == "task" ]]; then
@@ -809,6 +892,26 @@ PY
   exit 0
 fi
 
+# ---- effort routing: adversarial-review --effort runs on our own driver ----
+# Default is unchanged: RUN_CMD is the verbatim companion passthrough, so a
+# dispatch WITHOUT --effort behaves exactly as it always has. Only
+# `adversarial-review --effort <e>` diverges, and it diverges to a driver that
+# re-composes the companion's own exported modules — no vendor file is patched.
+# Everything downstream (capacity retry, dispatch stamping, output passthrough)
+# is shared, so the driver inherits it for free.
+RUN_CMD=(node "$COMPANION" "$@")
+if [[ $REVIEW_EFFORT_SEEN -eq 1 && "${1:-}" == "adversarial-review" ]]; then
+  DRIVER="$CREW_LIB_DIR/review-with-effort.mjs"
+  if [[ ! -f "$DRIVER" ]]; then
+    echo "crew-codex: effort driver missing at $DRIVER — codex-crew is installed incompletely. Re-run without --effort to use the vendor review path (it runs at the config's model_reasoning_effort)." >&2
+    exit 1
+  fi
+  # $1 is dropped: the driver only ever runs adversarial reviews. Everything
+  # else forwards verbatim, --effort included — the driver parses it the same
+  # way the companion's parser would.
+  RUN_CMD=(node "$DRIVER" --plugin-root "$COMPANION_ROOT" "${@:2}")
+fi
+
 # Bounded retry on model-capacity rejection. The capacity error is an
 # admission-time rejection (the turn never starts), so retrying is write-safe.
 # Jittered backoff so parallel fan-outs don't thundering-herd the quota window.
@@ -823,7 +926,7 @@ trap 'rm -f "$TMP_OUT" "$TMP_ERR"' EXIT
 attempt=1
 while :; do
   rc=0
-  node "$COMPANION" "$@" >"$TMP_OUT" 2>"$TMP_ERR" || rc=$?
+  "${RUN_CMD[@]}" >"$TMP_OUT" 2>"$TMP_ERR" || rc=$?
 
   if [[ $rc -eq 0 ]] || ! grep -qi "$CAPACITY_PATTERN" "$TMP_OUT" "$TMP_ERR"; then
     break
@@ -912,9 +1015,11 @@ def config_effort(path):
 
 effort_requested = flag_value("--effort")
 effort_config = config_effort(os.environ["CREW_STAMP_CONFIG"])
-# --effort is a real option on the task path only; on a review it is swallowed
-# into the focus text (and crew-codex rejects it before we ever get here).
-from_flag = subcommand == "task" and effort_requested is not None
+# --effort really takes effect on two paths: `task` (codex-companion parses it)
+# and `adversarial-review` (crew-codex's own driver threads it into the turn).
+# On the native `review` path it does not exist at all, and crew-codex rejects
+# it before we ever get here — so there it can only be config-sourced.
+from_flag = subcommand in ("task", "adversarial-review") and effort_requested is not None
 record = {
     "jobId": os.environ["CREW_STAMP_JOB_ID"],
     "subcommand": subcommand,

@@ -1,6 +1,6 @@
 ---
 name: codex-reviewer
-description: Get a read-only Codex review or diagnosis - diff/branch code reviews, adversarial reviews, or ad-hoc read-only analysis on GPT-5.6 Sol (flagship tier) at xhigh effort - through the shared codex-companion runtime. Use for a second-model review pass or an independent root-cause read. Never writes to the repository.
+description: Get a read-only Codex review or diagnosis - diff/branch code reviews, adversarial reviews, or ad-hoc read-only analysis on GPT-5.6 Sol (flagship tier) at caller-chosen effort (default `high`) - through the shared codex-companion runtime. Use for a second-model review pass or an independent root-cause read. Never writes to the repository.
 model: sonnet
 tools: Bash
 skills:
@@ -23,9 +23,10 @@ Command selection — pick ONE launch command for the request:
   with any stated focus as the trailing text.
 - Any other read-only ask (diagnosis, root-cause analysis, architecture
   read, research):
-  `crew-codex task --background --model gpt-5.6-sol --effort xhigh "<task text>"`.
-  Never add `--write`. Override model/effort pins only when the request
-  explicitly names them (`spark` maps to `--model gpt-5.3-codex-spark`).
+  `crew-codex task --background --model gpt-5.6-sol --effort <level> "<task text>"`.
+  ⚠️ Take `<level>` from the request; if it names none, use `high`. Ladder:
+  `low | medium | high | xhigh`. Never add `--write`. Override the model pin only
+  when the request explicitly names it (`spark` maps to `--model gpt-5.3-codex-spark`).
 
 Forwarding rules:
 

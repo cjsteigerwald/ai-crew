@@ -368,13 +368,18 @@ out="$(run_guard review --base main help)" && rc=0 || rc=$?
 check "bare 'help' among review args exits 0" 0 "NO --effort flag" "$rc" "$out"
 check_no_dispatch "review help did not dispatch" "$INVOKED"
 
-# Case 25: --effort on the review path is refused loudly, exit 2, no dispatch
-out="$(run_guard adversarial-review --effort high)" && rc=0 || rc=$?
+# Case 25: --effort on the NATIVE review path is still refused loudly, exit 2,
+# no dispatch. `review` maps to the companion's runAppServerReview path, which
+# crew-codex's effort driver does not model — so unlike adversarial-review it
+# cannot be honored, and pretending otherwise would be the silent-wrongness bug
+# this guard exists to prevent. (adversarial-review --effort now ROUTES instead
+# of refusing; that is covered by the effort-driver cases further down.)
+out="$(run_guard review --effort high)" && rc=0 || rc=$?
 check "review --effort refused" 2 "does not accept --effort" "$rc" "$out"
-check "review --effort names the working alternative" 2 "crew-codex task --effort" "$rc" "$out"
+check "review --effort names the working alternative" 2 "adversarial-review --effort" "$rc" "$out"
 check_no_dispatch "review --effort did not dispatch" "$INVOKED"
 
-out="$(run_guard adversarial-review --effort=xhigh "focus")" && rc=0 || rc=$?
+out="$(run_guard review --effort=xhigh "focus")" && rc=0 || rc=$?
 check "review --effort=<v> refused" 2 "does not accept --effort" "$rc" "$out"
 check_no_dispatch "review --effort=<v> did not dispatch" "$INVOKED"
 
@@ -643,6 +648,402 @@ if ! grep -qE "broker|socket|state summary" <<<"$out"; then
 else
   echo "FAIL: plain reap leaked the opt-in sweeps"; fail=$((fail + 1))
 fi
+
+# --- effort driver: adversarial-review --effort runs on crew-codex's own -----
+# driver, which composes the codex plugin's EXPORTED modules instead of
+# patching them. The whole tree below is a STUB vendor plugin: no test here may
+# dispatch a real Codex job, so the stubbed runAppServerTurn records the options
+# object it was handed and returns a canned result. "effort actually reached
+# runAppServerTurn" is the assertion the entire feature rests on.
+mkdir -p "$TMP/effort/plugins" "$TMP/effort/install/scripts/lib" \
+         "$TMP/effort/install/prompts" "$TMP/effort/install/schemas" \
+         "$TMP/effort/install/.claude-plugin" "$TMP/effort/codex-home"
+echo "{\"version\":2,\"plugins\":{\"codex@openai-codex\":[{\"installPath\":\"$TMP/effort/install\"}]}}" > "$TMP/effort/plugins/installed_plugins.json"
+printf 'model_reasoning_effort = "medium"\n' > "$TMP/effort/codex-home/config.toml"
+echo '{"name":"codex","version":"9.9.9-stub"}' > "$TMP/effort/install/.claude-plugin/plugin.json"
+printf 'KIND={{REVIEW_KIND}} TARGET={{TARGET_LABEL}} FOCUS={{USER_FOCUS}} GUIDE={{REVIEW_COLLECTION_GUIDANCE}} INPUT={{REVIEW_INPUT}}\n' \
+  > "$TMP/effort/install/prompts/adversarial-review.md"
+echo '{"title":"stub-review-schema","type":"object"}' > "$TMP/effort/install/schemas/review-output.schema.json"
+
+# The companion stub records every invocation, so "routed to the driver, NOT to
+# the vendor" is an assertion about this file staying empty.
+cat > "$TMP/effort/install/scripts/codex-companion.mjs" <<'EOF'
+import fs from "node:fs";
+fs.appendFileSync(process.env.CREW_TEST_INVOKED, process.argv.slice(2).join("|") + "\n");
+console.log("COMPANION-RAN:" + process.argv.slice(2).join("|"));
+EOF
+
+cat > "$TMP/effort/install/scripts/lib/git.mjs" <<'EOF'
+export function resolveReviewTarget(cwd, options = {}) {
+  const base = options.base ?? "main";
+  return { mode: "branch", label: `branch diff against ${base}`, baseRef: base, explicit: true };
+}
+export function collectReviewContext(cwd, target) {
+  return {
+    cwd, repoRoot: cwd, branch: "stub-branch", target, fileCount: 1, diffBytes: 42,
+    inputMode: "inline-diff", collectionGuidance: "STUB-GUIDANCE",
+    content: "STUB-DIFF", summary: "STUB-SUMMARY", changedFiles: []
+  };
+}
+EOF
+
+cat > "$TMP/effort/install/scripts/lib/prompts.mjs" <<'EOF'
+import fs from "node:fs";
+import path from "node:path";
+export function loadPromptTemplate(rootDir, name) {
+  return fs.readFileSync(path.join(rootDir, "prompts", `${name}.md`), "utf8");
+}
+export function interpolateTemplate(template, variables) {
+  return template.replace(/\{\{([A-Z_]+)\}\}/g, (_, key) =>
+    Object.prototype.hasOwnProperty.call(variables, key) ? variables[key] : "");
+}
+EOF
+
+cat > "$TMP/effort/install/scripts/lib/codex.mjs" <<'EOF'
+import fs from "node:fs";
+export async function runAppServerTurn(cwd, options = {}) {
+  fs.writeFileSync(process.env.CREW_TEST_TURN_RECORD, JSON.stringify({
+    cwd,
+    prompt: options.prompt ?? null,
+    model: options.model ?? null,
+    sandbox: options.sandbox ?? null,
+    effort: options.effort ?? null,
+    outputSchemaNull: options.outputSchema == null,
+    outputSchemaTitle: (options.outputSchema && options.outputSchema.title) || null,
+    hasOnProgress: typeof options.onProgress === "function"
+  }, null, 2));
+  options.onProgress?.({ message: "stub turn running" });
+  return {
+    status: 0, threadId: "th-stub", turnId: "tu-stub",
+    finalMessage: JSON.stringify({ summary: "stub review summary", findings: [] }),
+    reasoningSummary: null, stderr: "", error: null
+  };
+}
+export function readOutputSchema(schemaPath) {
+  return JSON.parse(fs.readFileSync(schemaPath, "utf8"));
+}
+export function parseStructuredOutput(rawOutput, fallback = {}) {
+  try { return { parsed: JSON.parse(rawOutput), parseError: null, rawOutput, ...fallback }; }
+  catch (error) { return { parsed: null, parseError: error.message, rawOutput, ...fallback }; }
+}
+EOF
+
+cat > "$TMP/effort/install/scripts/lib/render.mjs" <<'EOF'
+export function renderReviewResult(parsedResult, meta) {
+  return `RENDERED ${meta.reviewLabel} :: ${meta.targetLabel} :: ${parsedResult.parsed?.summary ?? parsedResult.parseError}\n`;
+}
+EOF
+
+cat > "$TMP/effort/install/scripts/lib/workspace.mjs" <<'EOF'
+export function resolveWorkspaceRoot(cwd) { return cwd; }
+EOF
+
+cat > "$TMP/effort/install/scripts/lib/state.mjs" <<'EOF'
+import fs from "node:fs";
+import path from "node:path";
+const dir = process.env.CREW_TEST_STATE_DIR;
+fs.mkdirSync(dir, { recursive: true });
+export function generateJobId(prefix = "job") {
+  return `${prefix}-stub-${process.env.CREW_TEST_JOB_SUFFIX ?? "default"}`;
+}
+export function upsertJob(cwd, jobPatch) {
+  fs.appendFileSync(path.join(dir, "upserts.jsonl"), JSON.stringify(jobPatch) + "\n");
+}
+export function writeJobFile(cwd, jobId, payload) {
+  const jobFile = path.join(dir, `${jobId}.json`);
+  fs.writeFileSync(jobFile, JSON.stringify(payload, null, 2));
+  return jobFile;
+}
+EOF
+
+cat > "$TMP/effort/install/scripts/lib/tracked-jobs.mjs" <<'EOF'
+import fs from "node:fs";
+import path from "node:path";
+import { upsertJob, writeJobFile } from "./state.mjs";
+export function appendLogLine(logFile, message) {
+  if (!logFile || !String(message ?? "").trim()) return;
+  fs.appendFileSync(logFile, `${String(message).trim()}\n`);
+}
+export function createJobLogFile(workspaceRoot, jobId, title) {
+  const dir = process.env.CREW_TEST_STATE_DIR;
+  fs.mkdirSync(dir, { recursive: true });
+  const logFile = path.join(dir, `${jobId}.log`);
+  fs.writeFileSync(logFile, "");
+  if (title) appendLogLine(logFile, `Starting ${title}.`);
+  return logFile;
+}
+export function createJobRecord(base) {
+  return { ...base, createdAt: new Date().toISOString() };
+}
+export function createJobProgressUpdater() { return () => {}; }
+export function createProgressReporter({ logFile = null, onEvent = null } = {}) {
+  return (event) => {
+    appendLogLine(logFile, typeof event === "string" ? event : event?.message);
+    onEvent?.(event);
+  };
+}
+export async function runTrackedJob(job, runner, options = {}) {
+  const running = { ...job, status: "running", pid: process.pid, logFile: options.logFile ?? job.logFile ?? null };
+  writeJobFile(job.workspaceRoot, job.id, running);
+  upsertJob(job.workspaceRoot, running);
+  try {
+    const execution = await runner();
+    writeJobFile(job.workspaceRoot, job.id, {
+      ...running,
+      status: execution.exitStatus === 0 ? "completed" : "failed",
+      threadId: execution.threadId ?? null,
+      result: execution.payload,
+      rendered: execution.rendered
+    });
+    return execution;
+  } catch (error) {
+    writeJobFile(job.workspaceRoot, job.id, {
+      ...running, status: "failed", errorMessage: error?.message ?? String(error)
+    });
+    throw error;
+  }
+}
+EOF
+
+INVOKED_E="$TMP/effort/invoked.log"
+STATE_E="$TMP/effort/state"
+ARC_E="$TMP/effort/archive"
+mkdir -p "$STATE_E" "$ARC_E"
+
+run_effort() {
+  : > "$INVOKED_E"
+  rm -f "$TMP/effort/turn.json"
+  CLAUDE_CONFIG_DIR="$TMP/effort" CREW_TEST_INVOKED="$INVOKED_E" \
+  CREW_TEST_TURN_RECORD="$TMP/effort/turn.json" CREW_TEST_STATE_DIR="$STATE_E" \
+  CREW_CODEX_ARCHIVE_DIR="$ARC_E" CODEX_HOME="$TMP/effort/codex-home" \
+  CREW_CODEX_RETRY_DELAYS="0" bash "$CREW" "$@" 2>&1
+}
+
+# Case 41: THE assertion — --effort reaches runAppServerTurn, alongside the
+# model, a read-only sandbox and a non-null output schema. Without this the
+# feature is unproven: the flag could be parsed, stamped and still dropped.
+out="$(run_effort adversarial-review --effort xhigh --model gpt-5.6-sol "focus words")" && rc=0 || rc=$?
+check "effort dispatch renders the review" 0 "RENDERED Adversarial Review" "$rc" "$out"
+check_no_dispatch "effort dispatch bypassed the vendor companion" "$INVOKED_E"
+if python3 -c "
+import json
+t = json.load(open('$TMP/effort/turn.json'))
+assert t['effort'] == 'xhigh', t
+assert t['model'] == 'gpt-5.6-sol', t
+assert t['sandbox'] == 'read-only', t
+assert t['outputSchemaNull'] is False, t
+assert t['outputSchemaTitle'] == 'stub-review-schema', t
+assert t['hasOnProgress'] is True, t
+"; then
+  echo "PASS: effort/model/sandbox/schema all reached runAppServerTurn"; pass=$((pass + 1))
+else
+  echo "FAIL: runAppServerTurn options wrong ($(cat "$TMP/effort/turn.json" 2>/dev/null))"; fail=$((fail + 1))
+fi
+
+# Case 42: the prompt is the vendor's template with all five variables bound —
+# same target resolution, same collection guidance, same diff, same focus text.
+if python3 -c "
+import json
+p = json.load(open('$TMP/effort/turn.json'))['prompt']
+assert 'KIND=Adversarial Review' in p, p
+assert 'TARGET=branch diff against main' in p, p
+assert 'FOCUS=focus words' in p, p
+assert 'GUIDE=STUB-GUIDANCE' in p, p
+assert 'INPUT=STUB-DIFF' in p, p
+"; then
+  echo "PASS: prompt bound all five vendor template variables"; pass=$((pass + 1))
+else
+  echo "FAIL: prompt interpolation diverged from the vendor"; fail=$((fail + 1))
+fi
+
+# Case 43: the job record carries the effort and model. Vendor review records
+# carry neither, so this record is the only audit trail of what a review ran at.
+if python3 -c "
+import json
+j = json.load(open('$STATE_E/review-stub-default.json'))
+assert j['effort'] == 'xhigh', j
+assert j['model'] == 'gpt-5.6-sol', j
+assert j['kind'] == 'adversarial-review', j
+assert j['kindLabel'] == 'adversarial-review', j
+assert j['jobClass'] == 'review', j
+assert j['title'] == 'Codex Adversarial Review', j
+assert j['id'].startswith('review-'), j
+assert j['codexPluginVersion'] == '9.9.9-stub', j
+assert j['status'] == 'completed', j
+assert j['result']['dispatch']['effort'] == 'xhigh', j
+"; then
+  echo "PASS: job record stamps effort, model and the vendor job shape"; pass=$((pass + 1))
+else
+  echo "FAIL: job record missing effort/model or vendor shape"; fail=$((fail + 1))
+fi
+
+# Case 44: the dispatch.json sidecar still lands, and now attributes the effort
+# to the FLAG rather than to the codex config.
+if python3 -c "
+import json
+d = json.load(open('$ARC_E/review-stub-default.dispatch.json'))
+assert d['subcommand'] == 'adversarial-review', d
+assert d['effortRequested'] == 'xhigh', d
+assert d['effortEffective'] == 'xhigh', d
+assert d['effortConfig'] == 'medium', d
+assert d['effortSource'] == 'flag', d
+assert d['model'] == 'gpt-5.6-sol', d
+"; then
+  echo "PASS: sidecar records flag-sourced review effort"; pass=$((pass + 1))
+else
+  echo "FAIL: sidecar wrong for an --effort review"; fail=$((fail + 1))
+fi
+
+# Case 45: every valid effort is accepted and threaded through verbatim.
+for e in none minimal low medium high xhigh; do
+  out="$(run_effort adversarial-review --effort "$e" --model gpt-5.4-legacy "focus")" && rc=0 || rc=$?
+  got="$(python3 -c "import json; print(json.load(open('$TMP/effort/turn.json'))['effort'])" 2>/dev/null || echo MISSING)"
+  check "effort $e threaded to the turn" 0 "^$e\$" "$rc" "$got"
+done
+
+# Case 46: an invalid effort is refused before anything runs — including the
+# registry's max/ultra tiers, which the vendor validator would also refuse but
+# this driver bypasses.
+for bad in max ultra bogus; do
+  out="$(run_effort adversarial-review --effort "$bad" "focus")" && rc=0 || rc=$?
+  check "effort $bad refused" 2 "invalid --effort" "$rc" "$out"
+  check_no_dispatch "effort $bad did not reach the companion" "$INVOKED_E"
+  if [[ ! -f "$TMP/effort/turn.json" ]]; then
+    echo "PASS: effort $bad started no turn"; pass=$((pass + 1))
+  else
+    echo "FAIL: effort $bad started a turn"; fail=$((fail + 1))
+  fi
+done
+out="$(run_effort adversarial-review --effort)" && rc=0 || rc=$?
+check "bare --effort with no value refused" 2 "without a value" "$rc" "$out"
+check_no_dispatch "valueless --effort did not dispatch" "$INVOKED_E"
+
+# Case 47: none/minimal are ACCEPTED (the runtime takes them) but warned about
+# on gpt-5.6 models, which 400 on reasoning.effort for those two values. The
+# warning must not block: other model families may accept them.
+out="$(run_effort adversarial-review --effort minimal --model gpt-5.6-terra "focus")" && rc=0 || rc=$?
+check "minimal on a 5.6 model warns" 0 "rejected by the GPT-5.6 family" "$rc" "$out"
+check "minimal on a 5.6 model still dispatches" 0 "RENDERED Adversarial Review" "$rc" "$out"
+out="$(run_effort adversarial-review --effort none "focus")" && rc=0 || rc=$?
+check "none with no --model warns (config default is 5.6)" 0 "no --model given" "$rc" "$out"
+out="$(run_effort adversarial-review --effort low --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+if ! grep -q "GPT-5.6 family" <<<"$out"; then
+  echo "PASS: low on a 5.6 model warns about nothing"; pass=$((pass + 1))
+else
+  echo "FAIL: low on a 5.6 model warned spuriously"; fail=$((fail + 1))
+fi
+
+# Case 48: WITHOUT --effort the dispatch is an unchanged vendor passthrough.
+# This is the blast-radius assertion: the default path must not move at all.
+out="$(run_effort adversarial-review --base main "focus words")" && rc=0 || rc=$?
+check "no --effort still goes to the companion" 0 "COMPANION-RAN:adversarial-review|--base|main|focus words" "$rc" "$out"
+if [[ ! -f "$TMP/effort/turn.json" ]]; then
+  echo "PASS: no --effort never touched the driver"; pass=$((pass + 1))
+else
+  echo "FAIL: no --effort was routed to the driver"; fail=$((fail + 1))
+fi
+
+# Case 49: a vendor rename is LOUD and never falls through to the vendor path.
+# Silently falling back would run a review at the config's effort while the
+# caller believed it ran at theirs — the exact failure this driver prevents.
+cp -r "$TMP/effort/install" "$TMP/effort/broken-install"
+cat > "$TMP/effort/broken-install/scripts/lib/render.mjs" <<'EOF'
+export function renderSomethingElse() { return "renamed upstream"; }
+EOF
+mkdir -p "$TMP/broken/plugins"
+echo "{\"version\":2,\"plugins\":{\"codex@openai-codex\":[{\"installPath\":\"$TMP/effort/broken-install\"}]}}" > "$TMP/broken/plugins/installed_plugins.json"
+: > "$INVOKED_E"
+rm -f "$TMP/effort/turn.json"
+out="$(CLAUDE_CONFIG_DIR="$TMP/broken" CREW_TEST_INVOKED="$INVOKED_E" \
+  CREW_TEST_TURN_RECORD="$TMP/effort/turn.json" CREW_TEST_STATE_DIR="$STATE_E" \
+  CREW_CODEX_ARCHIVE_DIR="$ARC_E" CODEX_HOME="$TMP/effort/codex-home" \
+  CREW_CODEX_RETRY_DELAYS="0" bash "$CREW" adversarial-review --effort high "focus" 2>&1)" && rc=0 || rc=$?
+check "missing export fails nonzero" 3 "does not export .renderReviewResult." "$rc" "$out"
+check "missing export names the plugin version" 3 "codex@openai-codex 9.9.9-stub" "$rc" "$out"
+check "missing export names the module" 3 "scripts/lib/render.mjs" "$rc" "$out"
+check "missing export tells the caller how to proceed" 3 "re-run WITHOUT --effort" "$rc" "$out"
+check "missing export refuses to fall back" 3 "refusing to fall back automatically" "$rc" "$out"
+check_no_dispatch "missing export did not fall through to the vendor" "$INVOKED_E"
+if [[ ! -f "$TMP/effort/turn.json" ]]; then
+  echo "PASS: missing export started no turn"; pass=$((pass + 1))
+else
+  echo "FAIL: missing export still started a turn"; fail=$((fail + 1))
+fi
+
+# Case 51: a vendor field rename that keeps the SYMBOL but drops the DATA is
+# refused before any turn starts. This is the nastiest failure mode the driver
+# has: every import succeeds, so the presence check passes, REVIEW_INPUT
+# interpolates to "", and the model is asked to adversarially review nothing.
+# It would answer "no findings" — rendering as a CLEAN PASS. A review gate that
+# silently approves on breakage is worse than one that errors.
+cp -r "$TMP/effort/install" "$TMP/effort/hollow-install"
+cat > "$TMP/effort/hollow-install/scripts/lib/git.mjs" <<'EOF'
+export function resolveReviewTarget(cwd, options = {}) {
+  const base = options.base ?? "main";
+  return { mode: "branch", label: `branch diff against ${base}`, baseRef: base, explicit: true };
+}
+// Symbol intact, shape changed: `content` renamed upstream to `reviewBody`.
+export function collectReviewContext(cwd, target) {
+  return {
+    cwd, repoRoot: cwd, branch: "stub-branch", target, fileCount: 1, diffBytes: 42,
+    inputMode: "inline-diff", collectionGuidance: "STUB-GUIDANCE",
+    reviewBody: "STUB-DIFF", summary: "STUB-SUMMARY", changedFiles: []
+  };
+}
+EOF
+mkdir -p "$TMP/hollow/plugins"
+echo "{\"version\":2,\"plugins\":{\"codex@openai-codex\":[{\"installPath\":\"$TMP/effort/hollow-install\"}]}}" > "$TMP/hollow/plugins/installed_plugins.json"
+: > "$INVOKED_E"
+rm -f "$TMP/effort/turn.json"
+out="$(CLAUDE_CONFIG_DIR="$TMP/hollow" CREW_TEST_INVOKED="$INVOKED_E" \
+  CREW_TEST_TURN_RECORD="$TMP/effort/turn.json" CREW_TEST_STATE_DIR="$STATE_E" \
+  CREW_TEST_JOB_SUFFIX="hollow" CREW_CODEX_ARCHIVE_DIR="$ARC_E" \
+  CODEX_HOME="$TMP/effort/codex-home" CREW_CODEX_RETRY_DELAYS="0" \
+  bash "$CREW" adversarial-review --effort xhigh "focus" 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" != "0" ]] && grep -q 'no usable "content"' <<<"$out"; then
+  echo "PASS: hollow context refused, naming the missing field"; pass=$((pass + 1))
+else
+  echo "FAIL: hollow context not refused (exit=$rc; output: $out)"; fail=$((fail + 1))
+fi
+check "hollow context explains the clean-review hazard" "$rc" "indistinguishable from a clean review" "$rc" "$out"
+if [[ ! -f "$TMP/effort/turn.json" ]]; then
+  echo "PASS: hollow context started no turn"; pass=$((pass + 1))
+else
+  echo "FAIL: hollow context still started a turn"; fail=$((fail + 1))
+fi
+check_no_dispatch "hollow context did not fall through to the vendor" "$INVOKED_E"
+
+# Case 50: --background detaches. The parent must return a job id immediately
+# and exit; the child does the turn. This is why the driver exists at all for
+# background dispatches — the vendor's adversarial-review is foreground-only,
+# so a Bash call to it dies at the 120s tool timeout and orphans the review.
+: > "$INVOKED_E"
+rm -f "$TMP/effort/turn.json"
+out="$(CLAUDE_CONFIG_DIR="$TMP/effort" CREW_TEST_INVOKED="$INVOKED_E" \
+  CREW_TEST_TURN_RECORD="$TMP/effort/turn.json" CREW_TEST_STATE_DIR="$STATE_E" \
+  CREW_TEST_JOB_SUFFIX="bg" CREW_CODEX_ARCHIVE_DIR="$ARC_E" \
+  CODEX_HOME="$TMP/effort/codex-home" CREW_CODEX_RETRY_DELAYS="0" \
+  bash "$CREW" adversarial-review --background --effort high "focus" 2>&1)" && rc=0 || rc=$?
+check "background returns a job id" 0 "started in the background as review-stub-bg" "$rc" "$out"
+waited=0
+while [[ $waited -lt 30 ]]; do
+  if [[ -f "$TMP/effort/turn.json" ]]; then break; fi
+  sleep 1; waited=$((waited + 1))
+done
+if python3 -c "
+import json
+t = json.load(open('$TMP/effort/turn.json'))
+assert t['effort'] == 'high', t
+j = json.load(open('$STATE_E/review-stub-bg.json'))
+assert j['status'] == 'completed', j
+assert j['effort'] == 'high', j
+" 2>/dev/null; then
+  echo "PASS: detached worker ran the turn at the requested effort (${waited}s)"; pass=$((pass + 1))
+else
+  echo "FAIL: detached worker did not complete (${waited}s; turn: $(cat "$TMP/effort/turn.json" 2>/dev/null))"; fail=$((fail + 1))
+fi
+check_no_dispatch "background dispatch bypassed the vendor companion" "$INVOKED_E"
+
 
 echo
 echo "$pass passed, $fail failed"
