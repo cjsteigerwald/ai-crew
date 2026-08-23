@@ -523,13 +523,29 @@ if not os.path.isdir(root):
     print(f"reap: no state dir at {root}")
     raise SystemExit(0)
 stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-for state_dir in sorted(os.listdir(root)):
+try:
+    state_dirs = sorted(os.listdir(root))
+except OSError as exc:
+    print(f"reap: cannot list {root} ({exc.__class__.__name__}) — nothing swept")
+    raise SystemExit(0)
+for state_dir in state_dirs:
     ws = os.path.join(root, state_dir)
     jobs_dir = os.path.join(ws, "jobs")
     if not os.path.isdir(jobs_dir):
         continue
     jobs = {}
-    for name in sorted(os.listdir(jobs_dir)):
+    # Pre-existing bug, found by a permission-denied test: an unreadable jobs
+    # dir raised PermissionError out of the sweep and killed plain `reap`
+    # outright. Skip it loudly instead. It stays BLOCKING for the --brokers
+    # gate, which does its own pessimistic pass -- unreadable must never read
+    # as "no live jobs" in front of a kill.
+    try:
+        job_names = sorted(os.listdir(jobs_dir))
+    except OSError as exc:
+        print(f"skipped: {state_dir}/jobs unreadable ({exc.__class__.__name__})")
+        skipped += 1
+        continue
+    for name in job_names:
         if name.endswith(".json"):
             path = os.path.join(jobs_dir, name)
             try:
@@ -631,7 +647,18 @@ for name in names:
     # Skipping the workspace here would bypass the union entirely in exactly the
     # split-brain case the union exists for -- and this gate stands in front of
     # a KILL.
-    for entry in sorted(os.listdir(jobs_dir) if os.path.isdir(jobs_dir) else []):
+    #
+    # ⚠️ os.path.isdir/isfile also return False when the path exists but cannot
+    # be TRAVERSED (permission denied), which makes "unreadable" and "absent"
+    # indistinguishable. Absent is safe; unreadable is not. So every listing and
+    # every read below is wrapped, and any failure adds a BLOCKING entry rather
+    # than being silently treated as an empty registry.
+    try:
+        entries = sorted(os.listdir(jobs_dir)) if os.path.exists(jobs_dir) else []
+    except OSError as exc:
+        live.append(f"{name}/jobs(unlistable: {exc.__class__.__name__})")
+        entries = []
+    for entry in entries:
         if not entry.endswith(".json"):
             continue
         try:
@@ -654,18 +681,32 @@ for name in names:
     # pessimistic union before its (merely destructive-to-history) prune; the
     # kill path must be at least as careful.
     state_path = os.path.join(root, name, "state.json")
-    if os.path.isfile(state_path):
+    if os.path.exists(state_path):
         try:
             with open(state_path) as f:
                 data = json.load(f)
         except Exception:
             live.append(f"{name}/state.json(unreadable)")
         else:
-            entries = data if isinstance(data, list) else (data or {}).get("jobs", [])
-            if isinstance(entries, list):
-                for e in entries:
-                    if isinstance(e, dict) and e.get("status") not in TERMINAL:
-                        live.append(f"{name}/{e.get('id', '?')}({e.get('status')})")
+            # ⚠️ Only two shapes are understood: a bare list, or {"jobs": [...]}.
+            # ANY other shape blocks. Previously a non-list `jobs` value -- e.g.
+            # {"jobs": {"id": "live", "status": "running"}} -- fell through the
+            # isinstance check and was silently read as an empty registry, which
+            # opens a KILL gate on a workspace we cannot actually parse.
+            if isinstance(data, list):
+                state_entries = data
+            elif isinstance(data, dict) and isinstance(data.get("jobs"), list):
+                state_entries = data["jobs"]
+            elif isinstance(data, dict) and "jobs" not in data and not data:
+                state_entries = []          # genuinely empty object: no jobs
+            else:
+                live.append(f"{name}/state.json(unrecognized schema)")
+                state_entries = []
+            for e in state_entries:
+                if not isinstance(e, dict):
+                    live.append(f"{name}/state.json(non-dict entry)")
+                elif e.get("status") not in TERMINAL:
+                    live.append(f"{name}/{e.get('id', '?')}({e.get('status')})")
 print(" ".join(sorted(set(live))))
 PY
 )"
@@ -1029,6 +1070,12 @@ def flag_value(name):
     i = 0
     while i < len(argv):
         arg = argv[i]
+        # ⚠️ Stop at `--`. Everything after it is literal focus text that the
+        # vendor parser never interprets as flags. Reading past the sentinel
+        # records a "model" or "effort" the dispatch never actually used, so the
+        # audit trail would assert a configuration that did not happen.
+        if arg == "--":
+            break
         if arg == name and i + 1 < len(argv):
             value = argv[i + 1]
             i += 2
@@ -1055,6 +1102,15 @@ def redacted_argv():
     positionals = 0
     while i < len(argv):
         arg = argv[i]
+        # ⚠️ Everything after `--` is focus text, even when it LOOKS like a flag.
+        # `adversarial-review -- --prompt-file /internal/INC-123` passes that path
+        # to the model as prose, and re-parsing it here as routing metadata would
+        # archive an internal path into storage that outlives session cleanup --
+        # exactly the leak this function exists to prevent. Count the rest as
+        # positionals and stop interpreting.
+        if arg == "--":
+            positionals += len(argv) - i - 1
+            break
         if i == 0:
             out.append(arg)          # the subcommand itself
         elif arg in ROUTING_VALUE_FLAGS and i + 1 < len(argv):

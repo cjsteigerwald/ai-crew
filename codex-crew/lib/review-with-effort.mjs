@@ -318,6 +318,33 @@ async function executeAdversarialReviewRun(vendor, request) {
     );
   }
 
+  // fileCount proves a filename EXISTS, not that we have anything to review.
+  // The vendor renders unusable changed files as `(skipped: ...)` markers
+  // (lib/git.mjs:203-219) -- too large, binary, directory, broken symlink. A
+  // working tree holding one untracked text file over the untracked-byte limit
+  // yields fileCount 1, diffBytes 0, inline-diff mode, and content that is
+  // nothing but a skip marker. Both the fileCount check above and the
+  // non-empty-string check below pass, and the model is asked to adversarially
+  // review a list of files it cannot see -- answering "no findings", which
+  // renders as a CLEAN PASS. Same silent-approval hazard, one level down.
+  const skipped = [...String(context.content ?? "").matchAll(/^\(skipped: ([^)]*)\)/gm)];
+  if (skipped.length > 0 && skipped.length >= fileCount) {
+    throw new Error(
+      `every changed file in ${context.target.label} was skipped by the collector ` +
+        `(${skipped.map((m) => m[1]).join("; ")}). There is no reviewable content, so a ` +
+        `review would return "no findings" indistinguishably from a clean review. ` +
+        `Re-run without --effort to use the vendor path, or narrow the target.`
+    );
+  }
+  if (skipped.length > 0) {
+    // Partial skips are legitimate (one binary among ten files), but the
+    // reviewer must be told rather than silently shown less than it thinks.
+    context.collectionGuidance =
+      `${context.collectionGuidance}\n\n⚠️ ${skipped.length} of ${fileCount} changed file(s) ` +
+      `were NOT inlined by the collector (${skipped.map((m) => m[1]).join("; ")}). ` +
+      `Read them directly before concluding anything about them.`;
+  }
+
   for (const [field, value] of [
     ["content", context.content],
     ["collectionGuidance", context.collectionGuidance]
