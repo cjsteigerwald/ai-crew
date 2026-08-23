@@ -8,6 +8,121 @@ CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 INSTALLED_JSON="$CLAUDE_DIR/plugins/installed_plugins.json"
 CODEX_PLUGIN_ID="codex@openai-codex"
 
+# ---- usage guards: a help request must never become a dispatch -------------
+# codex-companion has NO per-subcommand help handler, and its review parser
+# knows only --base/--scope/--model/--cwd (plus --json/--wait/--background);
+# EVERY other argument becomes a positional and is joined into the review's
+# focus text. So `crew-codex adversarial-review --help` used to run a FULL
+# review against the default base `main` — ~10 minutes of wall clock, burned
+# twice on 2026-08-22 — and `--effort high` was swallowed into the prompt
+# while the turn still ran at whatever effort the codex config carried.
+# Both are intercepted here, before the companion is even resolved: printing
+# usage must not depend on the codex plugin being installed.
+crew_usage() {
+  cat <<'USAGE'
+crew-codex <subcommand> [args...]
+
+Subcommands crew-codex handles itself:
+  --resolve                     print the resolved codex-companion.mjs path
+  await <job-id> [--for <s>]    block until the job leaves running — exit 0
+                                completed, 1 failed/cancelled, 2 not found,
+                                3 stale, 4 hung, 10 still running (call again)
+  reap [--dry-run] [--brokers] [--state]
+                                mark stuck job records failed; --brokers also
+                                kills brokers whose --cwd is gone, --state
+                                prunes state dirs for workspaces that are gone
+  --help | -h | help            this text
+
+Everything else (task, review, adversarial-review, status, result, cancel,
+setup, transfer) is forwarded verbatim to the codex plugin's companion
+runtime. Run `crew-codex review --help` for the review path's real flags.
+USAGE
+}
+
+review_usage() {
+  cat <<USAGE
+crew-codex $1 [flags] [focus text]
+
+Flags codex-companion actually parses on the review path:
+  --base <ref>                  diff base (default: main)
+  --scope <auto|working-tree|branch>
+  --model <model>               model override for this review
+  --cwd <path>                  workspace root
+  --json                        machine-readable output
+  --wait | --background         run inline, or detach and return a job id
+  [focus text]                  every remaining word becomes the review focus
+
+The review path accepts NO --effort flag. Unknown arguments are not rejected
+there — they are folded into the focus text — so an --effort flag would change
+the PROMPT and never the reasoning effort. Review effort comes from
+model_reasoning_effort in ${CODEX_HOME:-$HOME/.codex}/config.toml. When you
+need a per-dispatch effort, use: crew-codex task --effort <e> ...
+USAGE
+}
+
+task_usage() {
+  cat <<USAGE
+crew-codex task [flags] [prompt]
+
+Flags codex-companion parses on the task path:
+  --background                  detach and return a job id
+  --write                       allow file writes (default: read-only)
+  --resume-last | --resume | --fresh
+  --model <model|spark>         model override
+  --effort <none|minimal|low|medium|high|xhigh>
+  --cwd <path>                  workspace root
+  --prompt-file <path>          read the prompt from a file
+  [prompt]                      every remaining word becomes the prompt
+
+Unlike the review path, task DOES accept --effort, so this is the only
+dispatch mode with per-job control over reasoning effort.
+USAGE
+}
+
+if [[ $# -eq 0 || "${1:-}" == "--help" || "${1:-}" == "-h" || "${1:-}" == "help" ]]; then
+  crew_usage
+  exit 0
+fi
+
+if [[ "$1" == "review" || "$1" == "adversarial-review" ]]; then
+  # EXACT matches only, and only for these two subcommands. Focus text is free
+  # prose that may legitimately contain the word "help" or a --flag-shaped
+  # token, and rejecting unknown flags wholesale would break dispatches the
+  # companion accepts. Scanning "$@" including $1 is safe — no subcommand
+  # equals an intercepted token. Two passes so --help wins over the --effort
+  # error no matter which comes first.
+  for arg in "$@"; do
+    case "$arg" in
+      --help|-h|help) review_usage "$1"; exit 0 ;;
+    esac
+  done
+  for arg in "$@"; do
+    case "$arg" in
+      --effort|--effort=*)
+        echo "crew-codex: $1 does not accept --effort. codex-companion has no such option on the review path, so '$arg' would be swallowed into the review's focus text and the turn would still run at the config's reasoning effort — silently wrong, not an error." >&2
+        echo "crew-codex: set model_reasoning_effort in ${CODEX_HOME:-$HOME/.codex}/config.toml, or use 'crew-codex task --effort <e>' (the task path does support it)." >&2
+        exit 2
+        ;;
+    esac
+  done
+fi
+
+if [[ "$1" == "task" ]]; then
+  # Same class of bug as the review path: codex-companion has no help handler
+  # for `task` either, so `crew-codex task --help` dispatches a real Codex job
+  # whose PROMPT is the literal string "--help". Cheaper than an accidental
+  # review, but still a wasted job and a wasted rate window.
+  #
+  # Only --help/-h, NOT a bare `help`: a task's prompt is a positional, so
+  # `crew-codex task help` is a plausible (if terse) real prompt in a way that
+  # `review help` is not. Intercepting it would break a legitimate dispatch.
+  for arg in "$@"; do
+    case "$arg" in
+      --help|-h) task_usage; exit 0 ;;
+    esac
+  done
+fi
+
 if ! command -v node >/dev/null 2>&1; then
   echo "crew-codex: node is required (the codex companion runtime is a Node script)" >&2
   exit 1
@@ -173,6 +288,53 @@ print("\t".join([
   done
 fi
 
+# ---- reap helpers: process-tree kill and socket-dir liveness --------------
+# kill_process_tree terminates a broker BY PID ONLY, deepest descendant first.
+# NEVER pattern-based: brokers are per-workspace, so a `pkill -f "codex
+# app-server"` would take out every OTHER session's healthy runtime along with
+# the dead one. Children go before their parent so a supervisor cannot respawn
+# what we just killed, and TERM is given a moment before KILL because a wedged
+# app-server (the same wedge `await` reports as HUNG) ignores TERM.
+kill_process_tree() {
+  local pid="$1" child
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+    kill_process_tree "$child"
+  done
+  kill -TERM "$pid" 2>/dev/null || true
+  local _wait
+  for _wait in 1 2 3 4 5; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.2
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+}
+
+# socket_dir_in_use answers "can anything still be using this /tmp/cxc-* dir?"
+# It must answer YES whenever it cannot prove otherwise, because the caller
+# deletes on NO. fuser is the primary check; a listening AF_UNIX socket is not
+# always attributable by path, so the socket table and the dir's own recorded
+# broker.pid are cross-checked, and with neither tool installed the answer is
+# an unconditional YES.
+socket_dir_in_use() {
+  local dir="$1" holder
+  if command -v fuser >/dev/null 2>&1 && fuser -s "$dir" "$dir"/* 2>/dev/null; then
+    return 0
+  fi
+  if command -v ss >/dev/null 2>&1 && ss -xl 2>/dev/null | grep -qF "$dir/"; then
+    return 0
+  fi
+  if [[ -f "$dir/broker.pid" ]]; then
+    holder="$(tr -dc '0-9' < "$dir/broker.pid" 2>/dev/null || true)"
+    if [[ -n "$holder" ]] && kill -0 "$holder" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  if ! command -v fuser >/dev/null 2>&1 && ! command -v ss >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
 # ---- reap: sweep ALL state dirs for jobs stuck in running/queued -----------
 # The companion never marks a job failed when its runtime dies or wedges, so
 # "running" entries accumulate forever (6 found on 2026-08-06, oldest from
@@ -186,10 +348,29 @@ fi
 # BOTH records are updated per job: jobs/<id>.json AND the workspace's
 # state.json — the companion builds status/result/cancel from state.json, so
 # updating only the per-job file leaves a split brain that keeps lying.
+# Two further sweeps are OPT-IN, because they are destructive in ways the job
+# sweep is not: --brokers kills processes, --state deletes job history. Neither
+# runs unless named, and the default output stays byte-identical without them.
 if [[ "${1:-}" == "reap" ]]; then
   shift
   DRY=0
-  [[ "${1:-}" == "--dry-run" ]] && DRY=1
+  SWEEP_BROKERS=0
+  SWEEP_STATE=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run) DRY=1 ;;
+      --brokers) SWEEP_BROKERS=1 ;;
+      --state)   SWEEP_STATE=1 ;;
+      *)
+        # Loud, never ignored: reap's default mode MUTATES job records, and
+        # --brokers kills processes, so a typo'd `--dryrun` quietly doing the
+        # real thing is precisely the accident this rejection prevents.
+        echo "crew-codex: reap: unknown flag '$1' — usage: crew-codex reap [--dry-run] [--brokers] [--state]" >&2
+        exit 2
+        ;;
+    esac
+    shift
+  done
   REAP_LOG_AGE="${CREW_CODEX_REAP_LOG_AGE:-3600}" \
   REAP_DRY="$DRY" \
   python3 - "$CLAUDE_PLUGIN_DATA/state" <<'PY'
@@ -315,6 +496,316 @@ for state_dir in sorted(os.listdir(root)):
             print(f"warning: could not update {state_path}: {exc}")
 print(f"reap summary: {reaped} {'flagged' if dry else 'reaped'}, {kept} kept, {skipped} skipped (live workspace)")
 PY
+
+  # ---- --brokers: kill brokers whose workspace directory is gone -----------
+  # A broker outlives the worktree it was spawned for: delete the worktree and
+  # its `node app-server-broker.mjs serve --cwd <gone>` process stays resident
+  # forever, holding a /tmp/cxc-* socket dir. They are only reapable because
+  # the cwd is gone — that is the one signal that proves nothing can still be
+  # dispatched into them.
+  if [[ "$SWEEP_BROKERS" -eq 1 ]]; then
+    echo
+    # HARD GATE. Nothing in the state files maps a job back to the broker
+    # serving it, so while ANY job anywhere is running/queued we cannot prove a
+    # given broker is idle — refuse the whole sweep rather than gamble on one
+    # workspace's bookkeeping. The job-record sweep above has already run, so
+    # records whose process died long ago no longer hold this gate shut (under
+    # --dry-run they do, by design: a dry run mutates nothing).
+    LIVE_JOBS="$(python3 - "$CLAUDE_PLUGIN_DATA/state" <<'PY'
+import json, os, sys
+root = sys.argv[1]
+TERMINAL = {"completed", "failed", "cancelled", "gone"}
+live = []
+names = sorted(os.listdir(root)) if os.path.isdir(root) else []
+for name in names:
+    jobs_dir = os.path.join(root, name, "jobs")
+    if not os.path.isdir(jobs_dir):
+        continue
+    for entry in sorted(os.listdir(jobs_dir)):
+        if not entry.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(jobs_dir, entry)) as f:
+                job = json.load(f)
+        except Exception:
+            # Unreadable record: we cannot prove it is terminal, and this gate
+            # stands in front of a kill, so it fails CLOSED.
+            live.append(f"{name}/{entry}(unreadable)")
+            continue
+        if job.get("status") not in TERMINAL:
+            live.append(f"{name}/{job.get('id', entry)}({job.get('status')})")
+print(" ".join(live))
+PY
+)"
+    if [[ -n "$LIVE_JOBS" ]]; then
+      echo "crew-codex: reap --brokers REFUSED — non-terminal job(s) present: $LIVE_JOBS" >&2
+      echo "crew-codex: a running/queued job may be talking to any broker; killing one would pull the runtime out from under it. Let those finish (or cancel them) and re-run." >&2
+      exit 3
+    fi
+
+    # Discovery via pgrep -af matches on the FULL command line, which includes
+    # this very sweep's own shell whenever the pattern appears in its argv, so
+    # every candidate is re-validated against /proc below and our own process
+    # ancestry is excluded there.
+    BROKER_PATTERN="${CREW_CODEX_BROKER_PATTERN:-app-server-broker}"
+    broker_pids=()
+    while read -r bpid _; do
+      [[ "$bpid" =~ ^[0-9]+$ ]] || continue
+      broker_pids+=("$bpid")
+    done < <(pgrep -af "$BROKER_PATTERN" 2>/dev/null || true)
+
+    brokers_reaped=0
+    brokers_kept=0
+    brokers_skipped=0
+    if [[ "${#broker_pids[@]}" -gt 0 ]]; then
+      while IFS=$'\t' read -r verdict bpid bnote; do
+        case "$verdict" in
+          LIVE)
+            echo "broker kept: pid $bpid (cwd $bnote still exists)"
+            brokers_kept=$((brokers_kept + 1))
+            ;;
+          SKIP)
+            echo "broker skipped: pid $bpid ($bnote)"
+            brokers_skipped=$((brokers_skipped + 1))
+            ;;
+          REAP)
+            if [[ "$DRY" -eq 1 ]]; then
+              echo "would reap broker: pid $bpid (cwd $bnote is gone)"
+              brokers_reaped=$((brokers_reaped + 1))
+            elif ! tr '\0' ' ' < "/proc/$bpid/cmdline" 2>/dev/null | grep -qF -- "$BROKER_PATTERN"; then
+              # Re-validated at the last possible moment: pids are recycled, so
+              # between classification and this line the broker may have exited
+              # and its number been handed to something innocent. A mismatch
+              # (or an unreadable cmdline) always means DON'T kill.
+              echo "broker skipped: pid $bpid (exited or pid recycled before the kill)"
+              brokers_skipped=$((brokers_skipped + 1))
+            else
+              echo "reaped broker: pid $bpid (cwd $bnote is gone)"
+              kill_process_tree "$bpid"
+              brokers_reaped=$((brokers_reaped + 1))
+            fi
+            ;;
+        esac
+      done < <(REAP_SELF_PID=$$ python3 - "${broker_pids[@]}" <<'PY'
+import os, sys
+
+self_pid = int(os.environ.get("REAP_SELF_PID", "0"))
+
+
+def ppid_of(pid):
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("PPid:"):
+                    return int(line.split()[1])
+    except Exception:
+        return None
+    return None
+
+
+# Our own ancestry is never reapable. pgrep matched on the full command line,
+# so the shell running this reap (and whatever spawned it) can match the
+# pattern themselves; killing an ancestor would kill the sweep mid-flight.
+ancestors = set()
+walker = self_pid
+while walker and walker > 1 and walker not in ancestors:
+    ancestors.add(walker)
+    walker = ppid_of(walker)
+
+
+def cmdline(pid):
+    # /proc/<pid>/cmdline is NUL-separated and authoritative. The pgrep line is
+    # space-joined and cannot be re-split safely once a path contains a space.
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            raw = f.read()
+    except Exception:
+        return None
+    return [a.decode("utf-8", "replace") for a in raw.split(b"\0") if a]
+
+
+for arg in sys.argv[1:]:
+    try:
+        pid = int(arg)
+    except ValueError:
+        continue
+    if pid <= 1 or pid in ancestors:
+        print(f"SKIP\t{pid}\tthis reap or one of its ancestors")
+        continue
+    args = cmdline(pid)
+    if not args:
+        print(f"SKIP\t{pid}\tprocess vanished before inspection")
+        continue
+    # A real broker is `node .../app-server-broker.mjs serve --endpoint ...
+    # --cwd <workspace> --pid-file ...`. Anything without the serve verb and a
+    # --cwd is some other process that merely mentions the pattern.
+    if "serve" not in args:
+        print(f"SKIP\t{pid}\tnot a broker 'serve' invocation")
+        continue
+    cwd = None
+    for i, a in enumerate(args):
+        if a == "--cwd" and i + 1 < len(args):
+            cwd = args[i + 1]
+        elif a.startswith("--cwd="):
+            cwd = a[len("--cwd="):]
+    if not cwd:
+        print(f"SKIP\t{pid}\tno --cwd argument")
+        continue
+    print(f"{'LIVE' if os.path.isdir(cwd) else 'REAP'}\t{pid}\t{cwd}")
+PY
+      )
+    fi
+    echo "reap brokers summary: $brokers_reaped $([[ "$DRY" -eq 1 ]] && echo flagged || echo reaped), $brokers_kept kept (cwd alive), $brokers_skipped skipped (not reapable)"
+
+    # Socket dirs outlive the process that owned them, so sweep them too — but
+    # only ones we can PROVE nobody is holding. Unproven means kept: a stray
+    # rm here breaks a healthy session's transport, and the cost of leaving a
+    # few kilobytes in /tmp is nil.
+    SOCKET_GLOB="${CREW_CODEX_SOCKET_GLOB:-/tmp/cxc-*}"
+    sockets_removed=0
+    sockets_kept=0
+    for sock_dir in $SOCKET_GLOB; do
+      [[ -d "$sock_dir" ]] || continue
+      # Never touch another user's socket dir, even if it looks idle.
+      [[ -O "$sock_dir" ]] || continue
+      if socket_dir_in_use "$sock_dir"; then
+        echo "socket kept: $sock_dir (still held)"
+        sockets_kept=$((sockets_kept + 1))
+      elif [[ "$DRY" -eq 1 ]]; then
+        echo "would remove socket dir: $sock_dir"
+        sockets_removed=$((sockets_removed + 1))
+      else
+        if rm -rf "$sock_dir" 2>/dev/null; then
+          echo "removed socket dir: $sock_dir"
+          sockets_removed=$((sockets_removed + 1))
+        else
+          echo "socket kept: $sock_dir (removal failed)"
+          sockets_kept=$((sockets_kept + 1))
+        fi
+      fi
+    done
+    echo "reap sockets summary: $sockets_removed $([[ "$DRY" -eq 1 ]] && echo flagged || echo removed), $sockets_kept kept"
+  fi
+
+  # ---- --state: prune workspace state dirs whose workspace is gone ---------
+  # Deleting a state dir throws away that workspace's job history and logs, so
+  # this prunes ONLY when all three hold: the cwd is resolvable, the cwd is
+  # gone, and no job in the dir is still running/queued. A dir whose cwd cannot
+  # be parsed is REPORTED and SKIPPED — a parse failure must never be read as
+  # "the workspace is gone".
+  if [[ "$SWEEP_STATE" -eq 1 ]]; then
+    echo
+    REAP_DRY="$DRY" python3 - "$CLAUDE_PLUGIN_DATA/state" <<'PY'
+import json, os, shutil, sys
+
+root = sys.argv[1]
+dry = os.environ.get("REAP_DRY") == "1"
+TERMINAL = {"completed", "failed", "cancelled", "gone"}
+pruned = kept = unresolved = blocked = 0
+
+
+def load(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def resolve_cwd(ws):
+    """The workspace root a state dir belongs to, or None if unknowable.
+
+    Layouts seen in practice: broker.json/state.json may carry cwd,
+    workspaceRoot or root at the top level, and state.json always carries
+    jobs[].workspaceRoot — which in current versions is the only place it
+    appears at all.
+    """
+    for fname in ("broker.json", "state.json"):
+        data = load(os.path.join(ws, fname))
+        if data is None:
+            continue
+        jobs = None
+        if isinstance(data, dict):
+            for key in ("cwd", "workspaceRoot", "root"):
+                value = data.get(key)
+                if isinstance(value, str) and value:
+                    return value
+            jobs = data.get("jobs")
+        elif isinstance(data, list):
+            jobs = data
+        if isinstance(jobs, list):
+            for job in jobs:
+                if not isinstance(job, dict):
+                    continue
+                for key in ("workspaceRoot", "cwd", "root"):
+                    value = job.get(key)
+                    if isinstance(value, str) and value:
+                        return value
+    return None
+
+
+def nonterminal_jobs(ws):
+    """Union of jobs/*.json and state.json entries — the two can disagree, and
+    before an irreversible delete the pessimistic reading is the right one."""
+    live = []
+    jobs_dir = os.path.join(ws, "jobs")
+    if os.path.isdir(jobs_dir):
+        for entry in sorted(os.listdir(jobs_dir)):
+            if not entry.endswith(".json"):
+                continue
+            job = load(os.path.join(jobs_dir, entry))
+            if job is None:
+                live.append(f"{entry}(unreadable)")
+            elif job.get("status") not in TERMINAL:
+                live.append(str(job.get("id", entry)))
+    data = load(os.path.join(ws, "state.json"))
+    entries = data if isinstance(data, list) else (data or {}).get("jobs", [])
+    if isinstance(entries, list):
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("status") not in TERMINAL:
+                live.append(str(entry.get("id", "?")))
+    return sorted(set(live))
+
+
+names = sorted(os.listdir(root)) if os.path.isdir(root) else []
+if not names:
+    print(f"reap state: no state dirs under {root}")
+for name in names:
+    ws = os.path.join(root, name)
+    if not os.path.isdir(ws):
+        continue
+    cwd = resolve_cwd(ws)
+    if cwd is None:
+        print(f"state unresolved: {name} — no cwd recorded anywhere, skipping")
+        unresolved += 1
+        continue
+    if os.path.isdir(cwd):
+        print(f"state kept: {name} ({cwd} still exists)")
+        kept += 1
+        continue
+    live = nonterminal_jobs(ws)
+    if live:
+        print(f"state kept: {name} ({cwd} is gone but jobs {live} are non-terminal)")
+        blocked += 1
+        continue
+    if dry:
+        print(f"would prune state dir: {ws} (cwd {cwd} is gone)")
+        pruned += 1
+        continue
+    try:
+        shutil.rmtree(ws)
+    except Exception as exc:
+        print(f"state kept: {name} (prune failed: {exc})")
+        blocked += 1
+        continue
+    print(f"pruned state dir: {ws} (cwd {cwd} is gone)")
+    pruned += 1
+verb = "would prune" if dry else "pruned"
+print(f"reap state summary: {pruned} {verb}, {kept} kept (cwd alive), "
+      f"{blocked} kept (non-terminal jobs), {unresolved} unresolved (skipped)")
+PY
+  fi
+
   exit 0
 fi
 
@@ -349,6 +840,102 @@ while :; do
   sleep "$delay"
   attempt=$((attempt + 1))
 done
+
+# ---- dispatch stamp: the audit trail for model + reasoning effort ----------
+# A finished REVIEW leaves no record of what it ran at: the companion stores
+# model/effort under storedJob.request, and the review path never receives
+# either as an option, so review-*.meta.json carries neither (task-*.meta.json
+# does carry both — the gap is reviews only). Review effort comes from
+# model_reasoning_effort in the codex config, which no companion-written record
+# ever sees, so nothing else can record it. Stamping `task` too is deliberate
+# duplication: one sidecar shape for every dispatch beats a shape that only
+# exists for the subcommand nobody checks. Do not "clean up" the task case.
+# Best-effort by construction — an audit-trail failure must never change the
+# dispatch's exit code, stdout or stderr, so the whole block is swallowed.
+case "${1:-}" in
+  review|adversarial-review|task)
+    {
+      # First id wins: the launch line names the job we just dispatched, and
+      # later ids (resume candidates, status hints) belong to other jobs.
+      JOB_ID="$(grep -ohE '(review|task)-[A-Za-z0-9]+-[A-Za-z0-9]+' "$TMP_OUT" "$TMP_ERR" 2>/dev/null | head -n 1 || true)"
+      if [[ -n "$JOB_ID" ]]; then
+        mkdir -p "$CREW_ARCHIVE_DIR"
+        CREW_STAMP_JOB_ID="$JOB_ID" \
+        CREW_STAMP_OUT="$CREW_ARCHIVE_DIR/$JOB_ID.dispatch.json" \
+        CREW_STAMP_CONFIG="${CODEX_HOME:-$HOME/.codex}/config.toml" \
+        python3 - "$@" <<'PY'
+import json, os, re, sys, time
+
+argv = sys.argv[1:]
+subcommand = argv[0] if argv else None
+
+
+def flag_value(name):
+    """Value of --name <v> or --name=<v>. Last occurrence wins, matching the
+    companion's own parser, so the stamp records what actually took effect."""
+    value = None
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == name and i + 1 < len(argv):
+            value = argv[i + 1]
+            i += 2
+            continue
+        if arg.startswith(name + "="):
+            value = arg[len(name) + 1:]
+            i += 1
+            continue
+        i += 1
+    return value
+
+
+def config_effort(path):
+    """model_reasoning_effort from the ROOT table only. A value under a
+    [profiles.x] table applies only when that profile is selected, so counting
+    it would stamp an effort the dispatch never ran at."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue
+                if stripped.startswith("["):
+                    break
+                match = re.match(
+                    r'^model_reasoning_effort\s*=\s*["\']?([A-Za-z-]+)', stripped)
+                if match:
+                    return match.group(1)
+    except OSError:
+        return None
+    return None
+
+
+effort_requested = flag_value("--effort")
+effort_config = config_effort(os.environ["CREW_STAMP_CONFIG"])
+# --effort is a real option on the task path only; on a review it is swallowed
+# into the focus text (and crew-codex rejects it before we ever get here).
+from_flag = subcommand == "task" and effort_requested is not None
+record = {
+    "jobId": os.environ["CREW_STAMP_JOB_ID"],
+    "subcommand": subcommand,
+    "model": flag_value("--model"),
+    "effortRequested": effort_requested,
+    "effortEffective": effort_requested if from_flag else effort_config,
+    "effortConfig": effort_config,
+    "effortSource": "flag" if from_flag else "config",
+    "argv": argv,
+    "stampedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+}
+out = os.environ["CREW_STAMP_OUT"]
+tmp = out + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    json.dump(record, handle, indent=2)
+os.replace(tmp, out)
+PY
+      fi
+    } >/dev/null 2>&1 || true
+    ;;
+esac
 
 cat "$TMP_OUT"
 cat "$TMP_ERR" >&2

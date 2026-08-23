@@ -69,6 +69,53 @@ falls back to a 5s poll when no live pid is available. If the process
 disappears while the job still claims to be `running`, that's a silent death:
 `await` reports `STALE` with exit 3 instead of waiting out the deadline.
 
+**Guarded flags.** codex-companion has no per-subcommand help handler, and its
+review parser folds every argument it does not recognize into the review's
+focus text. So `crew-codex adversarial-review --help` used to run a full review
+against `main` (~10 minutes of wall clock, twice on 2026-08-22) and
+`--effort high` used to be swallowed into the prompt while the turn ran at
+whatever the codex config said. `crew-codex` now intercepts both before
+dispatching:
+
+```
+crew-codex review|adversarial-review --help|-h|help   usage, exit 0, no dispatch
+crew-codex task --help|-h                            usage, exit 0, no dispatch
+                                                     (bare `help` still forwards:
+                                                      it is a plausible prompt)
+crew-codex review|adversarial-review --effort <e>     error,  exit 2, no dispatch
+crew-codex [--help|-h|help]                           top-level usage, exit 0
+```
+
+Matching is exact: focus text may still contain the word `help` or any other
+`--`-prefixed token, and those forward untouched. **Review effort comes from
+`model_reasoning_effort` in `${CODEX_HOME:-~/.codex}/config.toml`** — only the
+`task` path accepts a per-dispatch `--effort`.
+
+**Dispatch stamping.** Each `task`/`review`/`adversarial-review` dispatch writes
+`<job-id>.dispatch.json` into the crew archive
+(`~/.claude/plugins/data/codex-crew/jobs/`) with the model, the requested effort,
+the config's `model_reasoning_effort` and the full argv. Review job records
+carry neither model nor effort (task records carry both, under
+`storedJob.request`), and review effort never appears in any
+companion-written record at all, so this sidecar is the only audit trail of
+what a past review actually ran at. Stamping is best-effort: it can never
+change a dispatch's exit code, stdout or stderr.
+
+**Housekeeping.** `crew-codex reap [--dry-run]` marks stuck `running`/`queued`
+job records failed once their process is dead or their log has frozen. Two
+opt-in sweeps handle what dies around them:
+
+- `--brokers` kills brokers whose `--cwd` workspace is gone (a deleted worktree
+  leaves its broker resident forever), children first and **by pid only** — a
+  pattern kill would destroy other workspaces' healthy brokers — then removes
+  `/tmp/cxc-*` socket dirs nothing is holding. Refused outright (exit 3) while
+  any job anywhere is non-terminal.
+- `--state` prunes state dirs whose recorded cwd is gone and that hold no
+  non-terminal job; a dir whose cwd cannot be parsed is reported `unresolved`
+  and never pruned.
+
+Both are destructive, so dry-run first: `crew-codex reap --brokers --state --dry-run`.
+
 **Results survive.** On terminal state `await` archives the result, metadata
 and log to `~/.claude/plugins/data/codex-crew/jobs/`, which the companion's
 50-job pruner cannot delete. Jobs still stop when the Claude session ends (by

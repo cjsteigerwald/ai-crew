@@ -22,6 +22,19 @@ check() {
   fi
 }
 
+# Asserts the fake companion recorded NO invocation — the whole point of the
+# usage guards is that a help/--effort request never becomes a dispatch at all.
+check_no_dispatch() {
+  local name="$1" record="$2"
+  if [[ ! -s "$record" ]]; then
+    echo "PASS: $name"
+    pass=$((pass + 1))
+  else
+    echo "FAIL: $name (companion was invoked with: $(cat "$record"))"
+    fail=$((fail + 1))
+  fi
+}
+
 # Case 1: missing installed_plugins.json -> loud error, exit 1
 out="$(CLAUDE_CONFIG_DIR="$TMP/empty" bash "$CREW" --resolve 2>&1)" && rc=0 || rc=$?
 check "missing installed_plugins.json" 1 "install the official Codex plugin" "$rc" "$out"
@@ -322,6 +335,313 @@ assert d['job-other']['status']=='completed', d
   echo "PASS: state.json mirrored (failed + pid cleared, others untouched)"; pass=$((pass + 1))
 else
   echo "FAIL: state.json not mirrored correctly"; fail=$((fail + 1))
+fi
+
+# --- usage guards: a help/--effort request must never become a dispatch ------
+# The fake companion records every invocation, so "did not dispatch" is an
+# assertion about the file being empty rather than about the output text.
+mkdir -p "$TMP/guard/plugins" "$TMP/guard/install/scripts"
+echo "{\"version\":2,\"plugins\":{\"codex@openai-codex\":[{\"installPath\":\"$TMP/guard/install\"}]}}" > "$TMP/guard/plugins/installed_plugins.json"
+cat > "$TMP/guard/install/scripts/codex-companion.mjs" <<'EOF'
+import fs from "node:fs";
+fs.appendFileSync(process.env.CREW_TEST_INVOKED, process.argv.slice(2).join("|") + "\n");
+console.log("COMPANION-RAN:" + process.argv.slice(2).join("|"));
+EOF
+
+INVOKED="$TMP/guard/invoked.log"
+run_guard() {
+  : > "$INVOKED"
+  CLAUDE_CONFIG_DIR="$TMP/guard" CREW_TEST_INVOKED="$INVOKED" bash "$CREW" "$@" 2>&1
+}
+
+# Case 23: adversarial-review --help prints usage, exits 0, dispatches nothing
+out="$(run_guard adversarial-review --help)" && rc=0 || rc=$?
+check "adversarial-review --help exits 0" 0 "crew-codex adversarial-review \[flags\]" "$rc" "$out"
+check "adversarial-review --help names the effort source" 0 "model_reasoning_effort" "$rc" "$out"
+check_no_dispatch "adversarial-review --help did not dispatch" "$INVOKED"
+
+# Case 24: review -h and review help take the same path
+out="$(run_guard review -h)" && rc=0 || rc=$?
+check "review -h exits 0" 0 "crew-codex review \[flags\]" "$rc" "$out"
+check_no_dispatch "review -h did not dispatch" "$INVOKED"
+out="$(run_guard review --base main help)" && rc=0 || rc=$?
+check "bare 'help' among review args exits 0" 0 "NO --effort flag" "$rc" "$out"
+check_no_dispatch "review help did not dispatch" "$INVOKED"
+
+# Case 25: --effort on the review path is refused loudly, exit 2, no dispatch
+out="$(run_guard adversarial-review --effort high)" && rc=0 || rc=$?
+check "review --effort refused" 2 "does not accept --effort" "$rc" "$out"
+check "review --effort names the working alternative" 2 "crew-codex task --effort" "$rc" "$out"
+check_no_dispatch "review --effort did not dispatch" "$INVOKED"
+
+out="$(run_guard adversarial-review --effort=xhigh "focus")" && rc=0 || rc=$?
+check "review --effort=<v> refused" 2 "does not accept --effort" "$rc" "$out"
+check_no_dispatch "review --effort=<v> did not dispatch" "$INVOKED"
+
+# Case 26: interception is EXACT — legitimate focus text still forwards
+out="$(run_guard adversarial-review --base main "does the help text render")" && rc=0 || rc=$?
+check "focus text containing 'help' forwards" 0 "COMPANION-RAN:adversarial-review" "$rc" "$out"
+check "focus text reaches the companion intact" 0 "does the help text render" "$rc" "$out"
+
+out="$(run_guard adversarial-review --effortless --helpful "focus")" && rc=0 || rc=$?
+check "non-intercepted --flags forward untouched" 0 "COMPANION-RAN:adversarial-review|--effortless|--helpful|focus" "$rc" "$out"
+
+# Case 27: task --help is intercepted too — the companion has no help handler
+# for `task` either, so forwarding it dispatches a real job whose PROMPT is the
+# literal string "--help". Cheaper than an accidental review, still wasted.
+out="$(run_guard task --help)" && rc=0 || rc=$?
+check "task --help exits 0" 0 "crew-codex task \[flags\]" "$rc" "$out"
+check "task usage advertises --effort" 0 "task DOES accept --effort" "$rc" "$out"
+check_no_dispatch "task --help did not dispatch" "$INVOKED"
+
+out="$(run_guard task -h)" && rc=0 || rc=$?
+check "task -h exits 0" 0 "crew-codex task \[flags\]" "$rc" "$out"
+check_no_dispatch "task -h did not dispatch" "$INVOKED"
+
+# ...but a BARE `help` is NOT intercepted for task: a task prompt is a
+# positional, so `task help` is a plausible (terse) real prompt, unlike
+# `review help`. Over-intercepting here would break a legitimate dispatch.
+out="$(run_guard task help)" && rc=0 || rc=$?
+check "bare 'help' still forwards as a task prompt" 0 "COMPANION-RAN:task|help" "$rc" "$out"
+
+# --effort remains legal on task — it is the one path that really supports it.
+out="$(run_guard task --effort high "do the thing")" && rc=0 || rc=$?
+check "task --effort forwards untouched" 0 "COMPANION-RAN:task|--effort|high|do the thing" "$rc" "$out"
+
+# Case 28: bare crew-codex and top-level help print usage, forward nothing
+out="$(run_guard)" && rc=0 || rc=$?
+check "bare crew-codex exits 0" 0 "Subcommands crew-codex handles itself" "$rc" "$out"
+check_no_dispatch "bare crew-codex did not dispatch" "$INVOKED"
+for helpflag in --help -h help; do
+  out="$(run_guard "$helpflag")" && rc=0 || rc=$?
+  check "crew-codex $helpflag exits 0" 0 "forwarded verbatim to the codex plugin" "$rc" "$out"
+  check_no_dispatch "crew-codex $helpflag did not dispatch" "$INVOKED"
+done
+
+# --- dispatch stamping: model + effort audit trail next to the archive -------
+mkdir -p "$TMP/stamp/plugins" "$TMP/stamp/install/scripts" "$TMP/stamp/codex-home"
+echo "{\"version\":2,\"plugins\":{\"codex@openai-codex\":[{\"installPath\":\"$TMP/stamp/install\"}]}}" > "$TMP/stamp/plugins/installed_plugins.json"
+printf 'model_reasoning_effort = "xhigh"\n\n[profiles.cheap]\nmodel_reasoning_effort = "low"\n' > "$TMP/stamp/codex-home/config.toml"
+cat > "$TMP/stamp/install/scripts/codex-companion.mjs" <<'EOF'
+const line = process.env.CREW_TEST_LAUNCH_LINE ?? "";
+if (line) console.log(line);
+process.exit(Number(process.env.CREW_TEST_EXIT ?? 0));
+EOF
+
+run_stamp() {
+  local archive="$1" launch="$2"; shift 2
+  CLAUDE_CONFIG_DIR="$TMP/stamp" CREW_CODEX_ARCHIVE_DIR="$archive" \
+  CODEX_HOME="$TMP/stamp/codex-home" CREW_TEST_LAUNCH_LINE="$launch" \
+  CREW_CODEX_RETRY_DELAYS="0" bash "$CREW" "$@" 2>&1
+}
+
+# Case 29: a review dispatch stamps effort from the codex config
+arc="$TMP/stamp/arc29"
+out="$(run_stamp "$arc" "Adversarial Review started in the background as review-msi4zm8e-cpisj8. Check /codex:status" \
+  adversarial-review --model gpt-5.6-sol --base main "focus")" && rc=0 || rc=$?
+check "stamped dispatch passes output through" 0 "started in the background" "$rc" "$out"
+if python3 -c "
+import json
+d = json.load(open('$arc/review-msi4zm8e-cpisj8.dispatch.json'))
+assert d['jobId'] == 'review-msi4zm8e-cpisj8', d
+assert d['subcommand'] == 'adversarial-review', d
+assert d['model'] == 'gpt-5.6-sol', d
+assert d['effortRequested'] is None, d
+assert d['effortEffective'] == 'xhigh', d
+assert d['effortSource'] == 'config', d
+assert d['argv'][:3] == ['adversarial-review', '--model', 'gpt-5.6-sol'], d
+"; then
+  echo "PASS: review dispatch stamped model + config effort"; pass=$((pass + 1))
+else
+  echo "FAIL: review dispatch stamp malformed"; fail=$((fail + 1))
+fi
+
+# Case 30: a task dispatch records the flag effort AND the config value it beat
+arc="$TMP/stamp/arc30"
+out="$(run_stamp "$arc" "Codex Task started in the background as task-mrw7xw66-j3p2k0." \
+  task --model gpt-5.6-luna --effort low "do a thing")" && rc=0 || rc=$?
+if python3 -c "
+import json
+d = json.load(open('$arc/task-mrw7xw66-j3p2k0.dispatch.json'))
+assert d['effortRequested'] == 'low', d
+assert d['effortEffective'] == 'low', d
+assert d['effortConfig'] == 'xhigh', d
+assert d['effortSource'] == 'flag', d
+assert d['model'] == 'gpt-5.6-luna', d
+"; then
+  echo "PASS: task dispatch stamped flag effort over config"; pass=$((pass + 1))
+else
+  echo "FAIL: task dispatch stamp malformed"; fail=$((fail + 1))
+fi
+
+# Case 31: no job id in the output -> nothing written, nothing broken
+arc="$TMP/stamp/arc31"
+out="$(run_stamp "$arc" "Review finished inline; no job was created." adversarial-review "focus")" && rc=0 || rc=$?
+if [[ "$rc" == 0 ]] && [[ -z "$(ls -A "$arc" 2>/dev/null || true)" ]]; then
+  echo "PASS: no job id stamps nothing and still exits 0"; pass=$((pass + 1))
+else
+  echo "FAIL: stamped without a job id (rc=$rc, dir: $(ls -A "$arc" 2>/dev/null))"; fail=$((fail + 1))
+fi
+
+# Case 32: a stamping failure changes neither exit code nor stdout. The archive
+# path is a regular FILE, so mkdir -p fails and the whole block is swallowed.
+blocked="$TMP/stamp/not-a-dir"; : > "$blocked"
+out="$(CLAUDE_CONFIG_DIR="$TMP/stamp" CREW_CODEX_ARCHIVE_DIR="$blocked" \
+  CODEX_HOME="$TMP/stamp/codex-home" CREW_CODEX_RETRY_DELAYS="0" \
+  CREW_TEST_LAUNCH_LINE="started in the background as review-aaa1-bbb2." \
+  bash "$CREW" adversarial-review "focus" 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" == 0 && "$out" == "started in the background as review-aaa1-bbb2." ]]; then
+  echo "PASS: unwritable archive left exit code and stdout untouched"; pass=$((pass + 1))
+else
+  echo "FAIL: stamping failure leaked (rc=$rc, out: $out)"; fail=$((fail + 1))
+fi
+
+# Case 33: a failing dispatch keeps its own exit code through the stamp
+arc="$TMP/stamp/arc33"
+out="$(CLAUDE_CONFIG_DIR="$TMP/stamp" CREW_CODEX_ARCHIVE_DIR="$arc" \
+  CODEX_HOME="$TMP/stamp/codex-home" CREW_CODEX_RETRY_DELAYS="0" \
+  CREW_TEST_LAUNCH_LINE="started in the background as task-ccc3-ddd4." CREW_TEST_EXIT=7 \
+  bash "$CREW" task "prompt" 2>&1)" && rc=0 || rc=$?
+check "failing dispatch keeps its exit code" 7 "task-ccc3-ddd4" "$rc" "$out"
+if [[ -f "$arc/task-ccc3-ddd4.dispatch.json" ]]; then
+  echo "PASS: failing dispatch is still stamped"; pass=$((pass + 1))
+else
+  echo "FAIL: failing dispatch was not stamped"; fail=$((fail + 1))
+fi
+
+# --- reap --brokers / --state: dead-cwd sweeps, all against throwaway data ----
+# NOTHING here runs a destructive sweep against the real machine: every case
+# points CLAUDE_PLUGIN_DATA, the broker pgrep pattern and the socket glob at
+# fixtures under $TMP, and every kill path is exercised in --dry-run only.
+GONE_WS="$TMP/gone-workspace"   # deliberately never created
+
+# sweep-data: dead cwd + live cwd + unresolvable + a dir held by a live job
+SWEEP="$TMP/sweep-data/state"
+mkdir -p "$SWEEP/dead-ws/jobs" "$SWEEP/live-ws/jobs" "$SWEEP/unresolved-ws" "$SWEEP/busy-ws/jobs"
+cat > "$SWEEP/dead-ws/state.json" <<EOF
+{"version":1,"jobs":[{"id":"task-dead-1","status":"completed","workspaceRoot":"$GONE_WS"}]}
+EOF
+cat > "$SWEEP/dead-ws/jobs/task-dead-1.json" <<EOF
+{"id":"task-dead-1","status":"completed","workspaceRoot":"$GONE_WS"}
+EOF
+cat > "$SWEEP/live-ws/state.json" <<EOF
+{"version":1,"jobs":[{"id":"task-live-1","status":"completed","workspaceRoot":"$TMP"}]}
+EOF
+echo '{"version":1,"jobs":[]}' > "$SWEEP/unresolved-ws/state.json"
+cat > "$SWEEP/busy-ws/state.json" <<EOF
+{"version":1,"jobs":[{"id":"task-busy-1","status":"running","workspaceRoot":"$GONE_WS"}]}
+EOF
+cat > "$SWEEP/busy-ws/jobs/task-busy-1.json" <<EOF
+{"id":"task-busy-1","status":"running","pid":$$,"workspaceRoot":"$GONE_WS","createdAt":"2026-08-23T00:00:00Z"}
+EOF
+
+# Case 34: --state --dry-run classifies all four dirs and deletes nothing
+out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/sweep-data" \
+  bash "$CREW" reap --state --dry-run 2>&1)" && rc=0 || rc=$?
+check "state dry-run flags the dead-cwd dir" 0 "would prune state dir: $SWEEP/dead-ws" "$rc" "$out"
+check "state dry-run keeps the live-cwd dir" 0 "state kept: live-ws" "$rc" "$out"
+check "state dry-run reports the unresolvable dir" 0 "state unresolved: unresolved-ws" "$rc" "$out"
+check "state dry-run refuses a dir with a non-terminal job" 0 "state kept: busy-ws .* non-terminal" "$rc" "$out"
+check "state dry-run summary counts" 0 "reap state summary: 1 would prune, 1 kept (cwd alive), 1 kept (non-terminal jobs), 1 unresolved" "$rc" "$out"
+if [[ -d "$SWEEP/dead-ws" ]]; then
+  echo "PASS: state dry-run deleted nothing"; pass=$((pass + 1))
+else
+  echo "FAIL: state dry-run deleted a state dir"; fail=$((fail + 1))
+fi
+
+# Case 35: --brokers is REFUSED outright while any job is non-terminal
+out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/sweep-data" \
+  bash "$CREW" reap --brokers --dry-run 2>&1)" && rc=0 || rc=$?
+check "brokers sweep refused under a live job" 3 "REFUSED" "$rc" "$out"
+check "brokers refusal names the offending job" 3 "busy-ws/task-busy-1(running)" "$rc" "$out"
+
+# Case 36: unknown reap flags are rejected, not silently treated as a real run
+out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/sweep-data" \
+  bash "$CREW" reap --dryrun 2>&1)" && rc=0 || rc=$?
+check "reap rejects an unknown flag" 2 "unknown flag" "$rc" "$out"
+
+# sweep-clean: same fixtures minus the live job, so the broker gate opens
+CLEAN="$TMP/sweep-clean/state"
+mkdir -p "$CLEAN"
+cp -r "$SWEEP/dead-ws" "$SWEEP/live-ws" "$SWEEP/unresolved-ws" "$CLEAN/"
+
+# Three fake "brokers": dead cwd (reapable), live cwd (kept), no serve verb
+# (skipped). The pattern is unique to this run so pgrep cannot reach a real one.
+BROKER_PAT="crewtest-broker-$$"
+BSCRIPT="$TMP/$BROKER_PAT.sh"
+printf '#!/usr/bin/env bash\nsleep 60\n' > "$BSCRIPT"
+bash "$BSCRIPT" serve --endpoint "unix:$TMP/none.sock" --cwd "$GONE_WS" & DEADCWD_PID=$!
+bash "$BSCRIPT" serve --endpoint "unix:$TMP/none.sock" --cwd "$TMP" & LIVECWD_PID=$!
+bash "$BSCRIPT" notserve --cwd "$GONE_WS" & NOTBROKER_PID=$!
+sleep 0.5
+
+# Socket dirs: one held by a live pid via broker.pid, one idle.
+mkdir -p "$TMP/sockets/cxc-held" "$TMP/sockets/cxc-idle"
+echo "$$" > "$TMP/sockets/cxc-held/broker.pid"
+echo 99999999 > "$TMP/sockets/cxc-idle/broker.pid"
+
+# Case 37: --brokers --dry-run classifies by cwd liveness and kills NOTHING
+out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/sweep-clean" \
+  CREW_CODEX_BROKER_PATTERN="$BROKER_PAT" CREW_CODEX_SOCKET_GLOB="$TMP/sockets/cxc-*" \
+  bash "$CREW" reap --brokers --dry-run 2>&1)" && rc=0 || rc=$?
+check "broker with a dead cwd is flagged" 0 "would reap broker: pid $DEADCWD_PID" "$rc" "$out"
+check "broker with a live cwd is kept" 0 "broker kept: pid $LIVECWD_PID" "$rc" "$out"
+check "non-serve process is skipped" 0 "broker skipped: pid $NOTBROKER_PID" "$rc" "$out"
+check "broker summary counts" 0 "reap brokers summary: 1 flagged, 1 kept (cwd alive), 1 skipped" "$rc" "$out"
+check "held socket dir kept" 0 "socket kept: $TMP/sockets/cxc-held" "$rc" "$out"
+check "idle socket dir flagged" 0 "would remove socket dir: $TMP/sockets/cxc-idle" "$rc" "$out"
+if kill -0 "$DEADCWD_PID" 2>/dev/null && kill -0 "$LIVECWD_PID" 2>/dev/null \
+   && kill -0 "$NOTBROKER_PID" 2>/dev/null && [[ -d "$TMP/sockets/cxc-idle" ]]; then
+  echo "PASS: brokers dry-run killed nothing and removed nothing"; pass=$((pass + 1))
+else
+  echo "FAIL: brokers dry-run had side effects"; fail=$((fail + 1))
+fi
+kill "$DEADCWD_PID" "$LIVECWD_PID" "$NOTBROKER_PID" 2>/dev/null || true
+wait "$DEADCWD_PID" "$LIVECWD_PID" "$NOTBROKER_PID" 2>/dev/null || true
+
+# Case 38: a real --state sweep removes exactly the dead-cwd dir
+out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/sweep-clean" \
+  bash "$CREW" reap --state 2>&1)" && rc=0 || rc=$?
+check "real state sweep prunes the dead dir" 0 "pruned state dir: $CLEAN/dead-ws" "$rc" "$out"
+if [[ ! -d "$CLEAN/dead-ws" && -d "$CLEAN/live-ws" && -d "$CLEAN/unresolved-ws" ]]; then
+  echo "PASS: state sweep removed exactly the dead-cwd dir"; pass=$((pass + 1))
+else
+  echo "FAIL: state sweep removed the wrong dirs"; fail=$((fail + 1))
+fi
+
+# Case 40: the pre-kill re-validation fails SAFE. This runs the real (non-dry)
+# broker sweep, but with a pgrep regex that the fixed-string re-check cannot
+# match — exactly what a recycled pid looks like — so the process must survive.
+# It is the only non-dry-run broker case, and it is designed to kill nothing.
+printf '#!/usr/bin/env bash\nsleep 60\n' > "$TMP/crewtest-broker2-$$.sh"
+bash "$TMP/crewtest-broker2-$$.sh" serve --endpoint "unix:$TMP/none.sock" --cwd "$GONE_WS" & SURVIVOR_PID=$!
+sleep 0.5
+out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/sweep-clean" \
+  CREW_CODEX_BROKER_PATTERN="crewtest-brok.r2-$$" CREW_CODEX_SOCKET_GLOB="$TMP/sockets/cxc-*" \
+  bash "$CREW" reap --brokers 2>&1)" && rc=0 || rc=$?
+check "pid recycle re-check blocks the kill" 0 "broker skipped: pid $SURVIVOR_PID (exited or pid recycled" "$rc" "$out"
+if kill -0 "$SURVIVOR_PID" 2>/dev/null; then
+  echo "PASS: re-validation failure left the process alive"; pass=$((pass + 1))
+else
+  echo "FAIL: re-validation failure still killed the process"; fail=$((fail + 1))
+fi
+# Same run exercised the REAL socket sweep against the throwaway glob.
+if [[ ! -d "$TMP/sockets/cxc-idle" && -d "$TMP/sockets/cxc-held" ]]; then
+  echo "PASS: socket sweep removed only the unheld dir"; pass=$((pass + 1))
+else
+  echo "FAIL: socket sweep removed the wrong dirs"; fail=$((fail + 1))
+fi
+kill "$SURVIVOR_PID" 2>/dev/null || true
+wait "$SURVIVOR_PID" 2>/dev/null || true
+
+# Case 39: plain reap output is unchanged when no new flag is passed
+out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/sweep-data" \
+  bash "$CREW" reap --dry-run 2>&1)" && rc=0 || rc=$?
+check "plain reap still reports only job records" 0 "reap summary: " "$rc" "$out"
+if ! grep -qE "broker|socket|state summary" <<<"$out"; then
+  echo "PASS: plain reap emitted no broker/socket/state output"; pass=$((pass + 1))
+else
+  echo "FAIL: plain reap leaked the opt-in sweeps"; fail=$((fail + 1))
 fi
 
 echo

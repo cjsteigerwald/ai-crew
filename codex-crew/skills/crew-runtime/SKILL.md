@@ -12,8 +12,24 @@ Use this skill only inside `codex-crew` agents (`codex-implementer-sol`,
 Primary helper — `crew-codex`, on PATH while the plugin is enabled:
 
 - `crew-codex task [--background] [--write] [--resume-last] [--model <m>] [--effort <none|minimal|low|medium|high|xhigh>] "<prompt>"`
-- `crew-codex review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]`
-- `crew-codex adversarial-review [--wait|--background] [--base <ref>] [--scope <...>] [focus text]`
+- `crew-codex review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <m>]`
+- `crew-codex adversarial-review [--wait|--background] [--base <ref>] [--scope <...>] [--model <m>] [focus text]`
+  The review path takes **no `--effort`**. codex-companion parses only the
+  flags above and folds every other argument into the focus text, so
+  `--effort high` there changes the prompt, not the reasoning effort.
+  `crew-codex` rejects it (exit 2) rather than dispatching. Review effort comes
+  from `model_reasoning_effort` in `${CODEX_HOME:-~/.codex}/config.toml`; only
+  `task` accepts a per-dispatch `--effort`.
+- `crew-codex task --help` / `-h` — intercepted too: the companion has no help
+  handler for `task` either, so this used to dispatch a real job whose prompt was
+  the literal string `--help`. A bare `help` is NOT intercepted for `task` — a
+  prompt is a positional, so `task help` is a plausible real dispatch.
+- `crew-codex review --help` / `adversarial-review --help` (also `-h`, `help`)
+  prints the real flag list and exits 0 **without dispatching**. The companion
+  has no help handler, so before this guard `--help` became review focus text
+  and ran a full review against `main` — ~10 minutes, twice on 2026-08-22.
+  Bare `crew-codex` and `crew-codex --help|-h|help` print top-level usage the
+  same way, forwarding nothing.
 - `crew-codex await <job-id> [--for <seconds>]` — block until the job leaves
   `running`, or until the deadline; prints ONE line. Exit 0 completed,
   1 failed/cancelled, 2 job not found, 3 job died silently, 4 job hung,
@@ -29,12 +45,24 @@ Primary helper — `crew-codex`, on PATH while the plugin is enabled:
   `code-mode-host` processes so the wedged runtime is not reused by the next
   dispatch, then re-dispatch ONCE on the fresh runtime; if that also hangs,
   report HUNG verbatim and stop.
-- `crew-codex reap [--dry-run]` — sweep every state dir for jobs stuck in
-  `running`/`queued` whose process is dead or whose log has been frozen past
-  `CREW_CODEX_REAP_LOG_AGE` (default 3600s), and mark them failed in place.
-  The companion never does this itself, so stuck entries otherwise accumulate
-  forever and make `/codex:status` lie. Main-thread housekeeping, not for crew
-  agents mid-job.
+- `crew-codex reap [--dry-run] [--brokers] [--state]` — sweep every state dir
+  for jobs stuck in `running`/`queued` whose process is dead or whose log has
+  been frozen past `CREW_CODEX_REAP_LOG_AGE` (default 3600s), and mark them
+  failed in place. The companion never does this itself, so stuck entries
+  otherwise accumulate forever and make `/codex:status` lie. Two further
+  sweeps are opt-in, because they are destructive in ways the job sweep is not:
+  - `--brokers` kills broker processes whose `--cwd` workspace no longer exists
+    (delete a worktree and its broker stays resident forever), children first
+    and **by pid only** — never a pattern kill, which would take out every
+    other workspace's healthy broker — then removes `/tmp/cxc-*` socket dirs
+    that nothing is holding. It REFUSES the whole sweep (exit 3) while any job
+    anywhere is non-terminal: nothing maps a job to the broker serving it, so
+    one live job makes every broker unprovable.
+  - `--state` prunes state dirs whose recorded cwd is gone and that hold no
+    non-terminal job. This deletes job history and logs — dry-run it first. A
+    dir whose cwd cannot be parsed is reported `unresolved` and never pruned.
+  Both compose with `--dry-run`, and plain `reap` behaves exactly as before.
+  Main-thread housekeeping, not for crew agents mid-job.
 - `crew-codex result <job-id>` — the finished job's output (plus its resume id)
 - `crew-codex --resolve` — print the resolved companion script path (diagnostics only)
 
@@ -59,6 +87,12 @@ Execution rules:
   `--model gpt-5.3-codex-spark`.
 - `cancel` and cross-job triage belong to the main thread (`/codex:status`,
   `/codex:cancel`); a crew agent only awaits the one job it launched.
+- Every `task`/`review`/`adversarial-review` dispatch also drops
+  `<id>.dispatch.json` in the crew archive below, recording the model, the requested
+  effort and the `model_reasoning_effort` actually in force. Review job records
+  carry neither model nor effort (task records do, under
+  `storedJob.request`), and review effort lives only in the codex config, so
+  for a review this sidecar is the sole proof of what it ran at.
 - Results are archived by `await` on terminal state to
   `~/.claude/plugins/data/codex-crew/jobs/<id>.{result.txt,meta.json,log}`,
   which the companion's 50-job pruner cannot delete. Jobs still die with the
