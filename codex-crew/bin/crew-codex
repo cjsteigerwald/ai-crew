@@ -282,7 +282,7 @@ CREW_ARCHIVE_DIR="${CREW_CODEX_ARCHIVE_DIR:-$CLAUDE_DIR/plugins/data/codex-crew/
 # $CREW_META_OUT; if $CREW_RESULT_OUT is set, sanitizes $CREW_RESULT_IN into
 # it. Idempotent — re-running it over an already-clean archive is a no-op.
 read -r -d '' CREW_SANITIZER_PY <<'CREW_SANITIZER_EOF' || true
-import json, os, sys
+import json, os, re, sys
 
 JOB_ID = os.environ.get("CREW_META_JOB_ID", "")
 # A TASK summary is shorten(prompt) — prompt text wearing a routing-looking
@@ -302,12 +302,28 @@ def norm(key):
 # nobody here recognizes is redacted, so a NEW vendor field fails CLOSED until
 # somebody adds it deliberately.
 ALLOWED_REQUEST_KEYS = {
-    "cwd", "base", "scope", "model", "effort", "effortrequested",
+    "cwd", "base", "model", "effort", "effortrequested",
     "efforteffective", "pluginroot", "pluginversion", "kind", "jobclass",
-    "title", "resumelast", "sandbox", "approval", "background", "json",
+    "resumelast", "sandbox", "approval", "background", "json",
     "wait", "promptfile", "threadid", "turnid", "sessionid", "dispatchedby",
     "workspaceroot",
 }
+# Deliberately NOT allowlisted, though the vendor sends them: `scope` and
+# `title`. Both are unconstrained strings whose contents this script cannot
+# predict, and neither is worth an archive leak — the job id and kind already
+# say what the job was.
+
+# Subtrees that hold MODEL OUTPUT. That is the reason the archive exists, it is
+# arbitrarily long by nature, and it is the one place the length guard below
+# must not fire.
+OUTPUT_KEYS = {"result", "rendered", "rawoutput", "stdout", "output", "codex",
+               "progresspreview", "findings"}
+
+# Defence in depth for the case the allowlist cannot see: a relocated free-text
+# field OUTSIDE any request, under a name no rule here knows. Prompts, focus
+# text and pasted logs are long; routing metadata is not. A metadata string
+# past this bound is not something this script can vouch for, so it goes.
+MAX_METADATA_CHARS = 512
 
 
 def is_free_text(key):
@@ -321,7 +337,13 @@ def is_free_text(key):
     return DROP_SUMMARY and k == "summary"
 
 
-MARKER_PREFIX = "<redacted"
+# ⚠️ ANCHORED, and it must stay anchored. A prefix test here is a REDACTION
+# BYPASS: prompt and focus text are user-controlled, so a prompt that merely
+# BEGINS with "<redacted" would be mistaken for a marker this script had
+# already written and archived verbatim. Only the exact canonical forms below
+# — the complete set marker() itself emits — count as already-sanitized. A
+# value that is genuinely one of those strings carries no content to lose.
+MARKER_RE = re.compile(r"^<redacted(: \d+ (chars|item\(s\)|key\(s\)))?>$")
 
 
 def marker(value):
@@ -329,7 +351,7 @@ def marker(value):
     # redaction uses, so the two sidecars cannot disagree about what is safe.
     if value is None:
         return None
-    if isinstance(value, str) and value.startswith(MARKER_PREFIX):
+    if isinstance(value, str) and MARKER_RE.match(value):
         # Already a marker. Re-markering would rewrite the recorded length to
         # the length of the marker itself, so re-running this over an archive
         # that has already been sanitized has to be a no-op.
@@ -346,18 +368,20 @@ def marker(value):
 def allow_request(value):
     # A request that is not a mapping is not a shape this can reason about, so
     # it goes whole. Allowed values still recurse through scrub(), which
-    # reapplies this boundary and the denylist to anything nested inside them.
+    # reapplies this boundary, the denylist and the length guard to anything
+    # nested inside them — an allowlisted NAME does not mean unbounded content.
     if not isinstance(value, dict):
         return marker(value)
     return dict((k, scrub(v) if norm(k) in ALLOWED_REQUEST_KEYS else marker(v))
                 for k, v in value.items())
 
 
-def scrub(value):
+def scrub(value, in_output=False):
     if isinstance(value, dict):
         out = {}
         for k, v in value.items():
-            if norm(k) == "request":
+            nk = norm(k)
+            if nk == "request":
                 # Anywhere the key appears, NOT just storedJob.request: a real
                 # archived payload carries the same request under BOTH
                 # job.request and storedJob.request, so a path rule anchored on
@@ -366,10 +390,12 @@ def scrub(value):
             elif is_free_text(k):
                 out[k] = marker(v)
             else:
-                out[k] = scrub(v)
+                out[k] = scrub(v, in_output or nk in OUTPUT_KEYS)
         return out
     if isinstance(value, list):
-        return [scrub(v) for v in value]
+        return [scrub(v, in_output) for v in value]
+    if isinstance(value, str) and not in_output and len(value) > MAX_METADATA_CHARS:
+        return marker(value)
     return value
 
 
@@ -519,8 +545,16 @@ print("\t".join([
         # straight to .result.txt: the vendor fallback render prints
         # "Summary: <job.summary>", and a task summary is shorten(prompt, 96)
         # (companion:552) — the exact text .meta.json is carefully cleaned of.
-        CREW_RAW_RESULT="$CREW_ARCHIVE_DIR/.$JOB_ID.result.raw"
-        ( umask 077; node "$COMPANION" result "$JOB_ID" >"$CREW_RAW_RESULT" 2>/dev/null ) || true
+        # ⚠️ Staged OUTSIDE the archive, and trapped. Inside the archive it was
+        # unsanitized prompt text sitting in the one directory built to OUTLIVE
+        # the vendor cleanup, and a SIGTERM in the window between render and
+        # sanitize left it there for good — the archive sweep does not read it,
+        # so nothing would ever have found it again.
+        CREW_RAW_RESULT="$(umask 077; mktemp "${TMPDIR:-/tmp}/crew-codex-result.XXXXXX")" || CREW_RAW_RESULT=""
+        trap 'rm -f "$CREW_RAW_RESULT"' EXIT HUP INT TERM
+        if [[ -n "$CREW_RAW_RESULT" ]]; then
+          node "$COMPANION" result "$JOB_ID" >"$CREW_RAW_RESULT" 2>/dev/null || true
+        fi
         # ---- .meta.json sanitization: a DURABLE prompt leak, not a nicety --
         # `result --json` hands back the companion's storedJob verbatim, and a
         # stored job carries its REQUEST: a background task keeps the prompt in
@@ -547,13 +581,16 @@ print("\t".join([
               CREW_RESULT_IN="$CREW_RAW_RESULT" \
               CREW_RESULT_OUT="$CREW_ARCHIVE_DIR/$JOB_ID.result.txt" \
               CREW_META_JOB_ID="$JOB_ID" python3 -c "$CREW_SANITIZER_PY"
-        } >/dev/null 2>&1 || true
+        } >/dev/null 2>&1 && CREW_SANITIZED_OK=1 || CREW_SANITIZED_OK=0
         rm -f "$CREW_RAW_RESULT" 2>/dev/null || true
-        # Fail CLOSED, the same contract .meta.json already has: if the
-        # sanitizer never ran, the archive gets a stub. "We could not sanitize
-        # it" must not become "so we kept the raw render".
-        if [[ ! -f "$CREW_ARCHIVE_DIR/$JOB_ID.result.txt" ]]; then
-          printf '%s\n' "crew-codex: result withheld — the archive sanitizer did not run, and the raw render can carry prompt text." \
+        trap - EXIT HUP INT TERM
+        # Fail CLOSED, the same contract .meta.json already has. UNCONDITIONAL
+        # on sanitizer failure, not "only if the file is missing": a previous
+        # await of this same job may have archived an UNSANITIZED result, and
+        # leaving that in place because a file happens to exist is precisely
+        # the stale leak this is meant to prevent.
+        if [[ "$CREW_SANITIZED_OK" -ne 1 ]]; then
+          printf '%s\n' "crew-codex: result withheld — the archive sanitizer did not complete, and the raw render can carry prompt text." \
             >"$CREW_ARCHIVE_DIR/$JOB_ID.result.txt" 2>/dev/null || true
         fi
         if [[ -f "$jlog" ]]; then
@@ -680,30 +717,96 @@ if [[ "${1:-}" == "sanitize-archive" ]]; then
   SA_TMP="$(mktemp -d)"
   sa_total=0; sa_changed=0; sa_failed=0
   shopt -s nullglob
-  for sa_meta in "$SA_DIR"/*.meta.json; do
-    sa_id="$(basename "$sa_meta" .meta.json)"
+
+  # Stale staging files from the pre-trap await path: unsanitized renders that
+  # nothing else will ever look at. They carry prompt text and no value, so
+  # this is the one thing the sweep removes outright.
+  for sa_raw in "$SA_DIR"/.*.result.raw; do
+    if rm -f "$sa_raw"; then
+      echo "removed stale unsanitized staging file: $(basename "$sa_raw")"
+    else
+      echo "failed: $(basename "$sa_raw") — could not remove stale staging file"
+      sa_failed=$((sa_failed + 1))
+    fi
+  done
+
+  # The UNION of both artifact kinds, not just the metas. await wrote
+  # .result.txt before running the best-effort meta sanitizer, so an
+  # interruption in that window leaves a prompt-bearing result with NO meta
+  # beside it — and a meta-driven loop never looks at it, never counts it and
+  # exits 0 reporting the archive clean.
+  sa_ids=""
+  for sa_f in "$SA_DIR"/*.meta.json; do
+    sa_ids+="$(basename "$sa_f" .meta.json)"$'\n'
+  done
+  for sa_f in "$SA_DIR"/*.result.txt; do
+    sa_ids+="$(basename "$sa_f" .result.txt)"$'\n'
+  done
+  sa_ids="$(printf '%s' "$sa_ids" | sort -u)"
+
+  [[ -n "$sa_ids" ]] && while IFS= read -r sa_id; do
+    [[ -n "$sa_id" ]] || continue
     sa_total=$((sa_total + 1))
+    sa_meta="$SA_DIR/$sa_id.meta.json"
     sa_res="$SA_DIR/$sa_id.result.txt"
-    sa_out_meta="$SA_TMP/$sa_id.meta.json"
+
+    # A symlink in the archive is not an archived job. cp/mv through one writes
+    # to wherever it points, so --dir at a crafted directory could rewrite
+    # files outside the archive entirely.
+    if [[ -L "$sa_meta" || -L "$sa_res" ]]; then
+      echo "failed: $sa_id — symlinked archive entry, refusing to write through it"
+      sa_failed=$((sa_failed + 1))
+      continue
+    fi
+
+    sa_have_meta=0; [[ -f "$sa_meta" ]] && sa_have_meta=1
+    sa_have_res=0;  [[ -f "$sa_res"  ]] && sa_have_res=1
+
+    # Snapshot both inputs. Everything downstream is computed from the snapshot
+    # and re-checked against it before committing, so a concurrent await that
+    # rewrites the live file mid-sweep is detected instead of clobbered.
+    sa_snap_meta="$SA_TMP/$sa_id.snap.meta"
+    sa_snap_res="$SA_TMP/$sa_id.snap.res"
+    if [[ "$sa_have_meta" -eq 1 ]] && ! cp "$sa_meta" "$sa_snap_meta" 2>/dev/null; then
+      echo "failed: $sa_id.meta.json — unreadable, left untouched"
+      sa_failed=$((sa_failed + 1)); continue
+    fi
+    if [[ "$sa_have_res" -eq 1 ]] && ! cp "$sa_res" "$sa_snap_res" 2>/dev/null; then
+      echo "failed: $sa_id.result.txt — unreadable, left untouched"
+      sa_failed=$((sa_failed + 1)); continue
+    fi
+
+    sa_out_meta="$SA_TMP/$sa_id.out.meta"
     sa_out_res=""
     sa_in_res=""
-    if [[ -f "$sa_res" ]]; then
-      sa_in_res="$sa_res"
-      sa_out_res="$SA_TMP/$sa_id.result.txt"
+    if [[ "$sa_have_res" -eq 1 ]]; then
+      sa_in_res="$sa_snap_res"
+      sa_out_res="$SA_TMP/$sa_id.out.res"
     fi
-    # Fail CLOSED per file: a sanitizer error leaves the original alone and is
-    # reported, rather than being read as "this file is already clean".
+    # A result with no meta has no payload to read, so the sanitizer is fed
+    # `null` — the same path an unparseable payload takes, which is exactly
+    # what leaves the skeleton rule as the only lever. That is the honest
+    # answer here: the summary string is unrecoverable once the meta is gone.
+    sa_stdin="$sa_snap_meta"
+    if [[ "$sa_have_meta" -eq 0 ]]; then
+      sa_stdin="$SA_TMP/$sa_id.null.json"
+      printf 'null' > "$sa_stdin"
+    fi
+
     if ! CREW_META_OUT="$sa_out_meta" CREW_META_JOB_ID="$sa_id" \
          CREW_RESULT_IN="$sa_in_res" CREW_RESULT_OUT="$sa_out_res" \
-         python3 -c "$CREW_SANITIZER_PY" <"$sa_meta" 2>/dev/null; then
+         python3 -c "$CREW_SANITIZER_PY" <"$sa_stdin" 2>/dev/null; then
       echo "failed: $sa_id — sanitizer error, original left untouched"
       sa_failed=$((sa_failed + 1))
       continue
     fi
+
     sa_diff=0
-    cmp -s "$sa_meta" "$sa_out_meta" || sa_diff=1
+    if [[ "$sa_have_meta" -eq 1 ]]; then
+      cmp -s "$sa_snap_meta" "$sa_out_meta" || sa_diff=1
+    fi
     if [[ -n "$sa_out_res" && -f "$sa_out_res" ]]; then
-      cmp -s "$sa_res" "$sa_out_res" || sa_diff=1
+      cmp -s "$sa_snap_res" "$sa_out_res" || sa_diff=1
     fi
     if [[ "$sa_diff" -eq 0 ]]; then
       continue
@@ -713,26 +816,46 @@ if [[ "${1:-}" == "sanitize-archive" ]]; then
       echo "would sanitize: $sa_id"
       continue
     fi
-    if cp -f "$sa_out_meta" "$sa_meta"; then
-      echo "sanitized: $sa_id.meta.json"
-    else
-      echo "failed: $sa_id.meta.json — could not rewrite"
-      sa_failed=$((sa_failed + 1))
+
+    # Re-check identity before committing: if the live file no longer matches
+    # the snapshot this output was computed from, another session rewrote it
+    # while the sweep ran, and writing now would truncate their newer archive.
+    if [[ "$sa_have_meta" -eq 1 ]] && ! cmp -s "$sa_meta" "$sa_snap_meta"; then
+      echo "skipped: $sa_id — the archive changed while this sweep ran, not overwriting"
+      sa_failed=$((sa_failed + 1)); continue
+    fi
+    if [[ "$sa_have_res" -eq 1 ]] && ! cmp -s "$sa_res" "$sa_snap_res"; then
+      echo "skipped: $sa_id — the archive changed while this sweep ran, not overwriting"
+      sa_failed=$((sa_failed + 1)); continue
+    fi
+
+    # Publish through a same-directory temp and rename: an interrupted cp -f
+    # leaves a half-written archive, and rename(2) within one directory does
+    # not.
+    sa_commit() {
+      local src="$1" dst="$2" label="$3" stage
+      stage="$dst.satmp.$$"
+      if cp "$src" "$stage" 2>/dev/null && mv -f "$stage" "$dst" 2>/dev/null; then
+        echo "sanitized: $label"
+        return 0
+      fi
+      rm -f "$stage" 2>/dev/null || true
+      echo "failed: $label — could not rewrite"
+      return 1
+    }
+    if [[ "$sa_have_meta" -eq 1 ]]; then
+      sa_commit "$sa_out_meta" "$sa_meta" "$sa_id.meta.json" || sa_failed=$((sa_failed + 1))
     fi
     if [[ -n "$sa_out_res" && -f "$sa_out_res" ]]; then
-      if cp -f "$sa_out_res" "$sa_res"; then
-        echo "sanitized: $sa_id.result.txt"
-      else
-        echo "failed: $sa_id.result.txt — could not rewrite"
-        sa_failed=$((sa_failed + 1))
-      fi
+      sa_commit "$sa_out_res" "$sa_res" "$sa_id.result.txt" || sa_failed=$((sa_failed + 1))
     fi
-  done
+  done <<< "$sa_ids"
   rm -rf "$SA_TMP"
   sa_verb="rewritten"
   [[ "$SA_DRY" -eq 1 ]] && sa_verb="would be rewritten"
   echo "sanitize-archive summary: $sa_total archived job(s) inspected, $sa_changed $sa_verb, $sa_failed failed"
   echo "note: .log files are copied verbatim by await and are NOT sanitized by this sweep."
+  echo "note: a result with no meta beside it can only be cleaned by the skeleton rule — its exact summary string is unrecoverable."
   if [[ "$sa_failed" -gt 0 ]]; then exit 1; fi
   exit 0
 fi
@@ -911,9 +1034,11 @@ for state_dir in state_dirs:
     state_path = os.path.join(ws, "state.json")
     state = None
     state_entries = []
+    state_raw = None
     try:
         with open(state_path) as f:
-            state = json.load(f)
+            state_raw = f.read()
+        state = json.loads(state_raw)
     except (FileNotFoundError, NotADirectoryError):
         state = None
     except (OSError, ValueError) as exc:
@@ -1010,10 +1135,37 @@ for state_dir in state_dirs:
                     e["pid"] = None
                     changed = True
             if changed:
-                tmp = state_path + ".reap-tmp"
-                with open(tmp, "w") as f:
-                    json.dump(state, f, indent=2)
-                os.replace(tmp, state_path)
+                # ⚠️ COMPARE AND SWAP. state.json is the shared, vendor-owned
+                # registry and every other Claude Code session on this machine
+                # writes to it. Everything above was computed from a snapshot
+                # read earlier in this sweep; if the file has moved on since,
+                # writing that snapshot back DELETES whatever they recorded in
+                # between — a job queued after the read simply vanishes, and
+                # await then reports it missing and invites a duplicate
+                # dispatch. Re-read and abort on any difference.
+                #
+                # This NARROWS the window, it does not close it: another writer
+                # can still land between this read and the replace below.
+                # Closing it needs a lock the vendor honours, which does not
+                # exist. Treat an aborted mirror as unfinished work.
+                try:
+                    with open(state_path) as f:
+                        current_raw = f.read()
+                except OSError as exc:
+                    print(f"warning: could not re-read {state_path} before mirroring ({exc.__class__.__name__}); not writing")
+                    skipped += 1
+                    current_raw = None
+                    raise_abort = True
+                else:
+                    raise_abort = current_raw != state_raw
+                    if raise_abort:
+                        print(f"skipped: {state_dir} — state.json changed while this sweep ran, not mirroring into another session's registry")
+                        skipped += 1
+                if not raise_abort:
+                    tmp = state_path + ".reap-tmp"
+                    with open(tmp, "w") as f:
+                        json.dump(state, f, indent=2)
+                    os.replace(tmp, state_path)
         except OSError as exc:
             # The per-job files now say "failed" and the registry the companion
             # actually serves does not. That is unfinished work, not a clean

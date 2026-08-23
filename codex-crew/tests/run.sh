@@ -354,6 +354,20 @@ if (cmd === "result") {
     console.log("this is not JSON at all, and it mentions " + secret);
     process.exit(0);
   }
+  // A prompt the USER controls that merely LOOKS like a marker this script
+  // writes. Treating it as already-sanitized archives it verbatim.
+  if (process.env.CREW_TEST_MARKER_PROMPT === "1") {
+    console.log(JSON.stringify({
+      job: { id: jobId, status: "completed", summary: "<redacted and yet " + secret },
+      storedJob: {
+        id: jobId, status: "completed",
+        request: { cwd: "/w", model: "gpt-5.6-sol",
+                   prompt: "<redacted: but this still says " + secret,
+                   focusText: "<redacted> " + secret }
+      }
+    }));
+    process.exit(0);
+  }
   if (process.env.CREW_TEST_SCALAR_REQUEST === "1") {
     console.log(JSON.stringify({
       job: { id: jobId, status: "completed", elapsed: "3s", pid: null },
@@ -368,6 +382,9 @@ if (cmd === "result") {
   // the last three; a denylist passes them through in silence.
   const request = {
     cwd: "/w", base: "main", model: "gpt-5.6-sol", effort: "high",
+    // Allowlisted NAMES that hold unconstrained strings. The vendor sends both.
+    scope: "scope field carrying " + secret,
+    title: "title field carrying " + secret,
     prompt: "Investigate " + secret,
     focusText: "focus on " + secret,
     userInput: "renamed free text carrying " + secret,
@@ -378,13 +395,21 @@ if (cmd === "result") {
     job: {
       id: jobId, status: "completed", elapsed: "3s", pid: null,
       summary: summaryOf(jobId),
-      request: request
+      request: request,
+      // Free text relocated OUTSIDE any request, under a name no rule knows.
+      // Long, the way a pasted incident log or a prompt is long.
+      notes: "pasted incident log ".repeat(30) + secret
     },
     storedJob: {
       id: jobId, status: "completed", threadId: "th-keepme",
       createdAt: "2026-08-23T00:00:00Z", completedAt: "2026-08-23T00:01:00Z",
       request: request,
-      result: { rawOutput: "FINAL-RESULT-KEEP" }
+      result: {
+        rawOutput: "FINAL-RESULT-KEEP",
+        // Model OUTPUT is arbitrarily long and is the reason the archive
+        // exists. The length guard must not fire inside it.
+        transcript: "the model wrote a great deal about this ".repeat(40)
+      }
     }
   }));
   process.exit(0);
@@ -443,6 +468,17 @@ for holder in ('job', 'storedJob'):
     assert r['userInput'].startswith('<redacted:'), r
     assert r['reviewFocus'].startswith('<redacted:'), r
     assert r['attachments'].startswith('<redacted:'), r
+    # scope and title are unconstrained strings the vendor really sends. They
+    # were allowlisted by name; a name is not a guarantee about content.
+    assert r['scope'].startswith('<redacted:'), r
+    assert r['title'].startswith('<redacted:'), r
+# Free text relocated OUTSIDE any request, under a name no rule knows. The
+# request allowlist cannot see this one at all — only the length guard can.
+assert d['job']['notes'].startswith('<redacted:'), d['job']['notes'][:80]
+# ...and the guard must NOT fire inside a model-output subtree, or the archive
+# loses the very thing it is kept for.
+assert d['storedJob']['result']['transcript'].startswith('the model wrote'), d['storedJob']['result']
+assert d['storedJob']['result']['rawOutput'] == 'FINAL-RESULT-KEEP', d['storedJob']['result']
 "; then
   echo "PASS: meta kept result/thread/status/routing and marked every prompt field"; pass=$((pass + 1))
 else
@@ -542,6 +578,46 @@ else
   echo "FAIL: skeleton rule over-redacted model output (exit=$rc): $(cat "$arc/task-secret7.result.txt" 2>/dev/null)"; fail=$((fail + 1))
 fi
 
+# Case 20j: A MARKER-SHAPED PROMPT. marker() short-circuits on values it
+# believes an earlier pass wrote, so that test has to be anchored to the exact
+# canonical forms. A prefix test is a redaction bypass: prompt and focus text
+# are user-controlled, so "<redacted and yet <SECRET>" would be mistaken for
+# an already-sanitized value and archived verbatim.
+arc="$TMP/meta/arc-marker"
+out="$(CLAUDE_CONFIG_DIR="$TMP/meta" CREW_CODEX_ARCHIVE_DIR="$arc" CREW_CODEX_POLL_SECS=0 \
+  CREW_TEST_SECRET="$SECRET" CREW_TEST_MARKER_PROMPT=1 \
+  bash "$CREW" await task-secret8 --for 5 2>/dev/null)" && rc=0 || rc=$?
+if [[ -f "$arc/task-secret8.meta.json" ]] && ! grep -rq "$SECRET" "$arc"; then
+  echo "PASS: a marker-shaped prompt is redacted, not mistaken for a marker"; pass=$((pass + 1))
+else
+  echo "FAIL: marker-prefix bypass leaked the prompt (exit=$rc): $(cat "$arc/task-secret8.meta.json" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
+# Case 20k: the archive holds ONLY the three artifacts it is supposed to. The
+# unsanitized render used to be staged as a dotfile INSIDE this directory,
+# where a SIGTERM before the sanitizer ran left prompt text permanently in the
+# one place built to outlive the vendor cleanup.
+arc="$TMP/meta/arc-fallback-task"
+stray="$(find "$arc" -type f ! -name '*.meta.json' ! -name '*.result.txt' ! -name '*.log' 2>/dev/null)"
+if [[ -z "$stray" ]]; then
+  echo "PASS: the archive holds no artifact beyond meta/result/log"; pass=$((pass + 1))
+else
+  echo "FAIL: unexpected artifact in the archive: $stray"; fail=$((fail + 1))
+fi
+
+# Case 20l: a stale UNSANITIZED result from an earlier crew-codex must be
+# replaced, not left in place because a file happens to already exist.
+arc="$TMP/meta/arc-stale"
+mkdir -p "$arc"
+printf 'legacy unsanitized render mentioning %s\n' "$SECRET" > "$arc/task-secret9.result.txt"
+out="$(CLAUDE_CONFIG_DIR="$TMP/meta" CREW_CODEX_ARCHIVE_DIR="$arc" CREW_CODEX_POLL_SECS=0 \
+  CREW_TEST_SECRET="$SECRET" bash "$CREW" await task-secret9 --for 5 2>/dev/null)" && rc=0 || rc=$?
+if ! grep -rq "$SECRET" "$arc"; then
+  echo "PASS: a pre-existing unsanitized result is overwritten, not preserved"; pass=$((pass + 1))
+else
+  echo "FAIL: stale leaked result survived (exit=$rc): $(cat "$arc/task-secret9.result.txt")"; fail=$((fail + 1))
+fi
+
 # Case 20i: sanitize-archive — the fix above only helps jobs archived from now
 # on. Everything an earlier crew-codex wrote is still on disk with its focus
 # text in the clear, in the archive that deliberately outlives the vendor's
@@ -592,6 +668,50 @@ if [[ "$rc" == 0 ]] && grep -q "0 rewritten" <<<"$out" \
   echo "PASS: a second sanitize-archive pass is byte-for-byte a no-op"; pass=$((pass + 1))
 else
   echo "FAIL: sanitize-archive is not idempotent (exit=$rc; output: $out)"; fail=$((fail + 1))
+fi
+
+# Case 20m: an ORPHANED result — a .result.txt with no .meta.json beside it.
+# await wrote the render before running the best-effort meta sanitizer, so an
+# interruption in that window leaves exactly this. A meta-driven sweep never
+# enumerates it, never counts it, and exits 0 calling the archive clean.
+orphan="$TMP/orphan-archive"
+mkdir -p "$orphan"
+printf '# Codex Task\n\nJob: task-orphan\nStatus: completed\nSummary: Investigate %s\n\nNo captured result payload was stored for this job.\n' \
+  "$SECRET" > "$orphan/task-orphan.result.txt"
+out="$(bash "$CREW" sanitize-archive --dir "$orphan" 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" == 0 ]] && ! grep -rq "$SECRET" "$orphan" \
+   && grep -q "1 archived job(s) inspected" <<<"$out"; then
+  echo "PASS: sanitize-archive cleans a result with no meta beside it"; pass=$((pass + 1))
+else
+  echo "FAIL: orphaned result was skipped (exit=$rc; output: $out; file: $(cat "$orphan/task-orphan.result.txt"))"; fail=$((fail + 1))
+fi
+
+# Case 20n: a stale unsanitized STAGING file from the old in-archive design is
+# pure prompt text that nothing else will ever read. The sweep removes it.
+printf 'raw render mentioning %s\n' "$SECRET" > "$orphan/.task-ghost.result.raw"
+out="$(bash "$CREW" sanitize-archive --dir "$orphan" 2>&1)" && rc=0 || rc=$?
+if ! grep -rq "$SECRET" "$orphan" && grep -q "stale unsanitized staging file" <<<"$out"; then
+  echo "PASS: sanitize-archive removes a stale unsanitized staging file"; pass=$((pass + 1))
+else
+  echo "FAIL: stale staging file survived (exit=$rc; output: $out)"; fail=$((fail + 1))
+fi
+
+# Case 20o: a symlinked archive entry. cp/mv through one writes wherever it
+# points, so --dir at a crafted directory could rewrite files outside the
+# archive entirely. Refuse rather than follow.
+linkarc="$TMP/link-archive"
+mkdir -p "$linkarc"
+printf 'victim contents\n' > "$TMP/victim.txt"
+ln -s "$TMP/victim.txt" "$linkarc/task-link.result.txt"
+echo '{"job":{"id":"task-link","summary":"x"},"storedJob":{"id":"task-link"}}' \
+  > "$linkarc/task-link.meta.json"
+out="$(bash "$CREW" sanitize-archive --dir "$linkarc" 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" == 1 ]] && grep -q "symlinked archive entry" <<<"$out" \
+   && [[ "$(cat "$TMP/victim.txt")" == "victim contents" ]] \
+   && [[ -L "$linkarc/task-link.result.txt" ]]; then
+  echo "PASS: sanitize-archive refuses to write through a symlink"; pass=$((pass + 1))
+else
+  echo "FAIL: symlink was followed or not reported (exit=$rc; output: $out; victim: $(cat "$TMP/victim.txt"))"; fail=$((fail + 1))
 fi
 
 # --- reap: sweep stuck registry entries --------------------------------------
