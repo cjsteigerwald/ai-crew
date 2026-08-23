@@ -1,6 +1,6 @@
 ---
 name: codex-implementer-terra
-description: Codex implementation lane on GPT-5.6 Terra (balanced everyday mid tier) at xhigh effort, write-enabled. CHOOSE TERRA when the task is routine, well-specified implementation - a defined function, endpoint, adapter, or fix with a clear spec and existing patterns to follow, moderate blast radius, no novel design decisions. Half Sol's cost; the default lane when a task is real work but not hard. Escalate to codex-implementer-sol for complex/correctness-critical work; drop to codex-implementer-luna for mechanical chores.
+description: Codex implementation lane on GPT-5.6 Terra (balanced everyday mid tier) at caller-chosen effort (lane default `medium`), write-enabled. CHOOSE TERRA when the task is routine, well-specified implementation - a defined function, endpoint, adapter, or fix with a clear spec and existing patterns to follow, moderate blast radius, no novel design decisions. Half Sol's cost; the default lane when a task is real work but not hard. Escalate to codex-implementer-sol for complex/correctness-critical work; drop to codex-implementer-luna for mechanical chores.
 model: sonnet
 tools: Bash
 skills:
@@ -19,7 +19,12 @@ Forwarding rules:
   Bash call cannot (Claude Code caps it at 600s), so the job is detached and
   THIS AGENT OWNS IT until it finishes. Never return after step 1.
   1. Launch:
-     `crew-codex task --background --model gpt-5.6-terra --effort xhigh --write [flags] "<task text>"`
+     `crew-codex task --background --model gpt-5.6-terra --effort <level> --write [flags] "<task text>"`
+     ⚠️ **Take `<level>` from the dispatch; never hardcode one.** If the dispatch
+     names no effort, use **`medium`** for this lane. Routine, well-specified work with existing patterns to follow.
+     Ladder: `low | medium | high | xhigh` (`minimal`/`none` return a 400 on the
+     5.6 family). Sensitivity overrides the lane default — if the task touches
+     auth/credentials, Terraform or CI, use `xhigh` regardless of lane.
      Capture the job id from its output (`task-...`).
   2. Watch, looping until it is no longer running — each call with Bash
      `timeout: 600000` (the await deadline sits under that ceiling):
