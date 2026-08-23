@@ -697,7 +697,7 @@ export function collectReviewContext(cwd, target) {
   return {
     cwd, repoRoot: cwd, branch: "stub-branch", target, fileCount: 1, diffBytes: 42,
     inputMode: "inline-diff", collectionGuidance: "STUB-GUIDANCE",
-    content: "STUB-DIFF", summary: "STUB-SUMMARY", changedFiles: []
+    content: "STUB-DIFF", summary: "STUB-SUMMARY", changedFiles: ["stub.txt"]
   };
 }
 EOF
@@ -1035,6 +1035,106 @@ else
   echo "FAIL: hollow context still started a turn"; fail=$((fail + 1))
 fi
 check_no_dispatch "hollow context did not fall through to the vendor" "$INVOKED_E"
+
+# Case 52: a ZERO-CHANGED-FILE context is refused. The vendor renders an empty
+# section as the literal "(none)" (lib/git.mjs:194), so `content` stays
+# non-empty for a clean tree — a string check alone would dispatch a review of
+# nothing, and "no findings" is indistinguishable from a clean review.
+cp -r "$TMP/effort/install" "$TMP/effort/empty-install"
+cat > "$TMP/effort/empty-install/scripts/lib/git.mjs" <<'EOF'
+export function resolveReviewTarget(cwd, options = {}) {
+  const base = options.base ?? "main";
+  return { mode: "branch", label: `branch diff against ${base}`, baseRef: base, explicit: true };
+}
+export function collectReviewContext(cwd, target) {
+  return {
+    cwd, repoRoot: cwd, branch: "stub-branch", target, fileCount: 0, diffBytes: 0,
+    inputMode: "inline-diff", collectionGuidance: "## Files\n\n(none)\n",
+    content: "## Diff\n\n(none)\n", summary: "", changedFiles: []
+  };
+}
+EOF
+mkdir -p "$TMP/empty/plugins"
+echo "{\"version\":2,\"plugins\":{\"codex@openai-codex\":[{\"installPath\":\"$TMP/effort/empty-install\"}]}}" > "$TMP/empty/plugins/installed_plugins.json"
+: > "$INVOKED_E"; rm -f "$TMP/effort/turn.json"
+out="$(CLAUDE_CONFIG_DIR="$TMP/empty" CREW_TEST_INVOKED="$INVOKED_E" \
+  CREW_TEST_TURN_RECORD="$TMP/effort/turn.json" CREW_TEST_STATE_DIR="$STATE_E" \
+  CREW_TEST_JOB_SUFFIX="empty" CREW_CODEX_ARCHIVE_DIR="$ARC_E" \
+  CODEX_HOME="$TMP/effort/codex-home" CREW_CODEX_RETRY_DELAYS="0" \
+  bash "$CREW" adversarial-review --effort xhigh "focus" 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" != "0" ]] && grep -q "no changed files" <<<"$out"; then
+  echo "PASS: zero-diff context refused despite non-empty (none) content"; pass=$((pass + 1))
+else
+  echo "FAIL: zero-diff context not refused (exit=$rc; output: $out)"; fail=$((fail + 1))
+fi
+if [[ ! -f "$TMP/effort/turn.json" ]]; then
+  echo "PASS: zero-diff context started no turn"; pass=$((pass + 1))
+else
+  echo "FAIL: zero-diff context still started a turn"; fail=$((fail + 1))
+fi
+
+# Case 53: the `--` sentinel. The vendor treats everything after it as focus
+# text, so `-- --effort high` is a NO-EFFORT vendor dispatch whose literal focus
+# is "--effort high". Diverting it to the driver would break the
+# byte-identical-passthrough guarantee and then fail for lack of a parsed effort.
+: > "$INVOKED_E"; rm -f "$TMP/effort/turn.json"
+out="$(CLAUDE_CONFIG_DIR="$TMP/effort" CREW_TEST_INVOKED="$INVOKED_E" \
+  CREW_TEST_TURN_RECORD="$TMP/effort/turn.json" CREW_TEST_STATE_DIR="$STATE_E" \
+  CREW_CODEX_ARCHIVE_DIR="$ARC_E" CODEX_HOME="$TMP/effort/codex-home" \
+  CREW_CODEX_RETRY_DELAYS="0" bash "$CREW" adversarial-review -- --effort high 2>&1)" && rc=0 || rc=$?
+check "post-sentinel --effort stays a vendor dispatch" 0 "COMPANION-RAN:adversarial-review|--|--effort|high" "$rc" "$out"
+if [[ ! -f "$TMP/effort/turn.json" ]]; then
+  echo "PASS: post-sentinel --effort never reached the driver"; pass=$((pass + 1))
+else
+  echo "FAIL: post-sentinel --effort routed to the driver"; fail=$((fail + 1))
+fi
+
+# Case 54: the audit sidecar must not archive prompt/focus content. Focus text
+# carries pasted incident logs, hostnames and secret-bearing commands, and this
+# archive deliberately outlives the vendor's session cleanup.
+: > "$INVOKED_E"
+rm -f "$ARC_E"/*.dispatch.json 2>/dev/null || true
+CLAUDE_CONFIG_DIR="$TMP/effort" CREW_TEST_INVOKED="$INVOKED_E" \
+  CREW_TEST_STATE_DIR="$STATE_E" CREW_CODEX_ARCHIVE_DIR="$ARC_E" \
+  CODEX_HOME="$TMP/effort/codex-home" CREW_CODEX_RETRY_DELAYS="0" \
+  CREW_TEST_TURN_RECORD="$TMP/effort/turn.json" CREW_TEST_JOB_SUFFIX="redact" \
+  bash "$CREW" adversarial-review --base main --model gpt-5.6-sol --effort high \
+  "AKIAIOSFODNN7EXAMPLE leaked from prod-db-01" >/dev/null 2>&1 || true
+# `|| true`: under `set -euo pipefail` a non-matching glob makes ls exit 2 and
+# pipefail propagates it out of the command substitution, aborting the suite.
+sidecar="$(ls "$ARC_E"/*.dispatch.json 2>/dev/null | head -1 || true)"
+if [[ -n "$sidecar" ]] && ! grep -q "AKIAIOSFODNN7EXAMPLE\|prod-db-01" "$sidecar"; then
+  echo "PASS: sidecar redacted the focus text"; pass=$((pass + 1))
+elif [[ -z "$sidecar" ]]; then
+  # Not an acceptable pass: this dispatch carries --effort, so it routes to the
+  # driver, which always emits a sidecar. No sidecar means the redaction path
+  # was never exercised and this assertion proved nothing.
+  echo "FAIL: no sidecar written — redaction was not exercised"; fail=$((fail + 1))
+else
+  echo "FAIL: sidecar archived focus text: $(cat "$sidecar")"; fail=$((fail + 1))
+fi
+if [[ -n "$sidecar" ]]; then
+  if grep -q -- "--base" "$sidecar" && grep -q "gpt-5.6-sol" "$sidecar"; then
+    echo "PASS: sidecar kept routing metadata"; pass=$((pass + 1))
+  else
+    echo "FAIL: sidecar dropped routing metadata: $(cat "$sidecar")"; fail=$((fail + 1))
+  fi
+fi
+
+# Case 55: a live job recorded ONLY in state.json, in a workspace with NO jobs/
+# directory, must still hold the --brokers kill gate shut. The gate used to
+# `continue` past such a workspace before reading state.json, bypassing the
+# union in exactly the split-brain case it exists for.
+mkdir -p "$TMP/state-only/state/ghost"
+echo '{"jobs":[{"id":"ghost-1","status":"running","workspaceRoot":"/nonexistent-ghost"}]}' \
+  > "$TMP/state-only/state/ghost/state.json"
+out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/state-only" \
+  bash "$CREW" reap --brokers --dry-run 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" != "0" ]] && grep -q "ghost-1" <<<"$out"; then
+  echo "PASS: state.json-only live job blocks the broker sweep"; pass=$((pass + 1))
+else
+  echo "FAIL: state-only live job did not block the sweep (exit=$rc; output: $out)"; fail=$((fail + 1))
+fi
 
 # Case 50: --background detaches. The parent must return a job id immediately
 # and exit; the child does the turn. This is why the driver exists at all for

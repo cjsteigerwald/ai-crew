@@ -290,6 +290,34 @@ async function executeAdversarialReviewRun(vendor, request) {
   // Deliberately checked here rather than in the import guard: `content` is
   // legitimately empty only when there is genuinely no diff, which is itself
   // not something worth spending a Codex turn on.
+  // NOT sufficient on its own: the vendor renders an empty section as the
+  // literal string "(none)" (lib/git.mjs:194), so `content` stays non-empty for
+  // a target with ZERO changed files. A clean working tree, or --base HEAD,
+  // would sail past a non-empty-string check and dispatch a review of nothing —
+  // which answers "no findings" and renders as a CLEAN PASS. Check the
+  // semantic invariant too, not just the string.
+  const changed = Array.isArray(context.changedFiles) ? context.changedFiles.length : null;
+  const fileCount = typeof context.fileCount === "number" ? context.fileCount : changed;
+  // fileCount is authoritative and changedFiles is only a FALLBACK source for
+  // it — the vendor derives one from the other (`fileCount: details.changedFiles
+  // .length`), so they are never independent signals. ORing them would make an
+  // internally inconsistent context throw for the wrong reason.
+  if (fileCount === 0) {
+    throw new Error(
+      `${context.target.label} has no changed files — refusing to dispatch an adversarial ` +
+        `review of an empty diff. It would return "no findings", which is indistinguishable ` +
+        `from a clean review of real changes. Check the base ref and that the branch has commits.`
+    );
+  }
+  if (fileCount === null) {
+    throw new Error(
+      `collectReviewContext() returned neither "fileCount" nor "changedFiles" for ` +
+        `${context.target.label}. codex@openai-codex ${request.pluginVersion} may have renamed ` +
+        `them; refusing to dispatch, because without them an empty diff cannot be told from a ` +
+        `real one and an empty review renders as a clean pass.`
+    );
+  }
+
   for (const [field, value] of [
     ["content", context.content],
     ["collectionGuidance", context.collectionGuidance]

@@ -124,6 +124,21 @@ Execution rules:
   report that verbatim — the orchestrator decides whether to re-dispatch on
   another tier. Do NOT add your own retry loop on top.
 
+⚠️ **Coverage is not universal, and the gap runs the wrong way.** The stamp is
+written after the dispatch returns, by scraping a job id out of its output. The
+vendor review path (`review`, and `adversarial-review` **without** `--effort`)
+runs foreground and prints **no job id**, so those dispatches get **no
+sidecar** — exactly the reviews with no other audit trail. Driver dispatches
+(`adversarial-review --effort ...`) and `task` dispatches do print an id and are
+stamped. Closing the vendor-path gap needs an id minted before dispatch rather
+than scraped after it: tracked, not done.
+
+⚠️ The sidecar stores **routing metadata only**. Positionals — review focus text
+and task prompts — are replaced by a `<redacted: N positional token(s)>` marker,
+because focus text routinely carries pasted incident logs, internal hostnames and
+secret-bearing commands, and this archive deliberately outlives the vendor's
+session cleanup.
+
 GPT-5.6 family ladder (per OpenAI's own model registry): **sol** = flagship
 frontier coding tier, **terra** = balanced everyday mid tier, **luna** =
 fast/affordable low tier. Other known models (Codex CLI 0.144.0): gpt-5.5,

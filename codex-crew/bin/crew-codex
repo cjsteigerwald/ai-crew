@@ -152,7 +152,11 @@ if [[ "$1" == "review" || "$1" == "adversarial-review" ]]; then
   case "${2:-}" in
     -h|help) review_usage "$1"; exit 0 ;;
   esac
+  # Stop at `--`: the vendor parser treats every token after the sentinel as
+  # positional focus text, so `adversarial-review -- --help` is a review whose
+  # literal focus is "--help". Scanning past it would intercept a valid dispatch.
   for arg in "$@"; do
+    [[ "$arg" == "--" ]] && break
     case "$arg" in
       --help) review_usage "$1"; exit 0 ;;
     esac
@@ -162,6 +166,12 @@ if [[ "$1" == "review" || "$1" == "adversarial-review" ]]; then
   # what would actually take effect.
   effort_pending=0
   for arg in "$@"; do
+    # Same sentinel rule as the help scan: after `--` everything is focus text,
+    # so `adversarial-review -- --effort high` must stay a no-effort vendor
+    # dispatch whose focus is the literal string "--effort high". Routing it to
+    # the driver would both break the byte-identical-passthrough guarantee and
+    # fail, since the driver would find no parsed effort either.
+    [[ "$arg" == "--" ]] && break
     if [[ $effort_pending -eq 1 ]]; then
       REVIEW_EFFORT="$arg"
       effort_pending=0
@@ -615,9 +625,13 @@ live = []
 names = sorted(os.listdir(root)) if os.path.isdir(root) else []
 for name in names:
     jobs_dir = os.path.join(root, name, "jobs")
-    if not os.path.isdir(jobs_dir):
-        continue
-    for entry in sorted(os.listdir(jobs_dir)):
+    # NO `continue` when jobs/ is missing. state.json below is the authoritative
+    # registry, and a workspace can carry a live job there with no per-job file
+    # (partial cleanup, or a record written before the jobs dir existed).
+    # Skipping the workspace here would bypass the union entirely in exactly the
+    # split-brain case the union exists for -- and this gate stands in front of
+    # a KILL.
+    for entry in sorted(os.listdir(jobs_dir) if os.path.isdir(jobs_dir) else []):
         if not entry.endswith(".json"):
             continue
         try:
@@ -1027,6 +1041,39 @@ def flag_value(name):
     return value
 
 
+ROUTING_VALUE_FLAGS = ("--base", "--scope", "--model", "--effort", "--cwd", "--prompt-file")
+ROUTING_BOOL_FLAGS = ("--json", "--background", "--wait", "--write", "--resume-last",
+                      "--resume", "--fresh", "--help", "-h")
+
+
+def redacted_argv():
+    """Recognized routing flags verbatim; every positional replaced by a shape
+    marker. --prompt-file keeps its PATH (not contents) because the path is
+    routing information; the file it names is never read here."""
+    out = []
+    i = 0
+    positionals = 0
+    while i < len(argv):
+        arg = argv[i]
+        if i == 0:
+            out.append(arg)          # the subcommand itself
+        elif arg in ROUTING_VALUE_FLAGS and i + 1 < len(argv):
+            out.append(arg)
+            out.append(argv[i + 1])
+            i += 2
+            continue
+        elif any(arg.startswith(f + "=") for f in ROUTING_VALUE_FLAGS):
+            out.append(arg)
+        elif arg in ROUTING_BOOL_FLAGS:
+            out.append(arg)
+        else:
+            positionals += 1
+        i += 1
+    if positionals:
+        out.append(f"<redacted: {positionals} positional token(s)>")
+    return out
+
+
 def config_effort(path):
     """model_reasoning_effort from the ROOT table only. A value under a
     [profiles.x] table applies only when that profile is selected, so counting
@@ -1063,7 +1110,13 @@ record = {
     "effortEffective": effort_requested if from_flag else effort_config,
     "effortConfig": effort_config,
     "effortSource": "flag" if from_flag else "config",
-    "argv": argv,
+    # NOT the raw argv. Positionals on these subcommands are the review focus
+    # text and task prompts, which routinely carry pasted incident logs, internal
+    # hostnames and secret-bearing commands -- and this archive is deliberately
+    # retained past the vendor's session cleanup, so anything written here
+    # outlives the job by design. The audit objective needs routing metadata, not
+    # content: record the recognized flags and only the SHAPE of the positionals.
+    "argv": redacted_argv(),
     "stampedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
 }
 out = os.environ["CREW_STAMP_OUT"]

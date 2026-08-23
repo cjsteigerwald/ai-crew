@@ -153,6 +153,21 @@ is stamped in both places: the sidecar records it flag-sourced, and the job
 record itself carries `effort`, `model` and `codexPluginVersion`. Stamping is
 best-effort: it can never change a dispatch's exit code, stdout or stderr.
 
+⚠️ **Coverage is not universal, and the gap runs the wrong way.** The stamp is
+written after the dispatch returns, by scraping a job id out of its output. The
+vendor review path (`review`, and `adversarial-review` **without** `--effort`)
+runs foreground and prints **no job id**, so those dispatches get **no
+sidecar** — exactly the reviews with no other audit trail. Driver dispatches
+(`adversarial-review --effort ...`) and `task` dispatches do print an id and are
+stamped. Closing the vendor-path gap needs an id minted before dispatch rather
+than scraped after it: tracked, not done.
+
+⚠️ The sidecar stores **routing metadata only**. Positionals — review focus text
+and task prompts — are replaced by a `<redacted: N positional token(s)>` marker,
+because focus text routinely carries pasted incident logs, internal hostnames and
+secret-bearing commands, and this archive deliberately outlives the vendor's
+session cleanup.
+
 **Housekeeping.** `crew-codex reap [--dry-run]` marks stuck `running`/`queued`
 job records failed once their process is dead or their log has frozen. Two
 opt-in sweeps handle what dies around them:
