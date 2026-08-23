@@ -78,7 +78,10 @@ whatever the codex config said. `crew-codex` now intercepts both before
 dispatching:
 
 ```
-crew-codex review|adversarial-review --help|-h|help   usage, exit 0, no dispatch
+crew-codex review|adversarial-review --help          usage, exit 0, no dispatch
+crew-codex review|adversarial-review -h|help         same, but ONLY as the
+                                                     first arg after the
+                                                     subcommand
 crew-codex task --help|-h                            usage, exit 0, no dispatch
                                                      (bare `help` still forwards:
                                                       it is a plausible prompt)
@@ -87,7 +90,16 @@ crew-codex adversarial-review --effort <bad>          error,  exit 2, no dispatc
 crew-codex [--help|-h|help]                           top-level usage, exit 0
 ```
 
-Matching is exact: focus text may still contain the word `help` or any other
+Scope differs by spelling, deliberately. `--help` is intercepted at any
+position — nobody passes that literal token as review prose. A bare `help` or
+`-h` is intercepted **only as the first argument after the subcommand**,
+because focus text arrives as unquoted positionals the companion joins:
+scanning every position would make `adversarial-review improve the help
+wording` print usage and exit 0 without dispatching, silently swallowing a
+real review while reporting success. Refusing to review is a worse failure
+than printing usage one position later.
+
+Matching is otherwise exact: focus text may still contain the word `help` or any other
 `--`-prefixed token, and those forward untouched.
 
 **Per-dispatch reasoning effort on adversarial reviews.** codex-companion

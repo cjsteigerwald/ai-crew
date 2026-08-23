@@ -364,9 +364,24 @@ check_no_dispatch "adversarial-review --help did not dispatch" "$INVOKED"
 out="$(run_guard review -h)" && rc=0 || rc=$?
 check "review -h exits 0" 0 "crew-codex review \[flags\]" "$rc" "$out"
 check_no_dispatch "review -h did not dispatch" "$INVOKED"
-out="$(run_guard review --base main help)" && rc=0 || rc=$?
-check "bare 'help' among review args exits 0" 0 "NO --effort flag" "$rc" "$out"
+out="$(run_guard review help)" && rc=0 || rc=$?
+check "bare 'help' as the FIRST arg exits 0" 0 "NO --effort flag" "$rc" "$out"
 check_no_dispatch "review help did not dispatch" "$INVOKED"
+
+# ...but a bare `help` anywhere LATER is focus text, not a help request, and
+# must still dispatch. Focus prose arrives as unquoted positionals that the
+# companion joins, so intercepting `help` at every position would silently
+# swallow a real review and exit 0 — telling the caller it succeeded while
+# reviewing nothing. Refusing to review is worse than printing usage late.
+out="$(run_guard review --base main help)" && rc=0 || rc=$?
+check "bare 'help' in a later position still forwards" 0 "COMPANION-RAN:review|--base|main|help" "$rc" "$out"
+
+out="$(run_guard adversarial-review improve the help wording)" && rc=0 || rc=$?
+check "unquoted focus prose containing 'help' still dispatches" 0 "COMPANION-RAN:adversarial-review|improve|the|help|wording" "$rc" "$out"
+
+out="$(run_guard adversarial-review -h)" && rc=0 || rc=$?
+check "-h as the FIRST arg exits 0" 0 "crew-codex adversarial-review \\[flags\\]" "$rc" "$out"
+check_no_dispatch "-h first-arg did not dispatch" "$INVOKED"
 
 # Case 25: --effort on the NATIVE review path is still refused loudly, exit 2,
 # no dispatch. `review` maps to the companion's runAppServerReview path, which
@@ -1005,7 +1020,15 @@ if [[ "$rc" != "0" ]] && grep -q 'no usable "content"' <<<"$out"; then
 else
   echo "FAIL: hollow context not refused (exit=$rc; output: $out)"; fail=$((fail + 1))
 fi
-check "hollow context explains the clean-review hazard" "$rc" "indistinguishable from a clean review" "$rc" "$out"
+# NOT `check ... "$rc" ... "$rc"` — that compares the exit code to itself and
+# asserts nothing. The block above already proved rc != 0; this asserts the
+# message explains WHY, so a future reader of the failure understands the
+# hazard rather than just seeing a refusal.
+if grep -q "indistinguishable from a clean review" <<<"$out"; then
+  echo "PASS: hollow context explains the clean-review hazard"; pass=$((pass + 1))
+else
+  echo "FAIL: hollow context did not explain the hazard (output: $out)"; fail=$((fail + 1))
+fi
 if [[ ! -f "$TMP/effort/turn.json" ]]; then
   echo "PASS: hollow context started no turn"; pass=$((pass + 1))
 else

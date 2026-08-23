@@ -136,12 +136,25 @@ if [[ "$1" == "review" || "$1" == "adversarial-review" ]]; then
   # EXACT matches only, and only for these two subcommands. Focus text is free
   # prose that may legitimately contain the word "help" or a --flag-shaped
   # token, and rejecting unknown flags wholesale would break dispatches the
-  # companion accepts. Scanning "$@" including $1 is safe — no subcommand
-  # equals an intercepted token. Two passes so --help wins over the --effort
-  # error no matter which comes first.
+  # companion accepts. Two passes so --help wins over the --effort error no
+  # matter which comes first.
+  #
+  # ⚠️ SCOPE DIFFERS BY SPELLING, deliberately:
+  #   --help  — scanned at EVERY position. Nobody passes a literal "--help"
+  #             token as review focus prose.
+  #   help/-h — accepted ONLY as the first argument after the subcommand.
+  #             Focus text is passed as unquoted positionals that the companion
+  #             joins, so scanning every position would make
+  #             `adversarial-review improve the help wording` print usage and
+  #             exit 0 WITHOUT dispatching — silently swallowing a real review
+  #             and reporting success to the caller. Refusing to review is a
+  #             worse failure than printing usage one position later.
+  case "${2:-}" in
+    -h|help) review_usage "$1"; exit 0 ;;
+  esac
   for arg in "$@"; do
     case "$arg" in
-      --help|-h|help) review_usage "$1"; exit 0 ;;
+      --help) review_usage "$1"; exit 0 ;;
     esac
   done
   # Collect --effort in BOTH spellings, last occurrence wins — the same rule
@@ -617,7 +630,29 @@ for name in names:
             continue
         if job.get("status") not in TERMINAL:
             live.append(f"{name}/{job.get('id', entry)}({job.get('status')})")
-print(" ".join(live))
+    # ALSO read state.json, not just jobs/*.json. The two records can disagree
+    # -- a job may exist in the workspace registry with its per-job file
+    # deleted or never written -- and state.json is the authoritative source
+    # the companion serves status/result/cancel from. Reading only jobs/ lets a
+    # split-brain non-terminal job slip past this gate, and the gate stands in
+    # front of a KILL: we would take out the broker serving a job the
+    # companion still reports as running. `--state` already takes this
+    # pessimistic union before its (merely destructive-to-history) prune; the
+    # kill path must be at least as careful.
+    state_path = os.path.join(root, name, "state.json")
+    if os.path.isfile(state_path):
+        try:
+            with open(state_path) as f:
+                data = json.load(f)
+        except Exception:
+            live.append(f"{name}/state.json(unreadable)")
+        else:
+            entries = data if isinstance(data, list) else (data or {}).get("jobs", [])
+            if isinstance(entries, list):
+                for e in entries:
+                    if isinstance(e, dict) and e.get("status") not in TERMINAL:
+                        live.append(f"{name}/{e.get('id', '?')}({e.get('status')})")
+print(" ".join(sorted(set(live))))
 PY
 )"
     if [[ -n "$LIVE_JOBS" ]]; then
