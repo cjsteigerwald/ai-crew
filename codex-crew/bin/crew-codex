@@ -33,11 +33,13 @@ Subcommands crew-codex handles itself:
                                 completed, 1 failed/cancelled, 2 not found,
                                 3 stale, 4 hung, 10 still running (call again)
   reap [--dry-run] [--brokers] [--state]
-                                mark stuck job records failed; --brokers
-                                REPORTS brokers whose --cwd is gone and kills
-                                nothing (it prints a command for you to run),
-                                --state prunes state dirs for workspaces that
-                                are gone and are provably idle
+                                mark stuck job records failed; --brokers and
+                                --state are REPORT ONLY — they kill no process
+                                and delete no directory, they print the command
+                                for you to run. Exit: 0 the sweep classified
+                                everything, 2 usage error, 3 the sweep was
+                                INCOMPLETE (entries blocked, unresolved or
+                                skipped — read the lines, do not treat as clean)
   --help | -h | help            this text
 
 Everything else (task, review, adversarial-review, status, result, cancel,
@@ -340,7 +342,93 @@ print("\t".join([
       completed|failed|cancelled)
         mkdir -p "$CREW_ARCHIVE_DIR"
         node "$COMPANION" result "$JOB_ID" >"$CREW_ARCHIVE_DIR/$JOB_ID.result.txt" 2>/dev/null || true
-        node "$COMPANION" result "$JOB_ID" --json >"$CREW_ARCHIVE_DIR/$JOB_ID.meta.json" 2>/dev/null || true
+        # ---- .meta.json sanitization: a DURABLE prompt leak, not a nicety --
+        # `result --json` hands back the companion's storedJob verbatim, and a
+        # stored job carries its REQUEST: a background task keeps the prompt in
+        # storedJob.request.prompt, a background effort review keeps the focus
+        # text in storedJob.request.focusText, and a task's summary is the first
+        # 96 characters of the prompt (companion:552, `shorten(prompt)`). So the
+        # unsanitized meta sat directly beside a carefully redacted
+        # .dispatch.json holding the original incident text, credentials,
+        # hostnames and paths — in an archive that exists precisely to OUTLIVE
+        # the vendor session cleanup. Redacting the sidecar and not this file
+        # redacts nothing.
+        # Stripped BY KEY SHAPE and RECURSIVELY, wherever the key appears: a
+        # path rule ("request.prompt") fails open the moment the vendor moves or
+        # renames that payload in a version bump, and it would fail open
+        # silently. Result, thread, status, timing and routing fields survive —
+        # they are the reason this archive exists at all.
+        # ⚠️ Best-effort by construction: an archiving failure must never change
+        # await's exit code or its single stdout line, so the whole pipeline is
+        # swallowed. An unparseable payload is WITHHELD rather than written raw:
+        # "we could not sanitize it" must not become "so we archived it intact".
+        {
+          node "$COMPANION" result "$JOB_ID" --json 2>/dev/null \
+            | CREW_META_OUT="$CREW_ARCHIVE_DIR/$JOB_ID.meta.json" \
+              CREW_META_JOB_ID="$JOB_ID" python3 -c '
+import json, os, sys
+
+JOB_ID = os.environ.get("CREW_META_JOB_ID", "")
+# A TASK summary is shorten(prompt) — prompt text wearing a routing-looking
+# name. A REVIEW summary is the model finding summary: output, not input, and
+# worth keeping. The job-id prefix is the discriminator crew-codex already has.
+DROP_SUMMARY = JOB_ID.startswith("task-")
+
+
+def is_free_text(key):
+    k = "".join(c for c in str(key).lower() if c.isalnum())
+    if k.endswith("prompt") or k.endswith("prompttext"):
+        return True
+    if k.endswith("focustext") or k == "focus":
+        return True
+    if k.endswith("instructions"):
+        return True
+    return DROP_SUMMARY and k == "summary"
+
+
+def marker(value):
+    # Shape only, never content — the same contract the .dispatch.json argv
+    # redaction uses, so the two sidecars cannot disagree about what is safe.
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return "<redacted: %d chars>" % len(value)
+    if isinstance(value, list):
+        return "<redacted: %d item(s)>" % len(value)
+    if isinstance(value, dict):
+        return "<redacted: %d key(s)>" % len(value)
+    return "<redacted>"
+
+
+def scrub(value):
+    if isinstance(value, dict):
+        return dict((k, marker(v) if is_free_text(k) else scrub(v))
+                    for k, v in value.items())
+    if isinstance(value, list):
+        return [scrub(v) for v in value]
+    return value
+
+
+raw = sys.stdin.read()
+try:
+    payload = json.loads(raw)
+except ValueError:
+    payload = None
+if payload is None:
+    record = {
+        "jobId": JOB_ID,
+        "crewArchive": "withheld",
+        "reason": "companion result --json was empty or unparseable; the raw payload is NOT archived because it can carry unredacted prompt text",
+    }
+else:
+    record = scrub(payload)
+out = os.environ["CREW_META_OUT"]
+tmp = out + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    json.dump(record, handle, indent=2)
+os.replace(tmp, out)
+'
+        } >/dev/null 2>&1 || true
         if [[ -f "$jlog" ]]; then
           cp -f "$jlog" "$CREW_ARCHIVE_DIR/$JOB_ID.log" 2>/dev/null || true
         fi
@@ -444,9 +532,33 @@ if [[ "${1:-}" == "reap" ]]; then
     esac
     shift
   done
+
+  # ---- exit code: a blocked sweep must not report success -------------------
+  # Every sweep used to end in `exit 0`, so a caller could not tell a sweep that
+  # classified everything from one that skipped an unreadable record, a
+  # malformed registry or a live-pid workspace — the exact entries a human still
+  # has to deal with. Automation reading the exit code was therefore told
+  # "clean" by a sweep that had walked past the interesting half of its input.
+  #   0 = every entry was classified
+  #   2 = usage error (unknown flag), rejected before anything ran
+  #   3 = the sweep ran but at least one entry was blocked/unresolved/skipped
+  #   1 = reap itself failed (an unhandled error inside a sweep)
+  # --brokers is deliberately NOT part of this: it discovers processes, it does
+  # not sweep registry entries, and its "unknown" classification is its normal
+  # reportable output rather than work left undone.
+  REAP_EXIT=0
+  reap_record_exit() {
+    # Severity, not recency: 1 (reap broke) outranks 3 (sweep incomplete).
+    local rc="$1"
+    [[ "$rc" -eq 0 ]] && return 0
+    if [[ "$REAP_EXIT" -eq 0 || "$rc" -lt "$REAP_EXIT" ]]; then REAP_EXIT="$rc"; fi
+    return 0
+  }
+
+  rc=0
   REAP_LOG_AGE="${CREW_CODEX_REAP_LOG_AGE:-3600}" \
   REAP_DRY="$DRY" \
-  python3 - "$CLAUDE_PLUGIN_DATA/state" <<'PY'
+  python3 - "$CLAUDE_PLUGIN_DATA/state" <<'PY' || rc=$?
 import datetime, json, os, sys, time
 root = sys.argv[1]
 max_age = int(os.environ.get("REAP_LOG_AGE", "3600"))
@@ -508,8 +620,9 @@ except (FileNotFoundError, NotADirectoryError):
     print(f"reap: no state dir at {root}")
     raise SystemExit(0)
 except OSError as exc:
+    # Not a clean sweep: nothing was swept and we cannot say what is in there.
     print(f"reap: cannot list {root} ({exc.__class__.__name__}) — nothing swept")
-    raise SystemExit(0)
+    raise SystemExit(3)
 for state_dir in state_dirs:
     ws = os.path.join(root, state_dir)
     jobs_dir = os.path.join(ws, "jobs")
@@ -643,9 +756,16 @@ for state_dir in state_dirs:
                     json.dump(state, f, indent=2)
                 os.replace(tmp, state_path)
         except OSError as exc:
+            # The per-job files now say "failed" and the registry the companion
+            # actually serves does not. That is unfinished work, not a clean
+            # sweep, so it counts toward the non-zero exit below.
             print(f"warning: could not update {state_path}: {exc}")
-print(f"reap summary: {reaped} {'flagged' if dry else 'reaped'}, {kept} kept, {skipped} skipped (live workspace)")
+            skipped += 1
+print(f"reap summary: {reaped} {'flagged' if dry else 'reaped'}, {kept} kept, "
+      f"{skipped} skipped (unreadable, live workspace or unwritable)")
+raise SystemExit(3 if skipped else 0)
 PY
+  reap_record_exit "$rc"
 
   # ---- --brokers: REPORT ONLY. This sweep kills NOTHING. --------------------
   # A broker outlives the worktree it was spawned for: delete the worktree and
@@ -900,33 +1020,71 @@ PY
     echo "reap --brokers took no action: killing a broker from a sweep has failed open five times and cannot be made safe from outside the broker; socket dirs under /tmp/cxc-* are likewise left alone because that namespace is shared with other sessions."
   fi
 
-  # ---- --state: prune workspace state dirs whose workspace is gone ---------
-  # ⚠️ This is the IRREVERSIBLE sweep. It was once assumed safe because it kills
-  # no process — it isn't. The dir it rmtree's IS the registry the companion
-  # serves status/result/cancel from, and $CLAUDE_PLUGIN_DATA/state is shared by
-  # every Claude Code session on this machine. Prune one holding another
-  # session's live job and that session's `await` breaks with the history gone.
-  # So it prunes ONLY when ALL of these hold, and every one of them is proven,
-  # never inferred from a filesystem predicate:
-  #   * every record in the dir was READ and PARSED (broker.json, state.json,
-  #     jobs/*.json). Unreadable or unrecognized => blocked, never pruned;
-  #   * a cwd was resolved from those records;
-  #   * that cwd is PROVABLY absent (FileNotFoundError/NotADirectoryError from
-  #     lstat). Any other OSError means we cannot see it => blocked;
-  #   * no job in the dir is non-terminal, and no job's pid is alive — a live
-  #     pid means a live companion that may rewrite this registry mid-sweep,
-  #     whatever its record says.
-  # Nothing here is global: it acts on one named directory at a time and prints
-  # each one. Never add a "prune everything older than N".
+  # ---- --state: REPORT ONLY. This sweep deletes NOTHING. -------------------
+  # It used to rmtree a state dir whose workspace was gone. It no longer does,
+  # and this is not a hardening pass: DELETION ITSELF WAS THE DEFECT.
+  #
+  # ⚠️⚠️ WHY THERE IS NO rmtree HERE — read this before "restoring" one.
+  # The dir this sweep would delete IS the registry the companion serves
+  # status/result/cancel from, and $CLAUDE_PLUGIN_DATA/state is shared by EVERY
+  # Claude Code session on this machine. Four findings closed by construction
+  # the moment the delete went away — every one of them a fail-OPEN in front of
+  # an irreversible operation, and every one of them the same class that already
+  # forced --brokers to become report-only:
+  #   1. UNLOCKED SCAN-TO-RMTREE RACE. Nothing holds a lock between
+  #      inspect_jobs() and the delete. Another session can enqueue a job into
+  #      this workspace, or recreate the cwd, in that window — the identical
+  #      irreducible TOCTOU that made the broker kill unsafe. Scanning harder
+  #      does not close it; only the process owning the registry can.
+  #   2. DANGLING SYMLINK / ENOTDIR read as ABSENCE. The cwd probe classifies
+  #      FileNotFoundError and NotADirectoryError as "provably gone", but a cwd
+  #      that is a symlink to a moved-and-restored workspace, or a path whose
+  #      parent is momentarily a file, raises exactly those — so a live
+  #      workspace read as gone and its history was deleted.
+  #   3. MALFORMED/MISSING PIDs LAUNDERED INTO TERMINAL RECORDS. The default
+  #      sweep runs first and rewrites stuck jobs to status "failed" with
+  #      pid None. A record whose pid was a string, a float, or absent is not
+  #      alive to pid_alive() — so the preliminary sweep can hand --state a
+  #      workspace that reads terminal-and-idle purely because we could not
+  #      evaluate its pid.
+  #   4. resolve_cwd KEEPS ONLY THE FIRST cwd. A state dir accumulates records
+  #      from several workspace roots (worktrees recreated at the same path,
+  #      moved checkouts). The first recorded cwd being gone said nothing about
+  #      the others, so a LATER, LIVE workspace's history was deleted on the
+  #      evidence of an older dead one.
+  # Findings 2, 3 and 4 are deliberately NOT hardened here. They exist only
+  # because a delete existed; with no delete, the worst outcome of each is a
+  # misclassified line of REPORT, which a human reads before running anything.
+  # Hardening them would re-establish the illusion that a scan can prove a
+  # shared registry idle from outside — the illusion that failed five times on
+  # the broker path.
+  #
+  # What is kept is the detection, and every blocking classification with it:
+  # unreadable, unparseable, unrecognized schema, non-terminal job, live pid.
+  # Nothing here is global: it names one directory at a time and prints a
+  # paste-ready command for a human. Never add a "prune everything older than N".
+  #
+  # RULES FOR ANYONE EDITING THIS BLOCK:
+  #   * Never rm, never rmtree, never truncate. Print a command; let a human run it.
+  #   * Never guard with os.path.exists/isdir/isfile. Attempt the operation and
+  #     classify the exception: FileNotFoundError/NotADirectoryError mean
+  #     ABSENT; every other OSError means UNREADABLE and blocks the report.
   if [[ "$SWEEP_STATE" -eq 1 ]]; then
     echo
-    REAP_DRY="$DRY" python3 - "$CLAUDE_PLUGIN_DATA/state" <<'PY'
-import json, os, shutil, stat, sys
+    echo "reap --state: REPORT ONLY — this sweep deletes no state dir and no job history."
+    if [[ "$DRY" -eq 1 ]]; then
+      echo "note: --dry-run is redundant with --state (accepted, no effect) — the state sweep never deletes."
+    fi
+    rc=0
+    REAP_DRY="$DRY" python3 - "$CLAUDE_PLUGIN_DATA/state" <<'PY' || rc=$?
+import json, os, shlex, stat, sys
 
 root = sys.argv[1]
+# Parsed and reported for symmetry with --brokers, which also accepts a
+# redundant --dry-run. There is no destructive branch left for it to select.
 dry = os.environ.get("REAP_DRY") == "1"
 TERMINAL = {"completed", "failed", "cancelled", "gone"}
-pruned = kept = unresolved = blocked = 0
+candidates = kept = unresolved = blocked = 0
 
 
 def read_json(path):
@@ -969,6 +1127,13 @@ def registry_entries(data):
 
 
 def pid_alive(pid):
+    # ⚠️ A pid that is not an int (a string, a float, absent) reads as NOT
+    # alive — and the default reap sweep runs FIRST, rewriting stuck records to
+    # status "failed" with pid None. So a workspace can reach this sweep looking
+    # terminal-and-idle purely because its pid was unevaluable (finding 3). That
+    # was a fail-open in front of an rmtree; with the delete gone it is one
+    # possibly-wrong line of report, and hardening it would only make the report
+    # look more authoritative than a scan of a shared registry can ever be.
     if not isinstance(pid, int):
         return False
     try:
@@ -979,7 +1144,7 @@ def pid_alive(pid):
     except PermissionError:
         return True        # another user's process is still very much alive
     except OSError:
-        return True        # unknown failure: assume alive, never prune on it
+        return True        # unknown failure: assume alive, never report on it
 
 
 def resolve_cwd(ws):
@@ -990,6 +1155,13 @@ def resolve_cwd(ws):
     jobs[].workspaceRoot — which in current versions is the only place it
     appears at all. A file we could not READ is a problem, not a miss: it may
     have named a cwd that is still very much alive.
+
+    ⚠️ Only the FIRST cwd found is kept, so a state dir holding records from
+    several workspace roots is judged on one of them. That was finding 4 while
+    this sweep deleted: a later, LIVE workspace's history could be removed on
+    the evidence of an older dead one. It is left as-is deliberately — the
+    output is now a suggestion a human reads, and the `rm -rf` line prints the
+    STATE DIR, so the reader sees the same directory we judged.
     """
     problems = []
     found = None
@@ -1079,8 +1251,8 @@ try:
 except (FileNotFoundError, NotADirectoryError):
     names = []
 except OSError as exc:
-    print(f"reap state: cannot list {root} ({exc.__class__.__name__}) — nothing pruned")
-    raise SystemExit(0)
+    print(f"reap state: cannot list {root} ({exc.__class__.__name__}) — nothing inspected")
+    raise SystemExit(3)
 if not names:
     print(f"reap state: no state dirs under {root}")
 for name in names:
@@ -1107,7 +1279,11 @@ for name in names:
     try:
         os.lstat(cwd)
     except (FileNotFoundError, NotADirectoryError):
-        pass                              # provably gone — the only prunable case
+        # "Provably gone" — as far as one lstat can prove anything. A dangling
+        # symlink and a parent that is momentarily a file raise these too
+        # (finding 2), which is precisely why the answer is now a REPORT and
+        # not a delete. Not hardened: no probe run from outside can do better.
+        pass
     except OSError as exc:
         print(f"state blocked: {name} — cwd {cwd} could not be proven absent ({exc.__class__.__name__})")
         blocked += 1
@@ -1125,26 +1301,31 @@ for name in names:
         print(f"state blocked: {name} ({cwd} is gone but jobs {live} are non-terminal or still have a live pid)")
         blocked += 1
         continue
-    if dry:
-        print(f"would prune state dir: {ws} (cwd {cwd} is gone)")
-        pruned += 1
-        continue
-    try:
-        shutil.rmtree(ws)
-    except OSError as exc:
-        print(f"state blocked: {name} (prune failed: {exc})")
-        blocked += 1
-        continue
-    print(f"pruned state dir: {ws} (cwd {cwd} is gone)")
-    pruned += 1
-verb = "would prune" if dry else "pruned"
-print(f"reap state summary: {pruned} {verb}, {kept} kept (cwd alive), "
+    # Everything the old sweep required before an rmtree holds — and it held a
+    # moment ago, not now (finding 1: nothing locks this registry against the
+    # other sessions sharing it). So the finding is reported, with the command,
+    # for a human who can check what we cannot.
+    print(f"state candidate: {name} — cwd {cwd} is gone; every record here parsed and is terminal with no live pid")
+    print(f"  ⚠️ this registry is in a state root SHARED by every Claude Code session on this machine, and a")
+    print(f"     job can be queued into it between this scan and any delete. Confirm it is nobody's first:")
+    print(f"      ls -la {shlex.quote(ws)}")
+    print(f"  then, only if you are sure, delete it yourself — this destroys the job history irreversibly:")
+    print(f"      rm -rf {shlex.quote(ws)}")
+    candidates += 1
+print(f"reap state summary: {candidates} reported (nothing deleted), {kept} kept (cwd alive), "
       f"{blocked} blocked (non-terminal, live pid or unreadable), "
       f"{unresolved} unresolved (skipped)")
+print("reap --state took no action: the registry it would delete is shared with every other session, and "
+      "no scan run from outside it can prove it idle — the same reason --brokers stopped killing.")
+# Blocked and unresolved entries are work a human still has to finish. Reporting
+# exit 0 for them told automation the sweep was complete when it had walked past
+# exactly the dirs that need a decision.
+raise SystemExit(3 if (blocked or unresolved) else 0)
 PY
+    reap_record_exit "$rc"
   fi
 
-  exit 0
+  exit "$REAP_EXIT"
 fi
 
 # ---- effort routing: adversarial-review --effort runs on our own driver ----

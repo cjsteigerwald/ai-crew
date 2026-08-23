@@ -274,14 +274,53 @@ function firstMeaningfulLine(text, fallback) {
 // construction (changedFiles is where fileCount comes from). Returns the PATHS,
 // never the marker text: callers put this in error messages and job logs, and
 // the marker text can be a fragment of someone's file.
+//
+// Two ways that structural test was still ambiguous, and both are handled here:
+//
+// OVER-COUNT — the changed-path cross-check does not save us when the colliding
+// text names a REAL changed file. The collector inlines untracked files raw
+// inside a fence, so reviewing a doc that quotes the collector's own output
+// ("### notes.md" then "(skipped: example)") produced a marker for a path that
+// is genuinely in changedFiles, and once the count reached fileCount the driver
+// REFUSED a reviewable diff. Fenced regions are therefore tracked and skipped:
+// inside a fence every line is file CONTENT, never collector structure.
+//
+// UNDER-COUNT — the heading capture used to be `(.+?)\s*$`, trimming trailing
+// whitespace off the path before the membership test. A changed path that
+// really ends in spaces (git happily tracks one) then never matched its own
+// heading, the marker was not counted, and an all-skipped context could be
+// dispatched as a blind review. The path is now captured and compared EXACTLY;
+// the vendor renders `### ${file}`, so any trailing space in the heading is part
+// of the filename.
 function collectSkippedFiles(content, changedFiles) {
   const lines = String(content ?? "").split(/\r?\n/);
   const changed = Array.isArray(changedFiles) && changedFiles.length > 0
     ? new Set(changedFiles.map((file) => String(file)))
     : null;
   const paths = new Set();
-  for (let i = 0; i + 1 < lines.length; i += 1) {
-    const heading = /^### (.+?)\s*$/.exec(lines[i]);
+  // The marker that opened the region we are inside, or null at top level.
+  // CommonMark rules, minus what cannot occur here: an opening fence may carry
+  // an info string, a closing fence may not, and a closing fence must use the
+  // same character and be at least as long. An UNTERMINATED fence in inlined
+  // content therefore swallows the rest of the blob — deliberately, because
+  // that is what a Markdown reader does with it too, and because the failure
+  // direction (fewer markers, so a review is dispatched with a warning) beats
+  // refusing a reviewable diff outright.
+  let fence = null;
+  for (let i = 0; i < lines.length; i += 1) {
+    const fenceLine = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(lines[i]);
+    if (fenceLine) {
+      const [, marker, info] = fenceLine;
+      if (fence === null) {
+        fence = marker;
+      } else if (marker[0] === fence[0] && marker.length >= fence.length && info.trim() === "") {
+        fence = null;
+      }
+      continue;
+    }
+    if (fence !== null) continue;
+    if (i + 1 >= lines.length) break;
+    const heading = /^### (.+)$/.exec(lines[i]);
     if (!heading) continue;
     if (!/^\(skipped: .*\)\s*$/.test(lines[i + 1])) continue;
     const file = heading[1];

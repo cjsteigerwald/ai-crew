@@ -184,20 +184,51 @@ opt-in sweeps handle what dies around them:
   running several Claude Code sessions at once, a candidate may be serving
   another session's in-flight review. The decision is yours; the evidence is
   printed. `--dry-run` is accepted with `--brokers` but has nothing to change.
-- `--state` prunes state dirs whose recorded cwd is gone and that hold no
-  non-terminal job and no live pid. A dir whose cwd cannot be parsed is
-  reported `unresolved`; one whose records cannot be read or parsed — including
-  an unreadable directory or an unrecognized `state.json` shape — is reported
-  `blocked`. Neither is ever pruned: it deletes the registry the companion
-  serves `status`/`result`/`cancel` from, which may belong to another session.
+- `--state` **reports and never deletes.** It finds state dirs whose recorded
+  cwd is gone and that hold no non-terminal job and no live pid, and prints the
+  dir, the resolved cwd, why it qualifies and a paste-ready `rm -rf <dir>` for
+  you to run yourself — with the warning that the registry may belong to another
+  concurrent session. A dir whose cwd cannot be parsed is reported `unresolved`;
+  one whose records cannot be read or parsed — including an unreadable directory
+  or an unrecognized `state.json` shape — is reported `blocked`.
+  Why no delete: the dir is the registry the companion serves
+  `status`/`result`/`cancel` from, in a state root **shared by every Claude Code
+  session on this machine**, and the scan that clears it carries the same
+  irreducible TOCTOU as the broker kill — another session can queue a job into
+  that workspace, or recreate the cwd, between the scan and the delete. Three
+  further fail-open paths (a dangling symlink read as absence, a malformed pid
+  laundered into a terminal record by the preliminary job sweep, and only the
+  *first* recorded cwd being checked) mattered only because a delete followed
+  them; with the delete gone each is at worst one misclassified line of report
+  that a human reads before running anything. `--dry-run` is accepted with
+  `--state` but has nothing to change.
 
-`--state` is irreversible, so dry-run first: `crew-codex reap --state --dry-run`.
+**Exit codes for `reap`:** `0` every entry was classified, `2` usage error,
+`3` the sweep ran but at least one entry was **blocked, unresolved or skipped**,
+`1` reap itself failed. Exit `3` is not a failure to fix — it is a sweep that
+walked past entries a human still has to decide about, and it exists because a
+uniform `exit 0` told automation that such a sweep had finished the job.
 
 **Results survive.** On terminal state `await` archives the result, metadata
 and log to `~/.claude/plugins/data/codex-crew/jobs/`, which the companion's
 50-job pruner cannot delete. Jobs still stop when the Claude session ends (by
 design), but the archived transcript and `threadId` remain, so interrupted
 work is resumed rather than re-run from scratch.
+
+⚠️ The archived `<job-id>.meta.json` is **sanitized before it is written**. The
+companion's `result --json` returns `storedJob` verbatim, and a stored job
+carries its request: a background task keeps its prompt in
+`storedJob.request.prompt`, a background effort review keeps its focus text in
+`storedJob.request.focusText`, and a task's `summary` is the first 96 characters
+of the prompt. Unsanitized, that put the original incident text, credentials,
+hostnames and paths in the same directory as a carefully redacted
+`.dispatch.json` — an archive that exists precisely to outlive the vendor's
+session cleanup. Prompt-shaped fields are now replaced by a
+`<redacted: N chars>` marker, stripped **by key shape and recursively** so a
+vendor rename cannot reopen the leak silently; result, thread, status, timing
+and routing fields are kept. A payload that cannot be parsed is **withheld**
+rather than archived raw. Sanitization is best-effort in the same sense as
+stamping: it never changes `await`'s exit code or its single stdout line.
 
 **Capacity retries**: "model is at capacity" rejections are retried by
 `crew-codex` automatically — up to 3 attempts with jittered 5/15/45s backoff

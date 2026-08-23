@@ -77,13 +77,21 @@ Primary helper — `crew-codex`, on PATH while the plugin is enabled:
     "workspace gone" twice over) plus an unclosable scan-then-kill race; a
     candidate may be another session's live broker. `--dry-run` is accepted
     here and has no effect.
-  - `--state` prunes state dirs whose recorded cwd is gone, that hold no
-    non-terminal job and no live pid, and whose records were all read and
-    parsed. This deletes job history and logs — dry-run it first. A dir whose
-    cwd cannot be parsed is `unresolved`; one that cannot be read or parsed is
-    `blocked`. Neither is ever pruned.
-  `--state` composes with `--dry-run`, and plain `reap` behaves exactly as
-  before. Main-thread housekeeping, not for crew agents mid-job.
+  - `--state` **reports only — it deletes nothing.** It lists state dirs whose
+    recorded cwd is gone, that hold no non-terminal job and no live pid, and
+    whose records were all read and parsed, and prints a paste-ready
+    `rm -rf <dir>` for a human to run after confirming the registry is not
+    another session's. A dir whose cwd cannot be parsed is `unresolved`; one
+    that cannot be read or parsed is `blocked`. The delete was withdrawn for
+    the same reason the broker kill was: the dir is the registry the companion
+    serves `status`/`result`/`cancel` from, the state root is shared with every
+    other Claude Code session, and nothing locks it between the scan and the
+    delete. `--dry-run` is accepted here and has no effect.
+  Exit codes: `0` everything was classified, `2` usage error, `3` the sweep ran
+  but at least one entry was **blocked, unresolved or skipped** (read the lines
+  — do NOT treat exit 3 as a clean sweep), `1` reap itself failed. Plain `reap`
+  behaves exactly as before apart from that exit code. Main-thread
+  housekeeping, not for crew agents mid-job.
 - `crew-codex result <job-id>` — the finished job's output (plus its resume id)
 - `crew-codex --resolve` — print the resolved companion script path (diagnostics only)
 
@@ -145,6 +153,17 @@ and task prompts — are replaced by a `<redacted: N positional token(s)>` marke
 because focus text routinely carries pasted incident logs, internal hostnames and
 secret-bearing commands, and this archive deliberately outlives the vendor's
 session cleanup.
+
+⚠️ The archived `<id>.meta.json` is **sanitized the same way, for the same
+reason**. `result --json` returns `storedJob` verbatim, and that record carries
+the request: a background task's prompt (`storedJob.request.prompt`), a
+background effort review's focus text (`storedJob.request.focusText`) and a
+task's prompt-derived `summary`. Those fields are replaced by a
+`<redacted: N chars>` marker before the file is written — stripped by key shape,
+recursively, so a vendor rename cannot reopen the leak silently — while result,
+thread, status, timing and routing fields survive. A payload that cannot be
+parsed is withheld rather than archived raw. Do not read a prompt back out of
+the archive; it is not there by design.
 
 GPT-5.6 family ladder (per OpenAI's own model registry): **sol** = flagship
 frontier coding tier, **terra** = balanced everyday mid tier, **luna** =
