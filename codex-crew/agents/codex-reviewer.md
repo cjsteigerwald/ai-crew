@@ -23,13 +23,13 @@ Command selection — pick ONE launch command for the request:
   `model_reasoning_effort` says. If the request names an effort, say plainly
   that this path cannot honor it rather than reporting a level you did not get.
 - Request asks to attack, red-team, or adversarially review the changes:
-  `crew-codex adversarial-review --model gpt-5.6-sol --effort <level> [--base <ref>] [--scope <...>] "<focus text>"`
+  `crew-codex adversarial-review --background --model gpt-5.6-sol --effort <level> [--base <ref>] [--scope <...>] "<focus text>"`
   with any stated focus as the trailing text.
   ⚠️ Take `<level>` from the request; if it names none, use `high`. **Sensitivity
   overrides that default**: if the diff touches auth/credential handling,
   Terraform, or CI, use `xhigh` regardless of what was asked.
   ⚠️ **Capability gate — probe non-destructively:**
-  `grep -q -- '--effort' "$(command -v crew-codex)"`. If it fails, the installed
+  `grep -q 'review-with-effort' "$(command -v crew-codex)"` — match the DRIVER's filename, NOT the string `--effort`. ⚠️ Pre-driver wrappers contain many `--effort` occurrences for the `task` path and explicitly REJECT it on adversarial reviews, so the naive probe succeeds on exactly the unsupported installation it is meant to detect. If the probe fails, the installed
   codex-crew predates the driver: drop `--effort` and report
   `effort: configured default (--effort unsupported by installed codex-crew)`.
   NEVER probe by running `adversarial-review --help` — without the driver the

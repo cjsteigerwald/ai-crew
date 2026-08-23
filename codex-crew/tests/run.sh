@@ -1136,6 +1136,102 @@ else
   echo "FAIL: state-only live job did not block the sweep (exit=$rc; output: $out)"; fail=$((fail + 1))
 fi
 
+# Case 56: the kill gate must fail CLOSED on registries it cannot parse or read.
+# isdir/isfile return False for permission-denied too, so "unreadable" used to be
+# indistinguishable from "absent" -- and absent opens the gate.
+mkdir -p "$TMP/gate-malformed/state/ws-a"
+echo '{"jobs":{"id":"live","status":"running"}}' > "$TMP/gate-malformed/state/ws-a/state.json"
+out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/gate-malformed" \
+  bash "$CREW" reap --brokers --dry-run 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" != "0" ]] && grep -q "unrecognized schema" <<<"$out"; then
+  echo "PASS: malformed state.json blocks the kill gate"; pass=$((pass + 1))
+else
+  echo "FAIL: malformed state.json did not block (exit=$rc; out: $out)"; fail=$((fail + 1))
+fi
+
+mkdir -p "$TMP/gate-denied/state/ws-b/jobs"
+echo '{"id":"x","status":"completed"}' > "$TMP/gate-denied/state/ws-b/jobs/x.json"
+chmod 000 "$TMP/gate-denied/state/ws-b/jobs" 2>/dev/null || true
+out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/gate-denied" \
+  bash "$CREW" reap --brokers --dry-run 2>&1)" && rc=0 || rc=$?
+chmod 755 "$TMP/gate-denied/state/ws-b/jobs" 2>/dev/null || true
+if [[ "$rc" != "0" ]] && grep -q "unlistable" <<<"$out"; then
+  echo "PASS: unreadable jobs dir blocks the kill gate"; pass=$((pass + 1))
+elif [[ "$(id -u)" == "0" ]]; then
+  echo "PASS: unreadable jobs dir (skipped — running as root, chmod 000 is not enforced)"; pass=$((pass + 1))
+else
+  echo "FAIL: unreadable jobs dir did not block (exit=$rc; out: $out)"; fail=$((fail + 1))
+fi
+
+# Case 57: content that is ONLY collector skip markers must refuse. fileCount is
+# positive, content is a non-empty string, and there is still nothing to review --
+# a review of it answers "no findings", which reads as a clean pass.
+cp -r "$TMP/effort/install" "$TMP/effort/skipped-install"
+cat > "$TMP/effort/skipped-install/scripts/lib/git.mjs" <<'EOF'
+export function resolveReviewTarget(cwd, options = {}) {
+  const base = options.base ?? "main";
+  return { mode: "branch", label: `branch diff against ${base}`, baseRef: base, explicit: true };
+}
+export function collectReviewContext(cwd, target) {
+  return {
+    cwd, repoRoot: cwd, branch: "stub", target, fileCount: 1, diffBytes: 0,
+    inputMode: "inline-diff", collectionGuidance: "STUB-GUIDANCE",
+    content: "### big.txt\n(skipped: 99999 bytes exceeds 24576 byte limit)\n",
+    summary: "s", changedFiles: ["big.txt"]
+  };
+}
+EOF
+mkdir -p "$TMP/skipped/plugins"
+echo "{\"version\":2,\"plugins\":{\"codex@openai-codex\":[{\"installPath\":\"$TMP/effort/skipped-install\"}]}}" > "$TMP/skipped/plugins/installed_plugins.json"
+: > "$INVOKED_E"; rm -f "$TMP/effort/turn.json"
+out="$(CLAUDE_CONFIG_DIR="$TMP/skipped" CREW_TEST_INVOKED="$INVOKED_E" \
+  CREW_TEST_TURN_RECORD="$TMP/effort/turn.json" CREW_TEST_STATE_DIR="$STATE_E" \
+  CREW_TEST_JOB_SUFFIX="skip" CREW_CODEX_ARCHIVE_DIR="$ARC_E" \
+  CODEX_HOME="$TMP/effort/codex-home" CREW_CODEX_RETRY_DELAYS="0" \
+  bash "$CREW" adversarial-review --effort high "focus" 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" != "0" ]] && grep -q "every changed file" <<<"$out"; then
+  echo "PASS: all-skipped content refused"; pass=$((pass + 1))
+else
+  echo "FAIL: all-skipped content not refused (exit=$rc; out: $out)"; fail=$((fail + 1))
+fi
+if [[ ! -f "$TMP/effort/turn.json" ]]; then
+  echo "PASS: all-skipped content started no turn"; pass=$((pass + 1))
+else
+  echo "FAIL: all-skipped content started a turn"; fail=$((fail + 1))
+fi
+
+# Case 58: the sidecar must not re-parse post-sentinel focus text as routing
+# metadata. `-- --prompt-file /internal/INC-123` is prose, and archiving that path
+# into storage that outlives session cleanup is the leak redaction exists to stop.
+: > "$INVOKED_E"
+rm -f "$ARC_E"/*.dispatch.json 2>/dev/null || true
+CLAUDE_CONFIG_DIR="$TMP/effort" CREW_TEST_INVOKED="$INVOKED_E" \
+  CREW_TEST_TURN_RECORD="$TMP/effort/turn.json" CREW_TEST_STATE_DIR="$STATE_E" \
+  CREW_TEST_JOB_SUFFIX="sentinel" CREW_CODEX_ARCHIVE_DIR="$ARC_E" \
+  CODEX_HOME="$TMP/effort/codex-home" CREW_CODEX_RETRY_DELAYS="0" \
+  bash "$CREW" adversarial-review --effort high -- --prompt-file /internal/INC-123 --model=leaked \
+  >/dev/null 2>&1 || true
+sc="$(ls "$ARC_E"/*.dispatch.json 2>/dev/null | head -1 || true)"
+if [[ -n "$sc" ]] && ! grep -q "INC-123\|leaked" "$sc"; then
+  echo "PASS: sidecar redacted post-sentinel tokens"; pass=$((pass + 1))
+else
+  echo "FAIL: sidecar leaked post-sentinel tokens: $(cat "$sc" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
+# Case 59: agent-definition consistency. Every command governed by the
+# launch/await/result loop must carry --background; the adversarial command lost
+# it once when --model/--effort were added, silently breaking the lane.
+if grep -q 'adversarial-review --background --model' codex-crew/agents/codex-reviewer.md; then
+  echo "PASS: reviewer lane adversarial command is detached"; pass=$((pass + 1))
+else
+  echo "FAIL: reviewer lane adversarial command lost --background"; fail=$((fail + 1))
+fi
+if ! grep -q "grep -q -- '--effort'" codex-crew/agents/codex-reviewer.md; then
+  echo "PASS: reviewer lane uses the driver-filename probe"; pass=$((pass + 1))
+else
+  echo "FAIL: reviewer lane still uses the naive --effort probe"; fail=$((fail + 1))
+fi
+
 # Case 50: --background detaches. The parent must return a job id immediately
 # and exit; the child does the turn. This is why the driver exists at all for
 # background dispatches — the vendor's adversarial-review is foreground-only,

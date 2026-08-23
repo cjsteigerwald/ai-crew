@@ -1,6 +1,6 @@
 {
   "name": "codex-crew",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Invoke Codex agents with pinned models as Claude Code subagents, via the official codex plugin's shared companion runtime.",
   "author": {
     "name": "Chris Steigerwald"
