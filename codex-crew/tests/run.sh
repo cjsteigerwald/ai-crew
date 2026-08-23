@@ -329,27 +329,62 @@ echo "{\"version\":2,\"plugins\":{\"codex@openai-codex\":[{\"installPath\":\"$TM
 cat > "$TMP/meta/install/scripts/codex-companion.mjs" <<'EOF'
 const [cmd, jobId, flag] = process.argv.slice(2);
 const secret = process.env.CREW_TEST_SECRET;
+const summaryOf = (id) =>
+  id.startsWith("task-") ? "Investigate " + secret : "Review found 2 issues";
 if (cmd === "result") {
-  if (flag !== "--json") { console.log("FINAL-RESULT-KEEP"); process.exit(0); }
+  if (flag !== "--json") {
+    // The vendor's FINAL fallback render, verbatim in shape: it fires whenever
+    // a job stored no output at all, and it prints Summary: <job.summary>.
+    if (process.env.CREW_TEST_FALLBACK_RENDER === "1") {
+      console.log("# Codex Task\n\nJob: " + jobId + "\nStatus: completed\n"
+        + "Codex session ID: th-keepme\nSummary: " + summaryOf(jobId)
+        + "\n\nNo captured result payload was stored for this job.");
+      process.exit(0);
+    }
+    // A model answer that merely CONTAINS a Summary: line. Not the fallback
+    // skeleton, so the skeleton rule must leave every word of it alone.
+    if (process.env.CREW_TEST_PROSE_RESULT === "1") {
+      console.log("Here is what I found.\n\nSummary: three call sites need the guard.\n");
+      process.exit(0);
+    }
+    console.log("FINAL-RESULT-KEEP");
+    process.exit(0);
+  }
   if (process.env.CREW_TEST_BAD_JSON === "1") {
     console.log("this is not JSON at all, and it mentions " + secret);
     process.exit(0);
   }
+  if (process.env.CREW_TEST_SCALAR_REQUEST === "1") {
+    console.log(JSON.stringify({
+      job: { id: jobId, status: "completed", elapsed: "3s", pid: null },
+      storedJob: { id: jobId, status: "completed", request: "raw request line " + secret }
+    }));
+    process.exit(0);
+  }
+  // The REQUEST is reproduced under BOTH job and storedJob, exactly as a real
+  // archived payload carries it, and it holds four ways of naming free text:
+  // the two the denylist knows, two the vendor could rename to tomorrow
+  // (userInput, reviewFocus) and a free-text LIST. Only the allowlist catches
+  // the last three; a denylist passes them through in silence.
+  const request = {
+    cwd: "/w", base: "main", model: "gpt-5.6-sol", effort: "high",
+    prompt: "Investigate " + secret,
+    focusText: "focus on " + secret,
+    userInput: "renamed free text carrying " + secret,
+    reviewFocus: "another renamed field carrying " + secret,
+    attachments: ["pasted log line with " + secret]
+  };
   console.log(JSON.stringify({
     job: {
       id: jobId, status: "completed", elapsed: "3s", pid: null,
-      summary: jobId.startsWith("task-") ? "Investigate " + secret : "Review found 2 issues"
+      summary: summaryOf(jobId),
+      request: request
     },
     storedJob: {
       id: jobId, status: "completed", threadId: "th-keepme",
       createdAt: "2026-08-23T00:00:00Z", completedAt: "2026-08-23T00:01:00Z",
-      request: {
-        cwd: "/w", model: "gpt-5.6-sol", effort: "high",
-        prompt: "Investigate " + secret,
-        focusText: "focus on " + secret
-      },
-      result: { rawOutput: "FINAL-RESULT-KEEP" },
-      vendorShapeChange: { movedRequest: { prompt: "relocated " + secret } }
+      request: request,
+      result: { rawOutput: "FINAL-RESULT-KEEP" }
     }
   }));
   process.exit(0);
@@ -392,11 +427,22 @@ assert sj['result']['rawOutput'] == 'FINAL-RESULT-KEEP', sj
 assert sj['threadId'] == 'th-keepme', sj
 assert sj['status'] == 'completed' and d['job']['status'] == 'completed', d
 assert sj['createdAt'] == '2026-08-23T00:00:00Z', sj
-assert sj['request']['model'] == 'gpt-5.6-sol' and sj['request']['effort'] == 'high', sj
-assert sj['request']['prompt'].startswith('<redacted:'), sj
-assert sj['request']['focusText'].startswith('<redacted:'), sj
-assert sj['vendorShapeChange']['movedRequest']['prompt'].startswith('<redacted:'), sj
 assert d['job']['summary'].startswith('<redacted:'), d
+# Routing survives inside the request boundary, or the archive stops being
+# worth keeping.
+for holder in ('job', 'storedJob'):
+    r = d[holder]['request']
+    assert r['model'] == 'gpt-5.6-sol' and r['effort'] == 'high', r
+    assert r['base'] == 'main' and r['cwd'] == '/w', r
+    # Both boundaries, not just storedJob: a real payload carries the request
+    # twice and a path rule anchored on one leaves the other readable.
+    assert r['prompt'].startswith('<redacted:'), r
+    assert r['focusText'].startswith('<redacted:'), r
+    # The three the DENYLIST cannot see. These are the assertions that fail if
+    # anyone reverts the allowlist to key-shape matching.
+    assert r['userInput'].startswith('<redacted:'), r
+    assert r['reviewFocus'].startswith('<redacted:'), r
+    assert r['attachments'].startswith('<redacted:'), r
 "; then
   echo "PASS: meta kept result/thread/status/routing and marked every prompt field"; pass=$((pass + 1))
 else
@@ -433,6 +479,119 @@ if [[ "$rc" == "0" ]] && [[ -f "$arc/task-secret3.meta.json" ]] \
   echo "PASS: unparseable payload withheld, not archived raw"; pass=$((pass + 1))
 else
   echo "FAIL: unparseable payload mishandled (exit=$rc): $(cat "$arc/task-secret3.meta.json" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
+# Case 20e: a request that is not a mapping. The allowlist can only reason
+# about keys, so an unexpected SHAPE goes whole rather than through.
+arc="$TMP/meta/arc-scalar"
+out="$(CLAUDE_CONFIG_DIR="$TMP/meta" CREW_CODEX_ARCHIVE_DIR="$arc" CREW_CODEX_POLL_SECS=0 \
+  CREW_TEST_SECRET="$SECRET" CREW_TEST_SCALAR_REQUEST=1 \
+  bash "$CREW" await task-secret4 --for 5 2>/dev/null)" && rc=0 || rc=$?
+if [[ -f "$arc/task-secret4.meta.json" ]] && ! grep -rq "$SECRET" "$arc" \
+   && grep -q '"request": "<redacted:' "$arc/task-secret4.meta.json"; then
+  echo "PASS: a non-mapping request is redacted whole"; pass=$((pass + 1))
+else
+  echo "FAIL: scalar request mishandled (exit=$rc): $(cat "$arc/task-secret4.meta.json" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
+# Case 20f: THE .result.txt LEAK. The vendor fallback render prints
+# "Summary: <job.summary>", and a task summary is the first 96 chars of the
+# prompt — so the archive carried in plain text exactly what .meta.json was
+# being scrubbed of, one filename apart.
+arc="$TMP/meta/arc-fallback-task"
+out="$(CLAUDE_CONFIG_DIR="$TMP/meta" CREW_CODEX_ARCHIVE_DIR="$arc" CREW_CODEX_POLL_SECS=0 \
+  CREW_TEST_SECRET="$SECRET" CREW_TEST_FALLBACK_RENDER=1 \
+  bash "$CREW" await task-secret5 --for 5 2>"$metaerr")" && rc=0 || rc=$?
+if [[ "$rc" == 0 ]] && [[ -f "$arc/task-secret5.result.txt" ]] \
+   && ! grep -rq "$SECRET" "$arc" \
+   && grep -q "<redacted:" "$arc/task-secret5.result.txt" \
+   && grep -q "Job: task-secret5" "$arc/task-secret5.result.txt"; then
+  echo "PASS: task .result.txt redacted the prompt-derived summary, kept the rest"; pass=$((pass + 1))
+else
+  echo "FAIL: .result.txt leaked the prompt summary (exit=$rc): $(cat "$arc/task-secret5.result.txt" 2>/dev/null)"; fail=$((fail + 1))
+fi
+if [[ -z "$(find "$arc" -name '*.result.raw' 2>/dev/null)" ]]; then
+  echo "PASS: the unsanitized staging file is not left behind"; pass=$((pass + 1))
+else
+  echo "FAIL: staging file survived: $(find "$arc" -name '*.result.raw')"; fail=$((fail + 1))
+fi
+
+# Case 20g: a REVIEW summary is the model finding summary — output, not input.
+# Over-redacting it would make the archive useless for the case it exists for.
+arc="$TMP/meta/arc-fallback-review"
+out="$(CLAUDE_CONFIG_DIR="$TMP/meta" CREW_CODEX_ARCHIVE_DIR="$arc" CREW_CODEX_POLL_SECS=0 \
+  CREW_TEST_SECRET="$SECRET" CREW_TEST_FALLBACK_RENDER=1 \
+  bash "$CREW" await review-secret6 --for 5 2>/dev/null)" && rc=0 || rc=$?
+if grep -q "Summary: Review found 2 issues" "$arc/review-secret6.result.txt" 2>/dev/null; then
+  echo "PASS: review .result.txt kept its finding summary"; pass=$((pass + 1))
+else
+  echo "FAIL: review summary was over-redacted (exit=$rc): $(cat "$arc/review-secret6.result.txt" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
+# Case 20h: a model answer that merely contains a "Summary:" line is NOT the
+# fallback skeleton, and the skeleton rule must not touch it. This is the
+# over-redaction guard: without the skeleton scoping, every task answer with a
+# Summary line would come back mutilated.
+arc="$TMP/meta/arc-prose"
+out="$(CLAUDE_CONFIG_DIR="$TMP/meta" CREW_CODEX_ARCHIVE_DIR="$arc" CREW_CODEX_POLL_SECS=0 \
+  CREW_TEST_SECRET="$SECRET" CREW_TEST_PROSE_RESULT=1 \
+  bash "$CREW" await task-secret7 --for 5 2>/dev/null)" && rc=0 || rc=$?
+if grep -q "Summary: three call sites need the guard." "$arc/task-secret7.result.txt" 2>/dev/null; then
+  echo "PASS: a model answer containing a Summary line is left intact"; pass=$((pass + 1))
+else
+  echo "FAIL: skeleton rule over-redacted model output (exit=$rc): $(cat "$arc/task-secret7.result.txt" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
+# Case 20i: sanitize-archive — the fix above only helps jobs archived from now
+# on. Everything an earlier crew-codex wrote is still on disk with its focus
+# text in the clear, in the archive that deliberately outlives the vendor's
+# cleanup. The sweep must clean those, be a no-op on an already-clean file, and
+# write nothing at all under --dry-run.
+legacy="$TMP/legacy-archive"
+mkdir -p "$legacy"
+cat > "$legacy/task-old1.meta.json" <<EOF
+{"job":{"id":"task-old1","status":"completed","summary":"Investigate $SECRET"},
+ "storedJob":{"id":"task-old1","status":"completed","threadId":"th-keepme",
+ "request":{"cwd":"/w","model":"gpt-5.6-sol","effort":"high",
+ "focusText":"focus on $SECRET","userInput":"renamed carrying $SECRET"}}}
+EOF
+printf '# Codex Task\n\nJob: task-old1\nStatus: completed\nSummary: Investigate %s\n\nNo captured result payload was stored for this job.\n' \
+  "$SECRET" > "$legacy/task-old1.result.txt"
+cp "$legacy/task-old1.meta.json" "$TMP/legacy-meta-before.json"
+cp "$legacy/task-old1.result.txt" "$TMP/legacy-result-before.txt"
+
+out="$(bash "$CREW" sanitize-archive --dir "$legacy" --dry-run 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" == 0 ]] && grep -q "would sanitize: task-old1" <<<"$out" \
+   && cmp -s "$legacy/task-old1.meta.json" "$TMP/legacy-meta-before.json" \
+   && cmp -s "$legacy/task-old1.result.txt" "$TMP/legacy-result-before.txt"; then
+  echo "PASS: sanitize-archive --dry-run reported the leak and wrote nothing"; pass=$((pass + 1))
+else
+  echo "FAIL: --dry-run wrote something or missed the file (exit=$rc; output: $out)"; fail=$((fail + 1))
+fi
+
+out="$(bash "$CREW" sanitize-archive --dir "$legacy" 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" == 0 ]] && ! grep -rq "$SECRET" "$legacy" \
+   && grep -q '"focusText": "<redacted:' "$legacy/task-old1.meta.json" \
+   && grep -q '"userInput": "<redacted:' "$legacy/task-old1.meta.json" \
+   && grep -q "<redacted:" "$legacy/task-old1.result.txt" \
+   && grep -q "Job: task-old1" "$legacy/task-old1.result.txt"; then
+  echo "PASS: sanitize-archive cleaned a legacy meta and its result render"; pass=$((pass + 1))
+else
+  echo "FAIL: legacy archive still leaks (exit=$rc; output: $out)"; fail=$((fail + 1))
+fi
+
+# Idempotence is load-bearing: the sweep is safe to re-run only if a second
+# pass is a genuine no-op. Re-markering would rewrite each recorded length to
+# the length of the marker itself, quietly corrupting the shape record.
+cp "$legacy/task-old1.meta.json" "$TMP/legacy-meta-clean.json"
+cp "$legacy/task-old1.result.txt" "$TMP/legacy-result-clean.txt"
+out="$(bash "$CREW" sanitize-archive --dir "$legacy" 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" == 0 ]] && grep -q "0 rewritten" <<<"$out" \
+   && cmp -s "$legacy/task-old1.meta.json" "$TMP/legacy-meta-clean.json" \
+   && cmp -s "$legacy/task-old1.result.txt" "$TMP/legacy-result-clean.txt"; then
+  echo "PASS: a second sanitize-archive pass is byte-for-byte a no-op"; pass=$((pass + 1))
+else
+  echo "FAIL: sanitize-archive is not idempotent (exit=$rc; output: $out)"; fail=$((fail + 1))
 fi
 
 # --- reap: sweep stuck registry entries --------------------------------------
@@ -1449,11 +1608,62 @@ else
   echo "FAIL: state-only live job did not block the prune (exit=$rc; output: $out)"; fail=$((fail + 1))
 fi
 # The same workspace is surfaced by the --brokers advisory survey, which now
-# reports rather than gates.
+# reports rather than gates. Exit 3, NOT 0: every reap invocation runs the
+# default sweep first, and that sweep now refuses to classify this workspace
+# (Case 55b) instead of walking past it. 3 is the honest answer — "the sweep
+# ran and left something for a human" — and this assertion wanted 0 only
+# because the default sweep used to skip the workspace silently.
 out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/state-only" \
   CREW_CODEX_BROKER_PATTERN="$NOMATCH" \
   bash "$CREW" reap --brokers 2>&1)" && rc=0 || rc=$?
-check "brokers survey surfaces a state.json-only live job" 0 "ghost/ghost-1(running)" "$rc" "$out"
+check "brokers survey surfaces a state.json-only live job" 3 "ghost/ghost-1(running)" "$rc" "$out"
+
+# Case 55b: the DEFAULT sweep (no flags) has the same blind spot and it is the
+# dangerous one — the default sweep MUTATES job records. It used to `continue`
+# on a missing jobs/ dir, so it never opened state.json, never saw the running
+# job, reported "0 skipped" and exited 0. A caller reading that exit code was
+# told the workspace had been classified when the sweep had not looked at it.
+# Now: no jobs/ dir is not a reason to skip reading the authoritative registry.
+out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/state-only" \
+  bash "$CREW" reap 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" == 3 ]] && grep -q "ghost/ghost-1(running)" <<<"$out" \
+   && grep -q "not touching this workspace" <<<"$out" \
+   && [[ -f "$TMP/state-only/state/ghost/state.json" ]]; then
+  echo "PASS: default sweep reads state.json in a workspace with no jobs/ dir"; pass=$((pass + 1))
+else
+  echo "FAIL: default sweep walked past a state.json-only running job (exit=$rc; output: $out)"; fail=$((fail + 1))
+fi
+
+# Case 55c: fail closed on a status the sweep has never heard of. The test is
+# NOT-TERMINAL, not `in ("running","queued")` — a vendor that adds "paused" or
+# "resuming" must not silently become a status this sweep treats as done.
+mkdir -p "$TMP/state-unknown/state/odd"
+echo '{"jobs":[{"id":"odd-1","status":"resuming","workspaceRoot":"/nonexistent-odd"}]}' \
+  > "$TMP/state-unknown/state/odd/state.json"
+out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/state-unknown" \
+  bash "$CREW" reap 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" == 3 ]] && grep -q "odd/odd-1(resuming)" <<<"$out"; then
+  echo "PASS: default sweep fails closed on an unrecognized job status"; pass=$((pass + 1))
+else
+  echo "FAIL: unrecognized status was treated as terminal (exit=$rc; output: $out)"; fail=$((fail + 1))
+fi
+
+# Case 55d: the union must not fire on a workspace whose registry is entirely
+# TERMINAL — otherwise every settled workspace on the machine reports as
+# unreconciled and exit 3 stops meaning anything.
+mkdir -p "$TMP/state-done/state/settled/jobs"
+echo '{"jobs":[{"id":"done-1","status":"completed","workspaceRoot":"/nonexistent-done"}]}' \
+  > "$TMP/state-done/state/settled/state.json"
+out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/state-done" \
+  bash "$CREW" reap 2>&1)" && rc=0 || rc=$?
+# Match the per-entry skip LINE, not the word "unreconciled" — that also appears
+# in the summary's legend, where it is present on every run and proves nothing.
+if [[ "$rc" == 0 ]] && ! grep -q "^skipped: " <<<"$out" \
+   && grep -q "0 skipped" <<<"$out"; then
+  echo "PASS: a fully terminal registry is not reported as unreconciled"; pass=$((pass + 1))
+else
+  echo "FAIL: terminal registry wrongly blocked the sweep (exit=$rc; output: $out)"; fail=$((fail + 1))
+fi
 
 # Case 56: the --state prune must fail CLOSED on registries it cannot parse or
 # read. os.path.isdir/isfile/exists return False for permission-denied too, so
