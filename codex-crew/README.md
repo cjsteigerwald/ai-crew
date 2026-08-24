@@ -39,6 +39,50 @@ claude plugin marketplace add /path/to/ai-crew
 claude plugin install codex-crew@cjs-plugins
 ```
 
+## Update
+
+```bash
+# 1. refresh the marketplace catalogue (all marketplaces if no name given)
+claude plugin marketplace update cjs-plugins
+
+# 2. pull the new plugin version
+claude plugin update codex-crew@cjs-plugins
+
+# 3. and the official Codex plugin this one wraps
+claude plugin update codex@openai-codex
+```
+
+⚠️ **Restart Claude Code afterwards. Nothing takes effect until you do**, and the
+CLI says so itself — `claude plugin update` prints *"restart required to apply"*.
+
+This is not a cosmetic reload. Installs are **version-keyed**: each version is
+unpacked into its own directory and the old ones stay put.
+
+```
+~/.claude/plugins/cache/cjs-plugins/codex-crew/
+├── 0.4.2/
+├── 0.5.0/
+├── 0.5.1/
+└── 0.6.0/   <- the update added this; it did not replace anything
+```
+
+A session that is already running resolved its path at startup and keeps calling
+the old directory for its whole life. So an update mid-session leaves you running
+the previous version while `claude plugin list` reports the new one — the update
+succeeded and had no effect, with nothing to indicate it. Restart, then confirm
+what is actually live:
+
+```bash
+# what the resolver will pick up next session
+python3 -c "import json,os; d=json.load(open(os.path.expanduser('~/.claude/plugins/installed_plugins.json'))); print(d['plugins']['codex-crew@cjs-plugins'][0]['installPath'])"
+
+# and that the wrapper resolves the vendor companion
+crew-codex --resolve
+```
+
+Old version directories are safe to leave; `claude plugin prune` removes
+auto-installed dependencies that are no longer needed.
+
 ## How it works
 
 `bin/crew-codex` (on PATH while enabled) resolves the codex plugin's
