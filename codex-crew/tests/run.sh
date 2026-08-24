@@ -1075,22 +1075,6 @@ else
   echo "FAIL: output-derived summary was used as a needle: $(cat "$arc/task-prov.meta.json" 2>/dev/null)"; fail=$((fail + 1))
 fi
 
-# Case 20ae: a very short summary is a substring needle over preserved output.
-# "ls" would rewrite every "ls" inside the answer. Under the floor it is left
-# alone — a handful of characters is not a disclosure worth shredding an archive
-# for, and request.prompt is redacted regardless.
-arc="$TMP/struct/arc-short-summary"
-struct_await task-tiny "$arc" '{"job":{"id":"task-tiny","status":"completed"},"storedJob":{"id":"task-tiny","status":"completed","summary":"ls","result":{"rawOutput":"false positives also contain ls inside words"}}}' || true
-if python3 -c "
-import json
-d = json.load(open('$arc/task-tiny.meta.json'))
-assert d['storedJob']['result']['rawOutput'] == 'false positives also contain ls inside words', d['storedJob']['result']
-" 2>/dev/null; then
-  echo "PASS: a summary under the length floor does not shred preserved output"; pass=$((pass + 1))
-else
-  echo "FAIL: a tiny summary corrupted model output: $(cat "$arc/task-tiny.meta.json" 2>/dev/null)"; fail=$((fail + 1))
-fi
-
 # Case 20af: sanitize-archive sets marker trust for EVERY file it sweeps —
 # including the legacy unsanitized ones it exists to migrate. Recognizing
 # top-level scalars under that trust meant the migration command preserved a
@@ -1145,6 +1129,36 @@ if [[ "$rc" == 0 ]] && grep -q "0 rewritten" <<<"$out" \
   echo "PASS: and the sweep over that archive stays a byte-for-byte no-op"; pass=$((pass + 1))
 else
   echo "FAIL: marker-needle archive is not idempotent (exit=$rc; output: $out)"; fail=$((fail + 1))
+fi
+
+# --- round-5 review findings -------------------------------------------------
+
+# Case 20ah: a SHORT prompt secret echoed into preserved output. The previous
+# round exempted summaries under 12 characters from redaction, because the
+# replacement was a bare substring sweep and a two-character summary shredded
+# the answer. That exemption traded confidentiality for fidelity: `PIN=123456`
+# is ten characters and stayed in the archive in full. Anchoring the replacement
+# removes the trade — length stops mattering in either direction.
+arc="$TMP/struct/arc-short-secret"
+struct_await task-pin "$arc" '{"job":{"id":"task-pin","status":"completed"},"storedJob":{"id":"task-pin","status":"completed","summary":"PIN=123456","result":{"rawOutput":"PIN=123456"}}}' || true
+if [[ -f "$arc/task-pin.meta.json" ]] && ! grep -q "PIN=123456" "$arc/task-pin.meta.json"; then
+  echo "PASS: a short prompt secret in preserved output is still redacted"; pass=$((pass + 1))
+else
+  echo "FAIL: short summary exempted from redaction: $(cat "$arc/task-pin.meta.json" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
+# ...and the anchoring is what makes that safe: a two-character summary must
+# still not rewrite every occurrence of those two characters in the answer.
+arc="$TMP/struct/arc-anchor"
+struct_await task-anch "$arc" '{"job":{"id":"task-anch","status":"completed"},"storedJob":{"id":"task-anch","status":"completed","summary":"ls","result":{"rawOutput":"false positives also contain ls inside words"}}}' || true
+if python3 -c "
+import json
+d = json.load(open('$arc/task-anch.meta.json'))
+assert d['storedJob']['result']['rawOutput'] == 'false positives also contain ls inside words', d['storedJob']['result']
+" 2>/dev/null; then
+  echo "PASS: an anchored replacement does not shred output containing the summary"; pass=$((pass + 1))
+else
+  echo "FAIL: substring replacement corrupted model output: $(cat "$arc/task-anch.meta.json" 2>/dev/null)"; fail=$((fail + 1))
 fi
 
 # --- reap: sweep stuck registry entries --------------------------------------
@@ -2509,12 +2523,82 @@ out="$(timeout 90 env CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$MOVED_
 wait "$MOVED_FEEDER" 2>/dev/null || true
 if [[ "$rc" == 124 ]]; then
   echo "FAIL: reap hung against a FIFO state.json (moved-record case)"; fail=$((fail + 1))
-elif grep -q "MOVED-BEFORE-CAPTURE" "$MOVED_DATA/state/repo-v/jobs/dead.json" \
+elif [[ "$rc" == 3 ]] && grep -q "MOVED-BEFORE-CAPTURE" "$MOVED_DATA/state/repo-v/jobs/dead.json" \
+   && grep -q "changed between capture and write" <<<"$out" \
    && ! grep -q "^reaped: " <<<"$out" \
    && grep -q "reap summary: 0 reaped" <<<"$out"; then
   echo "PASS: a record moved before capture is left alone and claims no reap"; pass=$((pass + 1))
 else
   echo "FAIL: overwrote a record that moved before capture (exit=$rc; output: $out; job: $(cat "$MOVED_DATA/state/repo-v/jobs/dead.json"))"; fail=$((fail + 1))
+fi
+
+# Case 64: a reaped id with NO matching state.json entry. `state_conflicts` only
+# inspects entries that exist, so an absent one produced no conflict, updated
+# nothing, and still set the mirror flag — the sweep claimed a reap while the
+# registry the companion actually serves had no failed entry for it. That is the
+# split brain the two-record commit exists to prevent.
+NOENT_DATA="$TMP/reap-no-entry"
+mkdir -p "$NOENT_DATA/state/repo-n/jobs"
+printf 'log line\n' > "$NOENT_DATA/state/repo-n/jobs/dead.log"
+touch -d '2 hours ago' "$NOENT_DATA/state/repo-n/jobs/dead.log"
+cat > "$NOENT_DATA/state/repo-n/jobs/dead.json" <<EOF
+{"id":"job-orphan","status":"running","pid":$DEAD_PID_F,"logFile":"$NOENT_DATA/state/repo-n/jobs/dead.log","createdAt":"2026-07-01T00:00:00Z"}
+EOF
+printf '%s' '[]' > "$NOENT_DATA/state/repo-n/state.json"
+cp "$NOENT_DATA/state/repo-n/jobs/dead.json" "$TMP/reap-noent-before.json"
+out="$(timeout 60 env CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$NOENT_DATA" \
+  bash "$CREW" reap 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" == 3 ]] && ! grep -q "^reaped: " <<<"$out" \
+   && grep -q "reap summary: 0 reaped" <<<"$out" \
+   && cmp -s "$NOENT_DATA/state/repo-n/jobs/dead.json" "$TMP/reap-noent-before.json"; then
+  echo "PASS: a reap with no registry entry to mirror into is rolled back, not claimed"; pass=$((pass + 1))
+else
+  echo "FAIL: claimed a reap the registry never recorded (exit=$rc; output: $out; job: $(cat "$NOENT_DATA/state/repo-n/jobs/dead.json"))"; fail=$((fail + 1))
+fi
+
+# Case 65: sanitize-archive must REPORT a staging file, never delete it. Age is
+# not an ownership test — a suspended await can own a `.crew-w.*` for any length
+# of time, and deleting it makes that await's atomic replace fail, which in the
+# result-publication window replaces a good archived result with a withheld
+# stub. Same rule `reap --brokers` arrived at: no ownership, no destruction.
+stagearc2="$TMP/staging-report"
+mkdir -p "$stagearc2"
+printf 'half-written meta\n' > "$stagearc2/.crew-w.abc123"
+touch -d '3 hours ago' "$stagearc2/.crew-w.abc123"
+echo '{"job":{"id":"task-keep","status":"completed"},"storedJob":{"id":"task-keep","status":"completed"}}' \
+  > "$stagearc2/task-keep.meta.json"
+out="$(bash "$CREW" sanitize-archive --dir "$stagearc2" 2>&1)" && rc=0 || rc=$?
+if [[ -f "$stagearc2/.crew-w.abc123" ]] && grep -q "NOT removed" <<<"$out"; then
+  echo "PASS: a stranded staging file is reported, not deleted on an mtime guess"; pass=$((pass + 1))
+else
+  echo "FAIL: staging file deleted or unreported (exit=$rc; output: $out)"; fail=$((fail + 1))
+fi
+
+# Case 66: the status printed in a `reaped:` line must be the one that made the
+# job reapable, not the one this sweep just wrote. The claim is printed after
+# the commit and the record is mutated in between, so it reported every real
+# reap as "(failed, ...)" — a terminal status, which is by definition never
+# stuck — while --dry-run reported the same record as "(running, ...)". Two
+# modes disagreeing about one record is how a reader stops trusting either.
+STATUS_DATA="$TMP/reap-status"
+mkdir -p "$STATUS_DATA/state/repo-s/jobs"
+printf 'log line\n' > "$STATUS_DATA/state/repo-s/jobs/dead.log"
+touch -d '2 hours ago' "$STATUS_DATA/state/repo-s/jobs/dead.log"
+cat > "$STATUS_DATA/state/repo-s/jobs/dead.json" <<EOF
+{"id":"job-status","status":"running","pid":$DEAD_PID_F,"logFile":"$STATUS_DATA/state/repo-s/jobs/dead.log","createdAt":"2026-07-01T00:00:00Z"}
+EOF
+cat > "$STATUS_DATA/state/repo-s/state.json" <<EOF
+[{"id":"job-status","status":"running","pid":$DEAD_PID_F}]
+EOF
+dry_out="$(timeout 60 env CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$STATUS_DATA" \
+  bash "$CREW" reap --dry-run 2>&1)" || true
+real_out="$(timeout 60 env CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$STATUS_DATA" \
+  bash "$CREW" reap 2>&1)" || true
+if grep -q "would reap: repo-s/job-status (running," <<<"$dry_out" \
+   && grep -q "reaped: repo-s/job-status (running," <<<"$real_out"; then
+  echo "PASS: dry-run and real reap report the same pre-mutation status"; pass=$((pass + 1))
+else
+  echo "FAIL: reaped: line reports a post-mutation status (dry: $dry_out; real: $real_out)"; fail=$((fail + 1))
 fi
 
 # Case 55: a live job recorded ONLY in state.json, in a workspace with NO jobs/
