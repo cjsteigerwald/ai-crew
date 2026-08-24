@@ -98,26 +98,42 @@ From anywhere, including a plain terminal — these read the files the resolver
 reads, so they show what a NEW session will pick up (not what a running one is
 bound to):
 
+The shortest answer — resolve the install path, then read that version's own
+manifest:
+
 ```bash
-# 1. the authoritative record: which version, installed when, from which commit
+P=$(python3 -c "import json,os;d=json.load(open(os.path.expanduser('~/.claude/plugins/installed_plugins.json')));print(d['plugins']['codex-crew@cjs-plugins'][0]['installPath'])")
+cat "$P/.claude-plugin/plugin.json"
+```
+
+```json
+{
+  "name": "codex-crew",
+  "version": "0.6.0",
+  ...
+}
+```
+
+The manifest is the version's own declaration of itself, so it cannot disagree
+with what is on disk the way a separate registry can.
+
+For more context:
+
+```bash
+# the authoritative record: which version, installed when, from which commit sha
 cat ~/.claude/plugins/installed_plugins.json
 
-# 2. every version still unpacked on disk — the newest is the one just installed
+# every version still unpacked — they accumulate, they are not replaced
 ls ~/.claude/plugins/cache/cjs-plugins/codex-crew/
 
-# 3. where the marketplace points, and when it was last refreshed
+# where the marketplace points, and when it was last refreshed
 cat ~/.claude/plugins/known_marketplaces.json
 ```
 
-Just the resolved path, if that is all you want:
-
-```bash
-python3 -c "import json,os; d=json.load(open(os.path.expanduser('~/.claude/plugins/installed_plugins.json'))); print(d['plugins']['codex-crew@cjs-plugins'][0]['installPath'])"
-```
-
-⚠️ The marketplace file is `known_marketplaces.json`. There is no
+⚠️ The marketplace file is `known_marketplaces.json`. There is **no**
 `~/.claude/plugins/config.json` — a `cat` of it with stderr suppressed prints
-nothing and looks indistinguishable from an empty config.
+nothing and looks exactly like an empty config, so a check built on it reports
+success by printing nothing at all.
 
 Old version directories are safe to leave; `claude plugin prune` removes
 auto-installed dependencies that are no longer needed.
