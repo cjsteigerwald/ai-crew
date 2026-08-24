@@ -63,20 +63,35 @@ Primary helper — `crew-codex`, on PATH while the plugin is enabled:
   for jobs stuck in `running`/`queued` whose process is dead or whose log has
   been frozen past `CREW_CODEX_REAP_LOG_AGE` (default 3600s), and mark them
   failed in place. The companion never does this itself, so stuck entries
-  otherwise accumulate forever and make `/codex:status` lie. Two further
-  sweeps are opt-in, because they are destructive in ways the job sweep is not:
-  - `--brokers` kills broker processes whose `--cwd` workspace no longer exists
-    (delete a worktree and its broker stays resident forever), children first
-    and **by pid only** — never a pattern kill, which would take out every
-    other workspace's healthy broker — then removes `/tmp/cxc-*` socket dirs
-    that nothing is holding. It REFUSES the whole sweep (exit 3) while any job
-    anywhere is non-terminal: nothing maps a job to the broker serving it, so
-    one live job makes every broker unprovable.
-  - `--state` prunes state dirs whose recorded cwd is gone and that hold no
-    non-terminal job. This deletes job history and logs — dry-run it first. A
-    dir whose cwd cannot be parsed is reported `unresolved` and never pruned.
-  Both compose with `--dry-run`, and plain `reap` behaves exactly as before.
-  Main-thread housekeeping, not for crew agents mid-job.
+  otherwise accumulate forever and make `/codex:status` lie. A workspace that
+  holds a live-pid job, or whose records cannot be read, is skipped whole —
+  the state dir is shared with every other Claude Code session on the machine.
+  Two further sweeps are opt-in:
+  - `--brokers` **reports only — it kills nothing.** It lists broker processes
+    whose `--cwd` workspace no longer exists (delete a worktree and its broker
+    stays resident forever) and prints a paste-ready
+    `pkill -P <pid>; kill -TERM <pid>` for a human to run after confirming the
+    pid. A cwd that cannot be *proven* absent is reported `unknown`, never as a
+    candidate, and no socket dir is removed. The automated kill was withdrawn
+    after failing open five distinct times (permission-denied reading as
+    "workspace gone" twice over) plus an unclosable scan-then-kill race; a
+    candidate may be another session's live broker. `--dry-run` is accepted
+    here and has no effect.
+  - `--state` **reports only — it deletes nothing.** It lists state dirs whose
+    recorded cwd is gone, that hold no non-terminal job and no live pid, and
+    whose records were all read and parsed, and prints a paste-ready
+    `rm -rf <dir>` for a human to run after confirming the registry is not
+    another session's. A dir whose cwd cannot be parsed is `unresolved`; one
+    that cannot be read or parsed is `blocked`. The delete was withdrawn for
+    the same reason the broker kill was: the dir is the registry the companion
+    serves `status`/`result`/`cancel` from, the state root is shared with every
+    other Claude Code session, and nothing locks it between the scan and the
+    delete. `--dry-run` is accepted here and has no effect.
+  Exit codes: `0` everything was classified, `2` usage error, `3` the sweep ran
+  but at least one entry was **blocked, unresolved or skipped** (read the lines
+  — do NOT treat exit 3 as a clean sweep), `1` reap itself failed. Plain `reap`
+  behaves exactly as before apart from that exit code. Main-thread
+  housekeeping, not for crew agents mid-job.
 - `crew-codex result <job-id>` — the finished job's output (plus its resume id)
 - `crew-codex --resolve` — print the resolved companion script path (diagnostics only)
 
@@ -110,8 +125,12 @@ Execution rules:
   twice over: the sidecar records it flag-sourced, and the job record itself
   carries `effort`, `model` and `codexPluginVersion`.
 - Results are archived by `await` on terminal state to
-  `~/.claude/plugins/data/codex-crew/jobs/<id>.{result.txt,meta.json,log}`,
-  which the companion's 50-job pruner cannot delete. Jobs still die with the
+  `~/.claude/plugins/data/codex-crew/jobs/<id>.{result.txt,meta.json,sanitized,log}`,
+  which the companion's 50-job pruner cannot delete. `<id>.sanitized` is a
+  provenance sentinel — a SHA-256 of the archived `result.txt` and nothing else.
+  It is what lets a later `await` tell "this result was already sanitized" from
+  "this is a legacy unsanitized render", so a transient sanitizer failure fails
+  closed without destroying an unrepeatable model answer. Jobs still die with the
   Claude session by design (its SessionEnd hook terminates them); the archived
   transcript and the `threadId` in the meta file survive, so interrupted work
   resumes (`--resume-last` / `codex resume <threadId>`) instead of restarting.
@@ -138,6 +157,46 @@ and task prompts — are replaced by a `<redacted: N positional token(s)>` marke
 because focus text routinely carries pasted incident logs, internal hostnames and
 secret-bearing commands, and this archive deliberately outlives the vendor's
 session cleanup.
+
+⚠️ The archived `<id>.meta.json` is **sanitized the same way, for the same
+reason**. `result --json` returns `storedJob` verbatim, and that record carries
+the request: a background task's prompt (`storedJob.request.prompt`), a
+background effort review's focus text (`storedJob.request.focusText`) and a
+task's prompt-derived `summary`.
+
+The rule is a **structural allowlist**, not a key-shape filter: a field is kept
+because of **where it sits**, and anything unrecognized is replaced by a
+`<redacted: N chars>` marker regardless of its name or its length. Only `job`
+and `storedJob` are recognized at the top; inside them, `request` keeps a
+routing allowlist, `result` and `rendered` are the **only** preserved output
+subtrees (verbatim, unbounded, at that exact depth), `summary` is kept only for
+job kinds known to put model output there (`review-`) and capped like any other
+scalar, and a fixed list of ids, timings, status and routing fields is kept as
+length-capped scalars. Everything else is markered. A new vendor field — and a
+job kind under an unrecognized id prefix — therefore fails **closed** until
+somebody adds it here deliberately.
+
+⚠️ Those comparisons are against the **exact** key spelling, with no
+normalization step. Normalizing first tightens a denylist but can only loosen an
+allowlist: `r-e-s-u-l-t` would alias into the verbatim-output branch and
+`t-h-r-e-a-d-I-d` into the metadata allowlist. Over-redaction is a bug report;
+under-redaction is a disclosure nobody notices.
+
+⚠️ Marker trust is a privilege of `sanitize-archive` alone (`CREW_TRUST_MARKERS`),
+because that is the one caller re-reading this script's own output — which is
+all idempotence ever needed. The live `await` path reads companion data that is
+user-controlled end to end, so a prompt that IS a canonical marker is still
+re-markered there rather than passed through.
+
+A payload that cannot be parsed, or that is not a mapping, is withheld rather
+than archived raw. `.log` files are copied verbatim and are **not** sanitized by
+any path. Do not read a prompt back out of the archive; it is not there by
+design.
+
+`crew-codex sanitize-archive [--dir <path>] [--dry-run]` applies the identical
+sanitizer to what is already on disk, for jobs archived by an earlier version.
+It never deletes an archived job, rewrites only when the sanitized bytes differ,
+and a second pass is byte-for-byte a no-op.
 
 GPT-5.6 family ladder (per OpenAI's own model registry): **sol** = flagship
 frontier coding tier, **terra** = balanced everyday mid tier, **luna** =

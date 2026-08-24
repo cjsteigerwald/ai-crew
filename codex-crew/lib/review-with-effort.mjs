@@ -258,6 +258,81 @@ function firstMeaningfulLine(text, fallback) {
   return line ?? fallback;
 }
 
+// Collector skip markers, counted ONLY in their structural position.
+//
+// The vendor emits an unusable changed file as exactly two lines — a `### <path>`
+// heading followed by `(skipped: <reason>)` (lib/git.mjs:196-219) — and inlines
+// every usable untracked file's RAW CONTENT a few lines later, inside a fence.
+// A regex scan of the whole blob therefore counts markers that are file content:
+// any reviewed file that itself contains a `(skipped: ...)` line (a test fixture,
+// a pasted log, this very comment in a diff) inflated the count, and once the
+// count reached fileCount the driver REFUSED a perfectly reviewable diff.
+//
+// So: a marker counts only when the preceding line is a `### <path>` heading AND
+// — when changedFiles is usable — that path is a genuinely changed file. Both
+// conditions must hold, which also bounds the result by fileCount by
+// construction (changedFiles is where fileCount comes from). Returns the PATHS,
+// never the marker text: callers put this in error messages and job logs, and
+// the marker text can be a fragment of someone's file.
+//
+// Two ways that structural test was still ambiguous, and both are handled here:
+//
+// OVER-COUNT — the changed-path cross-check does not save us when the colliding
+// text names a REAL changed file. The collector inlines untracked files raw
+// inside a fence, so reviewing a doc that quotes the collector's own output
+// ("### notes.md" then "(skipped: example)") produced a marker for a path that
+// is genuinely in changedFiles, and once the count reached fileCount the driver
+// REFUSED a reviewable diff. Fenced regions are therefore tracked and skipped:
+// inside a fence every line is file CONTENT, never collector structure.
+//
+// UNDER-COUNT — the heading capture used to be `(.+?)\s*$`, trimming trailing
+// whitespace off the path before the membership test. A changed path that
+// really ends in spaces (git happily tracks one) then never matched its own
+// heading, the marker was not counted, and an all-skipped context could be
+// dispatched as a blind review. The path is now captured and compared EXACTLY;
+// the vendor renders `### ${file}`, so any trailing space in the heading is part
+// of the filename.
+function collectSkippedFiles(content, changedFiles) {
+  const lines = String(content ?? "").split(/\r?\n/);
+  const changed = Array.isArray(changedFiles) && changedFiles.length > 0
+    ? new Set(changedFiles.map((file) => String(file)))
+    : null;
+  const paths = new Set();
+  // The marker that opened the region we are inside, or null at top level.
+  // CommonMark rules, minus what cannot occur here: an opening fence may carry
+  // an info string, a closing fence may not, and a closing fence must use the
+  // same character and be at least as long. An UNTERMINATED fence in inlined
+  // content therefore swallows the rest of the blob — deliberately, because
+  // that is what a Markdown reader does with it too, and because the failure
+  // direction (fewer markers, so a review is dispatched with a warning) beats
+  // refusing a reviewable diff outright.
+  let fence = null;
+  for (let i = 0; i < lines.length; i += 1) {
+    const fenceLine = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(lines[i]);
+    if (fenceLine) {
+      const [, marker, info] = fenceLine;
+      if (fence === null) {
+        fence = marker;
+      } else if (marker[0] === fence[0] && marker.length >= fence.length && info.trim() === "") {
+        fence = null;
+      }
+      continue;
+    }
+    if (fence !== null) continue;
+    if (i + 1 >= lines.length) break;
+    const heading = /^### (.+)$/.exec(lines[i]);
+    if (!heading) continue;
+    if (!/^\(skipped: .*\)\s*$/.test(lines[i + 1])) continue;
+    const file = heading[1];
+    // Cross-check against the changed-file list where we have one. Without it
+    // (a vendor rename, or a target that reports none) fall back to structural
+    // position alone — still far tighter than a whole-blob regex.
+    if (changed && !changed.has(file)) continue;
+    paths.add(file);
+  }
+  return [...paths];
+}
+
 // Byte-for-byte the composition of executeReviewRun's adversarial branch
 // (codex-companion.mjs:405-460), with ONE addition: `effort` on the
 // runAppServerTurn call. Keep the payload shape identical — renderStoredJobResult
@@ -327,13 +402,13 @@ async function executeAdversarialReviewRun(vendor, request) {
   // non-empty-string check below pass, and the model is asked to adversarially
   // review a list of files it cannot see -- answering "no findings", which
   // renders as a CLEAN PASS. Same silent-approval hazard, one level down.
-  const skipped = [...String(context.content ?? "").matchAll(/^\(skipped: ([^)]*)\)/gm)];
+  const skipped = collectSkippedFiles(context.content, context.changedFiles);
   if (skipped.length > 0 && skipped.length >= fileCount) {
     throw new Error(
       `every changed file in ${context.target.label} was skipped by the collector ` +
-        `(${skipped.map((m) => m[1]).join("; ")}). There is no reviewable content, so a ` +
-        `review would return "no findings" indistinguishably from a clean review. ` +
-        `Re-run without --effort to use the vendor path, or narrow the target.`
+        `(${skipped.length} of ${fileCount}: ${skipped.join(", ")}). There is no reviewable ` +
+        `content, so a review would return "no findings" indistinguishably from a clean ` +
+        `review. Re-run without --effort to use the vendor path, or narrow the target.`
     );
   }
   if (skipped.length > 0) {
@@ -341,7 +416,7 @@ async function executeAdversarialReviewRun(vendor, request) {
     // reviewer must be told rather than silently shown less than it thinks.
     context.collectionGuidance =
       `${context.collectionGuidance}\n\n⚠️ ${skipped.length} of ${fileCount} changed file(s) ` +
-      `were NOT inlined by the collector (${skipped.map((m) => m[1]).join("; ")}). ` +
+      `were NOT inlined by the collector: ${skipped.join(", ")}. ` +
       `Read them directly before concluding anything about them.`;
   }
 

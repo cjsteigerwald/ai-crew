@@ -172,22 +172,88 @@ session cleanup.
 job records failed once their process is dead or their log has frozen. Two
 opt-in sweeps handle what dies around them:
 
-- `--brokers` kills brokers whose `--cwd` workspace is gone (a deleted worktree
-  leaves its broker resident forever), children first and **by pid only** — a
-  pattern kill would destroy other workspaces' healthy brokers — then removes
-  `/tmp/cxc-*` socket dirs nothing is holding. Refused outright (exit 3) while
-  any job anywhere is non-terminal.
-- `--state` prunes state dirs whose recorded cwd is gone and that hold no
-  non-terminal job; a dir whose cwd cannot be parsed is reported `unresolved`
-  and never pruned.
+- `--brokers` **reports and never kills.** It finds brokers whose `--cwd`
+  workspace is gone (a deleted worktree leaves its broker resident forever) and
+  prints the pid, the cwd and a paste-ready `pkill -P <pid>; kill -TERM <pid>`
+  for you to run yourself. A cwd that cannot be *proven* absent is reported
+  `unknown`, never as a candidate. It removes no socket dirs.
+  Why no kill: the automated version failed open five distinct times in five
+  review rounds (each fix reintroducing the fault one level up — `isdir`, then
+  `exists`, both of which return False for permission-denied), and the
+  scan-then-kill race cannot be closed from outside the broker. On a machine
+  running several Claude Code sessions at once, a candidate may be serving
+  another session's in-flight review. The decision is yours; the evidence is
+  printed. `--dry-run` is accepted with `--brokers` but has nothing to change.
+- `--state` **reports and never deletes.** It finds state dirs whose recorded
+  cwd is gone and that hold no non-terminal job and no live pid, and prints the
+  dir, the resolved cwd, why it qualifies and a paste-ready `rm -rf <dir>` for
+  you to run yourself — with the warning that the registry may belong to another
+  concurrent session. A dir whose cwd cannot be parsed is reported `unresolved`;
+  one whose records cannot be read or parsed — including an unreadable directory
+  or an unrecognized `state.json` shape — is reported `blocked`.
+  Why no delete: the dir is the registry the companion serves
+  `status`/`result`/`cancel` from, in a state root **shared by every Claude Code
+  session on this machine**, and the scan that clears it carries the same
+  irreducible TOCTOU as the broker kill — another session can queue a job into
+  that workspace, or recreate the cwd, between the scan and the delete. Three
+  further fail-open paths (a dangling symlink read as absence, a malformed pid
+  laundered into a terminal record by the preliminary job sweep, and only the
+  *first* recorded cwd being checked) mattered only because a delete followed
+  them; with the delete gone each is at worst one misclassified line of report
+  that a human reads before running anything. `--dry-run` is accepted with
+  `--state` but has nothing to change.
 
-Both are destructive, so dry-run first: `crew-codex reap --brokers --state --dry-run`.
+**Exit codes for `reap`:** `0` every entry was classified, `2` usage error,
+`3` the sweep ran but at least one entry was **blocked, unresolved or skipped**,
+`1` reap itself failed. Exit `3` is not a failure to fix — it is a sweep that
+walked past entries a human still has to decide about, and it exists because a
+uniform `exit 0` told automation that such a sweep had finished the job.
 
 **Results survive.** On terminal state `await` archives the result, metadata
 and log to `~/.claude/plugins/data/codex-crew/jobs/`, which the companion's
 50-job pruner cannot delete. Jobs still stop when the Claude session ends (by
 design), but the archived transcript and `threadId` remain, so interrupted
 work is resumed rather than re-run from scratch.
+
+⚠️ The archived `<job-id>.meta.json` is **sanitized before it is written**. The
+companion's `result --json` returns `storedJob` verbatim, and a stored job
+carries its request: a background task keeps its prompt in
+`storedJob.request.prompt`, a background effort review keeps its focus text in
+`storedJob.request.focusText`, and a task's `summary` is the first 96 characters
+of the prompt. Unsanitized, that put the original incident text, credentials,
+hostnames and paths in the same directory as a carefully redacted
+`.dispatch.json` — an archive that exists precisely to outlive the vendor's
+session cleanup.
+
+The sanitizer is a **structural allowlist**: a field survives because of *where
+it sits*, and anything unrecognized is replaced by a `<redacted: N chars>`
+marker regardless of its name or its length. Only `job` and `storedJob` are
+recognized at the top level; inside them `request` keeps a routing allowlist,
+`result` and `rendered` are the only preserved output subtrees (verbatim and
+unbounded, at that depth only), `summary` is kept only for job kinds known to
+put model output there (`review-`) and capped like any other scalar, and a
+fixed set of ids, timings, status and routing fields is kept as length-capped
+scalars. A new vendor field, and a job kind under an unrecognized id prefix,
+therefore fail **closed**.
+
+Every one of those comparisons is against the **exact** key spelling. An
+earlier version normalized keys first (lowercase, strip punctuation), which
+reads as defensive and is the opposite: normalization tightens a denylist but
+can only loosen an allowlist, so `r-e-s-u-l-t` reached the verbatim-output
+branch and `t-h-r-e-a-d-I-d` reached the metadata allowlist. A vendor alias is
+added to those sets by hand or not at all. A payload that cannot be parsed, or that is not a
+mapping, is **withheld** rather than archived raw. Sanitization is best-effort
+in the same sense as stamping: it never changes `await`'s exit code or its
+single stdout line.
+
+Alongside the result, `await` writes `<job-id>.sanitized` — a SHA-256 of the
+archived `result.txt` and nothing else. It is what lets a later run tell an
+already-sanitized result from a legacy unsanitized one, so a transient
+sanitizer failure still fails closed without destroying an unrepeatable model
+answer. `crew-codex sanitize-archive [--dir <path>] [--dry-run]` applies the
+identical sanitizer to jobs archived by an earlier version; it never deletes,
+rewrites only when the bytes differ, and a second pass is a byte-for-byte
+no-op. `.log` files are copied verbatim and are **not** sanitized by any path.
 
 **Capacity retries**: "model is at capacity" rejections are retried by
 `crew-codex` automatically — up to 3 attempts with jittered 5/15/45s backoff
