@@ -337,13 +337,6 @@ TRUST_MARKERS = os.environ.get("CREW_TRUST_MARKERS") == "1"
 
 # Level 1 — the payload root. Only these two hold a job.
 TOP_LEVEL_JOB_KEYS = {"job", "storedJob"}
-# ...and these are the withheld record this script itself writes. ⚠️ Recognized
-# ONLY under marker trust: the sole reason they exist is so that re-sanitizing
-# our own output stays a byte-for-byte no-op, and that is the sweep's job. On
-# the live path the payload is companion output, where a top-level `reason`
-# under 512 chars would otherwise be preserved verbatim for no benefit at all.
-TOP_LEVEL_SCALAR_KEYS = {"jobId", "crewArchive", "reason"}
-
 # Level 2 — inside job/storedJob. The ONLY preserved output subtrees, and only
 # at this exact depth. A key named `result` nested anywhere else is not an
 # output boundary and gets no privileges from its name.
@@ -361,6 +354,10 @@ ALLOWED_META_KEYS = {
     "dispatchedBy", "model", "effort", "effortRequested", "effortEffective",
     "codexPluginVersion", "workspaceRoot", "logFile", "cwd", "base",
     "background", "reapReason",
+    # `write` is a plain boolean the companion really emits
+    # (codex-companion.mjs:567) and it is the only record of whether a task ran
+    # write-enabled — worth auditing, and it cannot carry content.
+    "write",
 }
 
 # Level 3 — inside a request. Routing only; values are scalars by the same rule.
@@ -371,12 +368,30 @@ ALLOWED_REQUEST_KEYS = {
     "pluginRoot", "pluginVersion", "kind", "jobClass", "resumeLast", "sandbox",
     "approval", "background", "json", "wait", "promptFile", "threadId",
     "turnId", "sessionId", "dispatchedBy", "workspaceRoot",
+    # Emitted by buildTaskRequest (codex-companion.mjs:604): a boolean and an id.
+    "write", "jobId",
 }
 
 MAX_METADATA_CHARS = 512
 
 # The prompt-derived summary strings to strip out of preserved output, filled in
 # from the payload once it is parsed. Empty unless DROP_SUMMARY applies.
+#
+# ⚠️ SOURCED FROM `storedJob` ONLY, and this is not a stylistic choice. The two
+# summaries in a completed payload have OPPOSITE provenance, verified against
+# codex 1.0.6:
+#   storedJob.summary — `writeJobFile(..., {...runningRecord, ...})`
+#     (tracked-jobs.mjs:155) keeps the DISPATCH-time record, whose summary is
+#     `shorten(prompt)` (codex-companion.mjs:552). This is the input. It is the
+#     needle.
+#   job.summary — `upsertJob(..., summary: execution.summary)`
+#     (tracked-jobs.mjs:174), and execution.summary is
+#     `firstMeaningfulLine(rawOutput, ...)` (codex-companion.mjs:525). This is
+#     MODEL OUTPUT, and it is by construction a line that also appears inside
+#     `result`/`rendered`.
+# Using job.summary as a needle therefore does not redact a prompt — it deletes
+# the first line of the answer out of the preserved output subtree, in every
+# completed task. The archive exists to keep that text.
 SUMMARY_STRINGS = []
 
 # ⚠️ ANCHORED with fullmatch and ASCII-only. A prefix test here is a redaction
@@ -478,8 +493,6 @@ def scrub_payload(value):
     for k, v in value.items():
         if k in TOP_LEVEL_JOB_KEYS:
             out[k] = scrub_job(v)
-        elif TRUST_MARKERS and k in TOP_LEVEL_SCALAR_KEYS:
-            out[k] = keep_scalar(v)
         else:
             out[k] = marker(v)
     return out
@@ -513,24 +526,47 @@ try:
     payload = json.loads(raw)
 except ValueError:
     payload = None
-if not isinstance(payload, dict):
-    # Includes `null` (the sweep's "result with no meta" feed) and any shape
-    # this script cannot walk. Withholding is the whole point: "we could not
-    # sanitize it" must never become "so we archived it intact".
+WITHHELD_REASON = ("companion result --json was empty or unparseable; the raw "
+                   "payload is NOT archived because it can carry unredacted "
+                   "prompt text")
+
+# ⚠️ A payload holding neither `job` nor `storedJob` is not a payload this script
+# can walk, and that includes the withheld record it writes itself. It is
+# REGENERATED from scratch rather than copied through — which is what makes a
+# second sweep byte-identical without this script ever having to trust a scalar
+# it read back off disk. The previous version recognized `jobId`/`crewArchive`/
+# `reason` at the top level under marker trust, and `sanitize-archive` sets
+# marker trust for EVERY file it sweeps, including the legacy unsanitized ones
+# it exists to migrate — so a legacy `{"reason": "<secret>"}` was preserved
+# verbatim by the very command meant to clean it. Nothing is trusted now.
+if not isinstance(payload, dict) or not (
+        isinstance(payload.get("job"), dict)
+        or isinstance(payload.get("storedJob"), dict)):
     payload = None
     record = {
         "jobId": JOB_ID,
         "crewArchive": "withheld",
-        "reason": "companion result --json was empty or unparseable; the raw payload is NOT archived because it can carry unredacted prompt text",
+        "reason": WITHHELD_REASON,
     }
 else:
     if DROP_SUMMARY:
-        for _holder in ("job", "storedJob"):
-            _node = payload.get(_holder)
-            if isinstance(_node, dict):
-                _summary = _node.get("summary")
-                if isinstance(_summary, str) and _summary.strip() and _summary not in SUMMARY_STRINGS:
-                    SUMMARY_STRINGS.append(_summary)
+        _node = payload.get("storedJob")
+        if isinstance(_node, dict):
+            _summary = _node.get("summary")
+            # A marker is never a needle. Under marker trust a previous pass's
+            # `<redacted: N chars>` would otherwise be used as a search string
+            # and rewrite every matching marker inside preserved output, which
+            # breaks idempotence on the second sweep.
+            # ⚠️ A LENGTH FLOOR, not a length guard — the opposite direction to
+            # the one this rewrite deleted. This string is used as a SUBSTRING
+            # NEEDLE over preserved model output, so a two-character prompt
+            # ("ls") would rewrite every "ls" inside the answer. Under the floor
+            # the summary is left alone: a handful of characters is not a
+            # disclosure worth shredding the archive for, and `request.prompt`
+            # is redacted regardless.
+            if (isinstance(_summary, str) and len(_summary.strip()) >= 12
+                    and not is_marker(_summary)):
+                SUMMARY_STRINGS.append(_summary)
     record = scrub_payload(payload)
 
 out = os.environ["CREW_META_OUT"]
@@ -568,12 +604,11 @@ if result_out:
         # summary, so a vendor moving the field does not reopen this, and
         # it cannot over-redact model output that merely happens to begin a
         # line with "Summary: ".
-        for holder in ("job", "storedJob"):
-            node = (payload or {}).get(holder)
-            if isinstance(node, dict):
-                summary = node.get("summary")
-                if isinstance(summary, str) and summary.strip():
-                    text = text.replace(summary, "<redacted: %d chars>" % len(summary))
+        # storedJob only, for the reason spelled out at SUMMARY_STRINGS: a
+        # completed job.summary is the first line of the model's own answer,
+        # and replacing it here mutilates the rendered result.
+        for summary in SUMMARY_STRINGS:
+            text = text.replace(summary, "<redacted: %d chars>" % len(summary))
         # Skeleton rule, for the case the payload was unparseable and the
         # exact string is therefore unknowable. Scoped to the vendor
         # fallback render so a model answer is never touched.
@@ -581,7 +616,14 @@ if result_out:
         if (len(lines) >= 4 and lines[0].startswith("# ") and lines[1] == ""
                 and lines[2].startswith("Job: ") and lines[3].startswith("Status: ")):
             for i, line in enumerate(lines):
-                if line.startswith("Summary: "):
+                # ⚠️ Skip a value this pass (or an earlier one) already wrote.
+                # The rule measures what it replaces, so re-measuring its own
+                # marker rewrites 30 to 20 and the recorded length stops
+                # describing the text that was removed. Only reachable now that
+                # the exact-substring pass no longer always fires first — the
+                # sweep re-reads its own output, so this has to be idempotent
+                # on its own terms, not by luck of ordering.
+                if line.startswith("Summary: ") and not is_marker(line[9:].strip()):
                     lines[i] = "Summary: <redacted: %d chars>" % len(line[9:])
             text = "\n".join(lines)
     write_atomic(result_out, text)
@@ -921,7 +963,18 @@ if [[ "${1:-}" == "sanitize-archive" ]]; then
   # Stale staging files from the pre-trap await path: unsanitized renders that
   # nothing else will ever look at. They carry prompt text and no value, so
   # this is the one thing the sweep removes outright.
-  for sa_raw in "$SA_DIR"/.*.result.raw; do
+  # ...and any staging file stranded by a SIGKILL mid-write. Unpredictable names
+  # mean nothing else will ever match them again, so the sweep is the only thing
+  # that can clean them up. ⚠️ AGE-GATED at an hour: a `.crew-w.*` belonging to
+  # an await that is writing right now looks identical to an abandoned one, and
+  # deleting a live one breaks that archive write. An hour is far longer than
+  # any atomic write and far shorter than "forever".
+  sa_stranded=()
+  while IFS= read -r -d '' sa_old; do
+    sa_stranded+=("$sa_old")
+  done < <(find "$SA_DIR" -maxdepth 1 -type f \( -name '.crew-w.*' -o -name '.crew-sa.*' \) -mmin +60 -print0 2>/dev/null)
+  for sa_raw in ${sa_stranded[@]+"${sa_stranded[@]}"} "$SA_DIR"/.*.result.raw; do
+    [[ -e "$sa_raw" ]] || continue
     if rm -f "$sa_raw"; then
       echo "removed stale unsanitized staging file: $(basename "$sa_raw")"
     else
@@ -1121,7 +1174,7 @@ if [[ "${1:-}" == "reap" ]]; then
   REAP_LOG_AGE="${CREW_CODEX_REAP_LOG_AGE:-3600}" \
   REAP_DRY="$DRY" \
   python3 - "$CLAUDE_PLUGIN_DATA/state" <<'PY' || rc=$?
-import datetime, json, os, sys, time
+import datetime, json, os, sys, tempfile, time
 root = sys.argv[1]
 max_age = int(os.environ.get("REAP_LOG_AGE", "3600"))
 dry = os.environ.get("REAP_DRY") == "1"
@@ -1204,17 +1257,44 @@ def state_conflicts(entries, ids, baseline):
             and entry_identity(e) != baseline.get(e.get("id"))]
 
 
+def write_job_atomic(path, blob):
+    """Stage in the same directory and rename over. ⚠️ `open(path, "w")`
+    TRUNCATES before the first byte is written, so a write that then fails —
+    ENOSPC, EIO, a short write — leaves the record empty AND absent from the
+    written-bytes map, which makes it unrestorable by a rollback that
+    (correctly) refuses to write over bytes it did not produce. rename(2)
+    within one directory is atomic: the record is either the old one or the new
+    one, never a truncated one."""
+    directory = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".crew-j.", dir=directory)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(blob)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def restore_originals(originals, written):
     """Undo the jobs/*.json writes from the exact bytes read before them. A
     re-serialization would not be byte-identical, and the point of a rollback
     is that the workspace is indistinguishable from untouched.
 
-    ⚠️ ONLY where the file still holds what THIS sweep wrote. A phase-(b)
-    rollback fires precisely because another session is active, so the record
-    may already have been rewritten by them in the meantime — and restoring a
-    pre-image over that discards their fresher write, which is the exact harm
-    the rollback exists to prevent. Leave those alone and report them: "stale
-    but theirs" beats "clobbered by us"."""
+    Three states, and only one of them is a problem:
+      current == the pre-image  → already pristine. The mutation loop aborted
+        before touching it (or an atomic write failed cleanly). Nothing to undo.
+      current == what we wrote  → ours. Restore it.
+      anything else             → ⚠️ somebody rewrote it after we did. A
+        phase-(b) rollback fires precisely BECAUSE another session is active, so
+        writing a pre-image over their fresher record is the exact harm the
+        rollback exists to prevent. Leave it and say so: "stale but theirs"
+        beats "clobbered by us".
+    Collapsing the first case into the third reported pristine, never-touched
+    files as unresolved and told the user a clean workspace needed a look."""
     restored, conflicted = [], []
     for path, blob in originals.items():
         try:
@@ -1222,6 +1302,9 @@ def restore_originals(originals, written):
                 current = handle.read()
         except OSError:
             conflicted.append(path)
+            continue
+        if current == blob:
+            restored.append(path)          # already as this sweep found it
             continue
         if current != written.get(path):
             conflicted.append(path)
@@ -1274,14 +1357,24 @@ for state_dir in state_dirs:
         skipped += 1
         continue
     jobs = {}
+    pre_images = {}
     unreadable = []
     for name in job_names:
         if not name.endswith(".json"):
             continue
         path = os.path.join(jobs_dir, name)
         try:
-            with open(path) as f:
-                record = json.load(f)
+            # ⚠️ Read the BYTES once and parse from them, so the pre-image the
+            # rollback would restore is byte-for-byte the record this sweep
+            # actually classified. Capturing it later — after the registry
+            # checks — meant a writer landing in between was captured AS the
+            # pre-image: the sweep then classified from one version, wrote over
+            # a second, and would have "restored" the second while believing it
+            # had restored the first. One read also removes a whole class of
+            # "readable at classification, unreadable at capture" races.
+            with open(path, "rb") as f:
+                blob = f.read()
+            record = json.loads(blob.decode("utf-8"))
         except (FileNotFoundError, NotADirectoryError):
             continue                     # vanished between listdir and open
         except (OSError, ValueError) as exc:
@@ -1290,6 +1383,7 @@ for state_dir in state_dirs:
         if not isinstance(record, dict):
             unreadable.append(f"{name}(not a job object)")
             continue
+        pre_images[path] = blob
         jobs[path] = record
     if unreadable:
         # A record we cannot read is NOT a record that says "terminal". Another
@@ -1381,12 +1475,26 @@ for state_dir in state_dirs:
     # reason about: the per-file accounting and the id-keyed registry mirror
     # disagree by construction, and one `id` in state.json cannot describe two
     # records. Corrupt input, and the honest answer is to touch nothing.
+    # ⚠️ Counted across EVERY parsed record in the workspace, not just the ones
+    # this sweep would reap. Scoping it to the reap subset missed the case that
+    # actually splits the brain: two files sharing an id where only ONE looks
+    # stuck. The sweep marks that one and the single registry entry failed while
+    # the other record is still running, and no duplicate was ever detected.
+    # A non-string or empty id is the same class of corrupt input.
     id_counts = {}
-    for _p, (j, _w) in to_reap.items():
-        id_counts[j.get("id")] = id_counts.get(j.get("id"), 0) + 1
-    dup_ids = sorted(i for i, n in id_counts.items() if n > 1 and i is not None)
-    if dup_ids:
-        print(f"skipped: {state_dir} — {dup_ids} appear in more than one jobs/*.json record, not touching this workspace")
+    bad_ids = []
+    for _p, _j in jobs.items():
+        _id = _j.get("id")
+        if not isinstance(_id, str) or not _id:
+            bad_ids.append(os.path.basename(_p))
+            continue
+        id_counts[_id] = id_counts.get(_id, 0) + 1
+    dup_ids = sorted(i for i, n in id_counts.items() if n > 1)
+    if dup_ids or bad_ids:
+        detail = f"{dup_ids} appear in more than one jobs/*.json record" if dup_ids else ""
+        if bad_ids:
+            detail = (detail + " and " if detail else "") + f"{bad_ids} carry no usable id"
+        print(f"skipped: {state_dir} — {detail}, not touching this workspace")
         skipped += 1
         continue
 
@@ -1419,37 +1527,50 @@ for state_dir in state_dirs:
                 kept += 1
         continue
 
-    # Exact pre-image bytes, captured before the write that overwrites them.
-    # This is what makes phase (b)'s abort a rollback rather than an apology.
-    # ⚠️ ALL of them first, and a failure to read even one aborts before the
-    # first write. Capturing per-record inside the write loop meant an
-    # unreadable pre-image still got overwritten, and the rollback then skipped
-    # it while printing that the workspace was restored — a false claim over
-    # exactly the split brain this rewrite exists to prevent. Rollback-ability
-    # is a precondition, the same way phase (a) is. This read can fail even
-    # though the classification loop read the same file moments ago: another
-    # session may have removed it in between.
-    originals = {}
-    unreadable_pre = []
-    for p, (j, why) in to_reap.items():
-        try:
-            with open(p, "rb") as f:
-                originals[p] = f.read()
-        except OSError as exc:
-            unreadable_pre.append(f"{os.path.basename(p)}({exc.__class__.__name__})")
-    if unreadable_pre:
-        print(f"skipped: {state_dir} — {unreadable_pre} could not be read for rollback, not touching this workspace")
+    # The pre-images were captured at classification time, above. Everything the
+    # rollback can promise rests on them being the exact bytes this sweep read
+    # and reasoned about.
+    originals = {p: pre_images[p] for p in to_reap if p in pre_images}
+    if len(originals) != len(to_reap):
+        missing = sorted(os.path.basename(p) for p in to_reap if p not in pre_images)
+        print(f"skipped: {state_dir} — {missing} have no captured pre-image, not touching this workspace")
         skipped += 1
         continue
 
-    # ⚠️ NOTHING above this line has printed a `reaped:` line or moved a counter.
-    # Every precondition — the duplicate-id check, the registry conflict check
-    # and the pre-image capture — clears first, because a workspace that aborts
-    # must not have already claimed reaps it then did not perform. The summary
-    # is read as a statement about what is on disk, so it has to be one.
-    for p, (j, why) in to_reap.items():
-        print(f"reaped: {state_dir}/{j.get('id')} ({j.get('status')}, {why})")
-        reaped += 1
+    # ⚠️ Re-verify immediately before the write loop. This covers the whole
+    # window from classification to mutation — which is where the registry reads
+    # and every other check live, so it is the window a concurrent writer is
+    # most likely to land in. The rollback on its own can only tell "ours" from
+    # "theirs" for a writer that arrives AFTER our write; without this check one
+    # that arrived earlier would be silently overwritten and then "restored" to
+    # a version it had already replaced.
+    #
+    # It does not CLOSE the race — the gap between this loop and the next is
+    # still real, and closing it needs a lock shared with the vendor companion,
+    # which does not take one. So this sweep does not claim rollback safety
+    # under a concurrent writer; it claims that it detects and reports rather
+    # than silently clobbers, and that an abort touches nothing.
+    moved = []
+    for p, blob in originals.items():
+        try:
+            with open(p, "rb") as f:
+                if f.read() != blob:
+                    moved.append(os.path.basename(p))
+        except OSError as exc:
+            moved.append(f"{os.path.basename(p)}({exc.__class__.__name__})")
+    if moved:
+        print(f"skipped: {state_dir} — {moved} changed between capture and write, not touching this workspace")
+        skipped += 1
+        continue
+
+    # `kept:` is a statement about classification, not about mutation, so it can
+    # be reported now. ⚠️ `reaped:` CANNOT: it is a claim about what is on disk,
+    # and it is therefore printed and counted only after the forward writes AND
+    # the registry mirror have both committed, at the bottom of this block.
+    # Printing it up front and decrementing on rollback produced three separate
+    # lies in one run — a standing `reaped:` line for a record never mutated,
+    # a non-zero count for a pristine workspace, and an "inconsistent" warning
+    # about files that were never touched.
     for p, j in stuck.items():
         if p not in to_reap:
             print(f"kept: {state_dir}/{j.get('id')} (no stuck signal)")
@@ -1468,8 +1589,7 @@ for state_dir in state_dirs:
             j.update(status="failed", phase="reaped", reapedAt=stamp, reapReason=why)
             j["pid"] = None
             blob = json.dumps(j, indent=2)
-            with open(p, "w") as f:
-                f.write(blob)
+            write_job_atomic(p, blob)
             # What we wrote, byte for byte — the rollback compares against this
             # to tell "still ours" from "somebody rewrote it after us".
             written[p] = blob.encode("utf-8")
@@ -1477,11 +1597,10 @@ for state_dir in state_dirs:
     except OSError as exc:
         restored, conflicted = restore_originals(originals, written)
         print(f"skipped: {state_dir} — a jobs/*.json write failed ({exc.__class__.__name__}), rolling back")
-        print(f"rolled back: {state_dir} — {len(restored)} record(s) restored")
+        print(f"rolled back: {state_dir} — {len(restored)} record(s) restored or already pristine")
         if conflicted:
             print(f"NOT restored: {state_dir} — {[os.path.basename(c) for c in conflicted]}; this workspace is left inconsistent and needs a look")
             skipped += len(conflicted)
-        reaped -= len(restored)
         skipped += 1
         continue
     # Logged only after every forward write committed, so a rolled-back sweep
@@ -1498,7 +1617,9 @@ for state_dir in state_dirs:
     # companion serves status/result/cancel from. Already read and shape-checked
     # above; only the reaped entries are touched and everything else round-trips
     # untouched.
+    mirrored = True
     if state is not None and reaped_ids:
+        mirrored = False
         try:
             # ⚠️ MERGE INTO A FRESH READ. Never write back the snapshot the
             # classification above ran on. state.json is the shared registry
@@ -1523,9 +1644,6 @@ for state_dir in state_dirs:
                 if conflicted:
                     print(f"NOT restored: {state_dir} — {[os.path.basename(c) for c in conflicted]}; either another session rewrote them after this sweep did, or the restore itself failed. Left alone deliberately: a stale pre-image written over somebody's newer record is worse than an unrolled-back one.")
                     skipped += len(conflicted)
-                # Only what actually went back is un-reaped. `reaped` counts one
-                # per FILE, so decrement by files restored, not by distinct ids.
-                reaped -= len(restored)
                 skipped += 1
                 for _p, (j, _why) in to_reap.items():
                     log = j.get("logFile")
@@ -1555,6 +1673,7 @@ for state_dir in state_dirs:
                     with open(tmp, "w") as f:
                         json.dump(fresh, f, indent=2)
                     os.replace(tmp, state_path)
+                mirrored = True
         except (OSError, ValueError) as exc:
             # Same split brain as a late conflict — the per-job files say
             # "failed" and the registry the companion actually serves does not
@@ -1567,8 +1686,15 @@ for state_dir in state_dirs:
             if conflicted:
                 print(f"NOT restored: {state_dir} — {[os.path.basename(c) for c in conflicted]}; either another session rewrote them after this sweep did, or the restore itself failed. Left alone deliberately.")
                 skipped += len(conflicted)
-            reaped -= len(restored)
             skipped += 1
+    # ⚠️ THE ONLY PLACE A REAP IS CLAIMED. Both the per-job records and the
+    # registry the companion actually serves are now committed, so this line and
+    # this counter describe disk. Every abort above reaches `continue` without
+    # passing through here.
+    if mirrored:
+        for p, (j, why) in to_reap.items():
+            print(f"reaped: {state_dir}/{j.get('id')} ({j.get('status')}, {why})")
+            reaped += 1
 print(f"reap summary: {reaped} {'flagged' if dry else 'reaped'}, {kept} kept, "
       f"{skipped} skipped (unreadable, unreconciled, live workspace or unwritable)")
 raise SystemExit(3 if skipped else 0)

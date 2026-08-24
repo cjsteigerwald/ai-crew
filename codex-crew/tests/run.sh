@@ -1002,7 +1002,7 @@ fi
 # that file would mean redacting a prompt in the file a human reads and
 # archiving it one filename away.
 arc="$TMP/struct/arc-rendered"
-struct_await task-rend "$arc" '{"job":{"id":"task-rend","status":"completed","summary":"Investigate RENDSECRET"},"storedJob":{"id":"task-rend","status":"completed","rendered":"# Codex Task\n\nSummary: Investigate RENDSECRET\n\nmodel output continues here"}}' || true
+struct_await task-rend "$arc" '{"job":{"id":"task-rend","status":"completed","summary":"Implemented the fix"},"storedJob":{"id":"task-rend","status":"completed","summary":"Investigate RENDSECRET thoroughly","rendered":"# Codex Task\n\nSummary: Investigate RENDSECRET thoroughly\n\nmodel output continues here"}}' || true
 if [[ -f "$arc/task-rend.meta.json" ]] && ! grep -q "RENDSECRET" "$arc/task-rend.meta.json" \
    && grep -q "model output continues here" "$arc/task-rend.meta.json"; then
   echo "PASS: a prompt-derived summary is stripped from preserved output, the rest kept"; pass=$((pass + 1))
@@ -1049,6 +1049,102 @@ if [[ -f "$arc/task-ameta.meta.json" ]] \
   echo "PASS: aliased metadata and request keys are redacted, real ones still kept"; pass=$((pass + 1))
 else
   echo "FAIL: an aliased key reached an allowlist: $(cat "$arc/task-ameta.meta.json" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
+# --- round-4 review findings -------------------------------------------------
+
+# Case 20ad: a COMPLETED task's two summaries have OPPOSITE provenance, and the
+# fix for the previous round got this exactly backwards. Verified against codex
+# 1.0.6: storedJob.summary is the dispatch record's shorten(prompt) — input, the
+# needle. job.summary is execution.summary = firstMeaningfulLine(rawOutput) —
+# MODEL OUTPUT, and by construction a line that also appears inside result. Using
+# it as a substring needle deletes the first line of the answer out of the
+# preserved subtree of every completed task.
+arc="$TMP/struct/arc-summary-provenance"
+struct_await task-prov "$arc" '{"job":{"id":"task-prov","status":"completed","summary":"Implemented the fix"},"storedJob":{"id":"task-prov","status":"completed","summary":"investigate PROVSECRET thoroughly","result":{"rawOutput":"Implemented the fix\nTests pass"}}}' || true
+if [[ -f "$arc/task-prov.meta.json" ]] \
+   && ! grep -q "PROVSECRET" "$arc/task-prov.meta.json" \
+   && python3 -c "
+import json
+d = json.load(open('$arc/task-prov.meta.json'))
+out = d['storedJob']['result']['rawOutput']
+assert out == 'Implemented the fix\nTests pass', repr(out)
+"; then
+  echo "PASS: the prompt-derived summary is the needle; model output survives intact"; pass=$((pass + 1))
+else
+  echo "FAIL: output-derived summary was used as a needle: $(cat "$arc/task-prov.meta.json" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
+# Case 20ae: a very short summary is a substring needle over preserved output.
+# "ls" would rewrite every "ls" inside the answer. Under the floor it is left
+# alone — a handful of characters is not a disclosure worth shredding an archive
+# for, and request.prompt is redacted regardless.
+arc="$TMP/struct/arc-short-summary"
+struct_await task-tiny "$arc" '{"job":{"id":"task-tiny","status":"completed"},"storedJob":{"id":"task-tiny","status":"completed","summary":"ls","result":{"rawOutput":"false positives also contain ls inside words"}}}' || true
+if python3 -c "
+import json
+d = json.load(open('$arc/task-tiny.meta.json'))
+assert d['storedJob']['result']['rawOutput'] == 'false positives also contain ls inside words', d['storedJob']['result']
+" 2>/dev/null; then
+  echo "PASS: a summary under the length floor does not shred preserved output"; pass=$((pass + 1))
+else
+  echo "FAIL: a tiny summary corrupted model output: $(cat "$arc/task-tiny.meta.json" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
+# Case 20af: sanitize-archive sets marker trust for EVERY file it sweeps —
+# including the legacy unsanitized ones it exists to migrate. Recognizing
+# top-level scalars under that trust meant the migration command preserved a
+# legacy top-level secret verbatim. The withheld record is now REGENERATED, not
+# copied, so nothing read off disk is trusted.
+legacytop="$TMP/legacy-toplevel"
+mkdir -p "$legacytop"
+printf '{"reason":"LEGACYTOPSECRET","crewArchive":"withheld","jobId":"task-lt"}\n' \
+  > "$legacytop/task-lt.meta.json"
+out="$(bash "$CREW" sanitize-archive --dir "$legacytop" 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" == 0 ]] && ! grep -q "LEGACYTOPSECRET" "$legacytop/task-lt.meta.json"; then
+  echo "PASS: the sweep does not trust top-level scalars in the files it migrates"; pass=$((pass + 1))
+else
+  echo "FAIL: sanitize-archive preserved a legacy top-level secret (exit=$rc): $(cat "$legacytop/task-lt.meta.json")"; fail=$((fail + 1))
+fi
+# ...and re-sanitizing a withheld record it wrote itself is still a no-op.
+cp "$legacytop/task-lt.meta.json" "$TMP/legacy-lt-clean.json"
+out="$(bash "$CREW" sanitize-archive --dir "$legacytop" 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" == 0 ]] && grep -q "0 rewritten" <<<"$out" \
+   && cmp -s "$legacytop/task-lt.meta.json" "$TMP/legacy-lt-clean.json"; then
+  echo "PASS: a regenerated withheld record round-trips byte-identically"; pass=$((pass + 1))
+else
+  echo "FAIL: withheld-record idempotence broke (exit=$rc; output: $out)"; fail=$((fail + 1))
+fi
+
+# Case 20ag: marker-shaped summaries must never become needles. A second sweep
+# would otherwise use pass 1's "<redacted: N chars>" as a search string and
+# rewrite matching markers inside preserved output — falsifying a recorded
+# length (22 -> 20) and breaking byte-idempotence on an already-clean archive.
+markarc="$TMP/marker-needle-archive"
+mkdir -p "$markarc"
+cat > "$markarc/task-mn.meta.json" <<'EOF'
+{"job":{"id":"task-mn","status":"completed"},
+ "storedJob":{"id":"task-mn","status":"completed","summary":"<redacted: 22 chars>",
+ "rendered":"Summary: <redacted: 22 chars>\nand the answer continues"}}
+EOF
+# ⚠️ Assert on the FIRST sweep. Comparing pass 2 against pass 1 would miss the
+# defect entirely: pass 1 does the 22 -> 20 rewrite and pass 2 is then stable,
+# so a "second pass is a no-op" test passes while the archive is already
+# corrupted. The invariant is that the recorded length still describes the text
+# that was removed.
+out="$(bash "$CREW" sanitize-archive --dir "$markarc" 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" == 0 ]] && grep -q '"rendered": "Summary: <redacted: 22 chars>' "$markarc/task-mn.meta.json"; then
+  echo "PASS: a marker is never used as a replacement needle"; pass=$((pass + 1))
+else
+  echo "FAIL: marker-as-needle rewrote preserved output on the first pass (exit=$rc; file: $(cat "$markarc/task-mn.meta.json"))"; fail=$((fail + 1))
+fi
+cp "$markarc/task-mn.meta.json" "$TMP/marker-needle-clean.json"
+out="$(bash "$CREW" sanitize-archive --dir "$markarc" 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" == 0 ]] && grep -q "0 rewritten" <<<"$out" \
+   && cmp -s "$markarc/task-mn.meta.json" "$TMP/marker-needle-clean.json"; then
+  echo "PASS: and the sweep over that archive stays a byte-for-byte no-op"; pass=$((pass + 1))
+else
+  echo "FAIL: marker-needle archive is not idempotent (exit=$rc; output: $out)"; fail=$((fail + 1))
 fi
 
 # --- reap: sweep stuck registry entries --------------------------------------
@@ -2228,6 +2324,14 @@ reap_fifo_fixture "$GONE_DATA" repo-g "$DEAD_PID_F"
   # classified but not yet captured goes away underneath it.
   rm -f "$GONE_DATA/state/repo-g/jobs/dead.json"
   timeout 30 bash -c "printf '%s' '[{\"id\":\"job-fifo\",\"status\":\"running\",\"pid\":$DEAD_PID_F}]' > '$GONE_DATA/state/repo-g/state.json'" || true
+  # ⚠️ Swap the FIFO for a regular file once the rendezvous is spent. Without
+  # this, a regression that performs a THIRD read blocks for the full timeout
+  # and reports "reap hung" — which names the wrong defect and short-circuits
+  # the assertions that would name the right one. With it, extra reads succeed
+  # and the case fails on what it actually tests.
+  rm -f "$GONE_DATA/state/repo-g/state.json"
+  printf '%s' "[{\"id\":\"job-fifo\",\"status\":\"running\",\"pid\":$DEAD_PID_F}]" \
+    > "$GONE_DATA/state/repo-g/state.json"
 ) &
 GONE_FEEDER=$!
 out="$(timeout 90 env CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$GONE_DATA" \
@@ -2235,7 +2339,7 @@ out="$(timeout 90 env CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$GONE_D
 wait "$GONE_FEEDER" 2>/dev/null || true
 if [[ "$rc" == 124 ]]; then
   echo "FAIL: reap hung against a FIFO state.json (pre-image case)"; fail=$((fail + 1))
-elif [[ "$rc" == 3 ]] && grep -q "could not be read for rollback" <<<"$out" \
+elif [[ "$rc" == 3 ]] && grep -q "changed between capture and write\|could not be read for rollback\|no captured pre-image" <<<"$out" \
    && ! grep -q "^reaped: " <<<"$out" \
    && [[ ! -e "$GONE_DATA/state/repo-g/jobs/dead.json" ]]; then
   echo "PASS: reap refuses to mutate a record it could not capture for rollback"; pass=$((pass + 1))
@@ -2285,11 +2389,15 @@ else
   echo "FAIL: rollback clobbered a concurrent writer (exit=$rc; output: $out; job: $(cat "$CLOB_DATA/state/repo-c/jobs/dead.json"))"; fail=$((fail + 1))
 fi
 
-# Case 60: a forward write that fails PART WAY through the mutation loop. The
-# writes used to sit outside every try block, so the second file raising
-# PermissionError exited the sweep with the first already marked failed — no
-# mirror, no rollback, no summary. That is the split brain the two-phase design
-# claims it cannot produce, so the claim has to be tested, not asserted.
+# Case 60: a forward write that FAILS. The writes used to sit outside every try
+# block, so a raising write exited the sweep with earlier records already marked
+# failed — no mirror, no rollback, no summary.
+#
+# ⚠️ The failure is injected at the DIRECTORY, not the file. Records are now
+# written through a same-directory temp and renamed over, and rename(2) does not
+# need write permission on its target — so the old read-only-file fixture stops
+# injecting anything, which is itself the point of that change: a write that
+# fails can no longer truncate the record it failed on.
 PART_DATA="$TMP/reap-partial"
 mkdir -p "$PART_DATA/state/repo-w/jobs"
 for n in a b; do
@@ -2304,22 +2412,22 @@ cat > "$PART_DATA/state/repo-w/state.json" <<EOF
 EOF
 cp "$PART_DATA/state/repo-w/jobs/a.json" "$TMP/reap-part-a-before.json"
 cp "$PART_DATA/state/repo-w/jobs/b.json" "$TMP/reap-part-b-before.json"
-# Readable (the pre-image capture succeeds) but not writable (the forward write
-# raises). Whichever of the two the loop reaches second, one write lands first.
-chmod 400 "$PART_DATA/state/repo-w/jobs/b.json"
-if [[ -w "$PART_DATA/state/repo-w/jobs/b.json" ]]; then
-  skip "reap rolls back a partial mutation" "running as root defeats chmod 400"
+chmod 500 "$PART_DATA/state/repo-w/jobs"
+if [[ -w "$PART_DATA/state/repo-w/jobs" ]]; then
+  skip "reap rolls back when a forward write fails" "running as root defeats chmod 500"
 else
   out="$(timeout 60 env CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$PART_DATA" \
     bash "$CREW" reap 2>&1)" && rc=0 || rc=$?
-  chmod 600 "$PART_DATA/state/repo-w/jobs/b.json"
-  if [[ "$rc" == 3 ]] && grep -q "a jobs/\*\?.json write failed\|write failed" <<<"$out" \
-     && grep -q "reap summary" <<<"$out" \
+  chmod 700 "$PART_DATA/state/repo-w/jobs"
+  if [[ "$rc" == 3 ]] && grep -q "write failed" <<<"$out" \
+     && grep -q "reap summary: 0 reaped" <<<"$out" \
+     && ! grep -q "^reaped: " <<<"$out" \
+     && ! grep -q "NOT restored" <<<"$out" \
      && cmp -s "$PART_DATA/state/repo-w/jobs/a.json" "$TMP/reap-part-a-before.json" \
      && cmp -s "$PART_DATA/state/repo-w/jobs/b.json" "$TMP/reap-part-b-before.json"; then
-    echo "PASS: a partial forward write rolls back and still prints a summary"; pass=$((pass + 1))
+    echo "PASS: a failed forward write rolls back, claims nothing, and reports no false inconsistency"; pass=$((pass + 1))
   else
-    echo "FAIL: partial mutation left a split brain (exit=$rc; output: $out; a: $(cat "$PART_DATA/state/repo-w/jobs/a.json"))"; fail=$((fail + 1))
+    echo "FAIL: failed write left a split brain or a false claim (exit=$rc; output: $out)"; fail=$((fail + 1))
   fi
 fi
 
@@ -2346,6 +2454,67 @@ if [[ "$rc" == 3 ]] && grep -q "more than one jobs/\*\?.json record\|more than o
   echo "PASS: duplicate job ids abort the workspace instead of miscounting it"; pass=$((pass + 1))
 else
   echo "FAIL: duplicate ids were swept (exit=$rc; output: $out)"; fail=$((fail + 1))
+fi
+
+# Case 62: duplicate ids where only ONE record looks stuck. Counting duplicates
+# across the reap SUBSET missed exactly the case that splits the brain: the
+# stuck record and the single registry entry get marked failed while its twin
+# is still running, and no duplicate was ever detected.
+DUP2_DATA="$TMP/reap-dup-partial"
+mkdir -p "$DUP2_DATA/state/repo-e/jobs"
+printf 'log line\n' > "$DUP2_DATA/state/repo-e/jobs/stuck.log"
+touch -d '2 hours ago' "$DUP2_DATA/state/repo-e/jobs/stuck.log"
+cat > "$DUP2_DATA/state/repo-e/jobs/stuck.json" <<EOF
+{"id":"job-twin","status":"running","pid":$DEAD_PID_F,"logFile":"$DUP2_DATA/state/repo-e/jobs/stuck.log","createdAt":"2026-07-01T00:00:00Z"}
+EOF
+# The twin: same id, no stuck signal (fresh log, no dead pid).
+printf 'log line\n' > "$DUP2_DATA/state/repo-e/jobs/live.log"
+cat > "$DUP2_DATA/state/repo-e/jobs/live.json" <<EOF
+{"id":"job-twin","status":"running","pid":null,"logFile":"$DUP2_DATA/state/repo-e/jobs/live.log","createdAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+EOF
+cat > "$DUP2_DATA/state/repo-e/state.json" <<EOF
+[{"id":"job-twin","status":"running","pid":$DEAD_PID_F}]
+EOF
+cp "$DUP2_DATA/state/repo-e/jobs/stuck.json" "$TMP/reap-dup2-before.json"
+out="$(timeout 60 env CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$DUP2_DATA" \
+  bash "$CREW" reap 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" == 3 ]] && grep -q "more than one" <<<"$out" \
+   && ! grep -q "^reaped: " <<<"$out" \
+   && cmp -s "$DUP2_DATA/state/repo-e/jobs/stuck.json" "$TMP/reap-dup2-before.json"; then
+  echo "PASS: a duplicate id is caught even when only one of the twins looks stuck"; pass=$((pass + 1))
+else
+  echo "FAIL: partial-duplicate split brain (exit=$rc; output: $out)"; fail=$((fail + 1))
+fi
+
+# Case 63: a record that changes between the pre-image capture and the write.
+# The rollback can only tell "ours" from "theirs" for a writer that lands AFTER
+# our write; one that landed before it is invisible, and we would overwrite it
+# and then "restore" a pre-image two writes stale. Detect and abort instead.
+MOVED_DATA="$TMP/reap-moved"
+reap_fifo_fixture "$MOVED_DATA" repo-v "$DEAD_PID_F"
+(
+  timeout 30 bash -c "printf '%s' '[{\"id\":\"job-fifo\",\"status\":\"running\",\"pid\":$DEAD_PID_F}]' > '$MOVED_DATA/state/repo-v/state.json'" || true
+  # reap is blocked on the phase-(a) open, after classification and before the
+  # pre-image capture. Another session updates the record right here.
+  printf '%s' '{"id":"job-fifo","status":"running","pid":777777,"note":"MOVED-BEFORE-CAPTURE"}' \
+    > "$MOVED_DATA/state/repo-v/jobs/dead.json"
+  timeout 30 bash -c "printf '%s' '[{\"id\":\"job-fifo\",\"status\":\"running\",\"pid\":$DEAD_PID_F}]' > '$MOVED_DATA/state/repo-v/state.json'" || true
+  rm -f "$MOVED_DATA/state/repo-v/state.json"
+  printf '%s' "[{\"id\":\"job-fifo\",\"status\":\"running\",\"pid\":$DEAD_PID_F}]" \
+    > "$MOVED_DATA/state/repo-v/state.json"
+) &
+MOVED_FEEDER=$!
+out="$(timeout 90 env CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$MOVED_DATA" \
+  bash "$CREW" reap 2>&1)" && rc=0 || rc=$?
+wait "$MOVED_FEEDER" 2>/dev/null || true
+if [[ "$rc" == 124 ]]; then
+  echo "FAIL: reap hung against a FIFO state.json (moved-record case)"; fail=$((fail + 1))
+elif grep -q "MOVED-BEFORE-CAPTURE" "$MOVED_DATA/state/repo-v/jobs/dead.json" \
+   && ! grep -q "^reaped: " <<<"$out" \
+   && grep -q "reap summary: 0 reaped" <<<"$out"; then
+  echo "PASS: a record moved before capture is left alone and claims no reap"; pass=$((pass + 1))
+else
+  echo "FAIL: overwrote a record that moved before capture (exit=$rc; output: $out; job: $(cat "$MOVED_DATA/state/repo-v/jobs/dead.json"))"; fail=$((fail + 1))
 fi
 
 # Case 55: a live job recorded ONLY in state.json, in a workspace with NO jobs/
