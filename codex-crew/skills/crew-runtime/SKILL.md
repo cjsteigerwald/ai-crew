@@ -125,8 +125,12 @@ Execution rules:
   twice over: the sidecar records it flag-sourced, and the job record itself
   carries `effort`, `model` and `codexPluginVersion`.
 - Results are archived by `await` on terminal state to
-  `~/.claude/plugins/data/codex-crew/jobs/<id>.{result.txt,meta.json,log}`,
-  which the companion's 50-job pruner cannot delete. Jobs still die with the
+  `~/.claude/plugins/data/codex-crew/jobs/<id>.{result.txt,meta.json,sanitized,log}`,
+  which the companion's 50-job pruner cannot delete. `<id>.sanitized` is a
+  provenance sentinel — a SHA-256 of the archived `result.txt` and nothing else.
+  It is what lets a later `await` tell "this result was already sanitized" from
+  "this is a legacy unsanitized render", so a transient sanitizer failure fails
+  closed without destroying an unrepeatable model answer. Jobs still die with the
   Claude session by design (its SessionEnd hook terminates them); the archived
   transcript and the `threadId` in the meta file survive, so interrupted work
   resumes (`--resume-last` / `codex resume <threadId>`) instead of restarting.
@@ -158,12 +162,34 @@ session cleanup.
 reason**. `result --json` returns `storedJob` verbatim, and that record carries
 the request: a background task's prompt (`storedJob.request.prompt`), a
 background effort review's focus text (`storedJob.request.focusText`) and a
-task's prompt-derived `summary`. Those fields are replaced by a
-`<redacted: N chars>` marker before the file is written — stripped by key shape,
-recursively, so a vendor rename cannot reopen the leak silently — while result,
-thread, status, timing and routing fields survive. A payload that cannot be
-parsed is withheld rather than archived raw. Do not read a prompt back out of
-the archive; it is not there by design.
+task's prompt-derived `summary`.
+
+The rule is a **structural allowlist**, not a key-shape filter: a field is kept
+because of **where it sits**, and anything unrecognized is replaced by a
+`<redacted: N chars>` marker regardless of its name or its length. Only `job`
+and `storedJob` are recognized at the top; inside them, `request` keeps a
+routing allowlist, `result` and `rendered` are the **only** preserved output
+subtrees (verbatim, unbounded, at that exact depth), a `task-` job's `summary`
+goes while a review's finding summary stays, and a fixed list of ids, timings,
+status and routing fields is kept as length-capped scalars. Everything else is
+markered. A new vendor field therefore fails **closed** until somebody adds it
+here deliberately.
+
+⚠️ Marker trust is a privilege of `sanitize-archive` alone (`CREW_TRUST_MARKERS`),
+because that is the one caller re-reading this script's own output — which is
+all idempotence ever needed. The live `await` path reads companion data that is
+user-controlled end to end, so a prompt that IS a canonical marker is still
+re-markered there rather than passed through.
+
+A payload that cannot be parsed, or that is not a mapping, is withheld rather
+than archived raw. `.log` files are copied verbatim and are **not** sanitized by
+any path. Do not read a prompt back out of the archive; it is not there by
+design.
+
+`crew-codex sanitize-archive [--dir <path>] [--dry-run]` applies the identical
+sanitizer to what is already on disk, for jobs archived by an earlier version.
+It never deletes an archived job, rewrites only when the sanitized bytes differ,
+and a second pass is byte-for-byte a no-op.
 
 GPT-5.6 family ladder (per OpenAI's own model registry): **sol** = flagship
 frontier coding tier, **terra** = balanced everyday mid tier, **luna** =

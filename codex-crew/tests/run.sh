@@ -593,16 +593,27 @@ else
   echo "FAIL: marker-prefix bypass leaked the prompt (exit=$rc): $(cat "$arc/task-secret8.meta.json" 2>/dev/null)"; fail=$((fail + 1))
 fi
 
-# Case 20k: the archive holds ONLY the three artifacts it is supposed to. The
+# Case 20k: the archive holds ONLY the artifacts it is supposed to. The
 # unsanitized render used to be staged as a dotfile INSIDE this directory,
 # where a SIGTERM before the sanitizer ran left prompt text permanently in the
-# one place built to outlive the vendor cleanup.
+# one place built to outlive the vendor cleanup. `.sanitized` is the fourth
+# legitimate artifact: a content digest of the result, carrying no payload.
 arc="$TMP/meta/arc-fallback-task"
-stray="$(find "$arc" -type f ! -name '*.meta.json' ! -name '*.result.txt' ! -name '*.log' 2>/dev/null)"
+stray="$(find "$arc" -type f ! -name '*.meta.json' ! -name '*.result.txt' ! -name '*.log' ! -name '*.sanitized' 2>/dev/null)"
 if [[ -z "$stray" ]]; then
-  echo "PASS: the archive holds no artifact beyond meta/result/log"; pass=$((pass + 1))
+  echo "PASS: the archive holds no artifact beyond meta/result/log/sanitized"; pass=$((pass + 1))
 else
   echo "FAIL: unexpected artifact in the archive: $stray"; fail=$((fail + 1))
+fi
+
+# ...and the sentinel is a DIGEST, not a copy. If it ever carried the bytes it
+# vouches for, it would be a second unredacted archive of the same text.
+if [[ -f "$arc/task-secret5.sanitized" ]] \
+   && ! grep -q "$SECRET" "$arc/task-secret5.sanitized" \
+   && grep -q '"sha256"' "$arc/task-secret5.sanitized"; then
+  echo "PASS: the provenance sentinel records a digest and no content"; pass=$((pass + 1))
+else
+  echo "FAIL: sentinel missing or carrying content: $(cat "$arc/task-secret5.sanitized" 2>/dev/null)"; fail=$((fail + 1))
 fi
 
 # Case 20l: a stale UNSANITIZED result from an earlier crew-codex must be
@@ -659,6 +670,9 @@ fi
 # Idempotence is load-bearing: the sweep is safe to re-run only if a second
 # pass is a genuine no-op. Re-markering would rewrite each recorded length to
 # the length of the marker itself, quietly corrupting the shape record.
+# ⚠️ This is ALSO the only caller entitled to trust a marker — sanitize-archive
+# re-reads its own prior output, so it sets CREW_TRUST_MARKERS. The live await
+# path must not, and case 20j plus the structural cases below hold that line.
 cp "$legacy/task-old1.meta.json" "$TMP/legacy-meta-clean.json"
 cp "$legacy/task-old1.result.txt" "$TMP/legacy-result-clean.txt"
 out="$(bash "$CREW" sanitize-archive --dir "$legacy" 2>&1)" && rc=0 || rc=$?
@@ -668,6 +682,22 @@ if [[ "$rc" == 0 ]] && grep -q "0 rewritten" <<<"$out" \
   echo "PASS: a second sanitize-archive pass is byte-for-byte a no-op"; pass=$((pass + 1))
 else
   echo "FAIL: sanitize-archive is not idempotent (exit=$rc; output: $out)"; fail=$((fail + 1))
+fi
+
+# ...and byte-identity is not enough on its own: assert the RECORDED LENGTHS
+# still describe the original text. A re-marker that happened to be stable
+# would pass cmp on the third pass while having already corrupted the second.
+if python3 -c "
+import json
+d = json.load(open('$legacy/task-old1.meta.json'))
+# 'focus on AKIAZZTESTSECRET42' is 27 chars; a re-marker would record 20 (the
+# length of '<redacted: 24 chars>' itself).
+assert d['storedJob']['request']['focusText'] == '<redacted: 27 chars>', d
+assert d['job']['summary'] == '<redacted: 30 chars>', d
+"; then
+  echo "PASS: repeated sweeps preserve the recorded shape, not the marker's own length"; pass=$((pass + 1))
+else
+  echo "FAIL: re-markering corrupted the shape record: $(cat "$legacy/task-old1.meta.json")"; fail=$((fail + 1))
 fi
 
 # Case 20m: an ORPHANED result — a .result.txt with no .meta.json beside it.
@@ -712,6 +742,210 @@ if [[ "$rc" == 1 ]] && grep -q "symlinked archive entry" <<<"$out" \
   echo "PASS: sanitize-archive refuses to write through a symlink"; pass=$((pass + 1))
 else
   echo "FAIL: symlink was followed or not reported (exit=$rc; output: $out; victim: $(cat "$TMP/victim.txt"))"; fail=$((fail + 1))
+fi
+
+# --- structural allowlist: unknown is redacted, at every level ---------------
+# The predecessor decided by NAME: a *prompt/*focusText denylist, an output
+# allowlist matched at ANY depth, and a 512-char length guard as the catch-all.
+# All three failed the same way — they let something through because of what it
+# was CALLED or how LONG it was. These cases pin the replacement: a key is
+# recognized by WHERE it sits, and everything else is markered.
+mkdir -p "$TMP/struct/plugins" "$TMP/struct/install/scripts"
+echo "{\"version\":2,\"plugins\":{\"codex@openai-codex\":[{\"installPath\":\"$TMP/struct/install\"}]}}" \
+  > "$TMP/struct/plugins/installed_plugins.json"
+# A companion whose result --json payload the CASE supplies verbatim, so each
+# case below pins one exact shape instead of adding another env branch to a
+# fixture five cases already share.
+cat > "$TMP/struct/install/scripts/codex-companion.mjs" <<'EOF'
+const [cmd, jobId, flag] = process.argv.slice(2);
+if (cmd === "result") {
+  if (flag !== "--json") { console.log("FINAL-RESULT-KEEP"); process.exit(0); }
+  console.log(process.env.CREW_TEST_PAYLOAD || "{}");
+  process.exit(0);
+}
+console.log(JSON.stringify({
+  job: { id: jobId, status: "completed", elapsed: "1s", logFile: "-", pid: null }
+}));
+EOF
+
+struct_await() {  # $1 = job id, $2 = archive dir, $3 = payload JSON
+  CLAUDE_CONFIG_DIR="$TMP/struct" CREW_CODEX_ARCHIVE_DIR="$2" CREW_CODEX_POLL_SECS=0 \
+    CREW_TEST_PAYLOAD="$3" bash "$CREW" await "$1" --for 5 >/dev/null 2>&1
+}
+
+# Case 20p: a SHORT secret under an unknown metadata key. The length guard was
+# the only thing standing between an unrecognized field and the archive, and a
+# bearer token, an API key or an internal hostname is nowhere near 512 chars —
+# every one of them walked straight through.
+arc="$TMP/struct/arc-short"
+struct_await task-short "$arc" '{"job":{"id":"task-short","status":"completed","apiToken":"sk-ab12"},"storedJob":{"id":"task-short","status":"completed"}}' || true
+if [[ -f "$arc/task-short.meta.json" ]] && ! grep -q "sk-ab12" "$arc/task-short.meta.json" \
+   && grep -q '"apiToken": "<redacted: 7 chars>"' "$arc/task-short.meta.json"; then
+  echo "PASS: a short secret under an unknown key is redacted, not size-tested"; pass=$((pass + 1))
+else
+  echo "FAIL: short unknown field survived: $(cat "$arc/task-short.meta.json" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
+# Case 20q: THE OUTPUT-NAME BYPASS. `result`/`rendered`/`stdout`/`output` used
+# to be matched by name at ANY depth, and once matched they disabled every
+# bound BELOW them. So a field called `stdout` sitting where no output belongs
+# was an unbounded hole: name it right and anything fits through.
+arc="$TMP/struct/arc-bypass"
+struct_await task-bypass "$arc" '{"job":{"id":"task-bypass","status":"completed","stdout":{"leak":"PROMPTLEAK-'"$(printf 'x%.0s' {1..600})"'"}},"storedJob":{"id":"task-bypass","status":"completed"}}' || true
+if [[ -f "$arc/task-bypass.meta.json" ]] && ! grep -q "PROMPTLEAK-" "$arc/task-bypass.meta.json" \
+   && grep -q '"stdout": "<redacted: 1 key(s)>"' "$arc/task-bypass.meta.json"; then
+  echo "PASS: an output-NAMED key outside the output path gets no privileges"; pass=$((pass + 1))
+else
+  echo "FAIL: the output-name bypass is still open: $(cat "$arc/task-bypass.meta.json" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
+# Case 20r: the flip side, and the reason the archive exists at all. Genuine
+# storedJob.result and storedJob.rendered are model OUTPUT — verbatim, however
+# long. An allowlist that over-redacts here is not safer, it is useless.
+arc="$TMP/struct/arc-output"
+LONGOUT="$(printf 'the model wrote a great deal %.0s' {1..60})"
+struct_await review-output "$arc" '{"job":{"id":"review-output","status":"completed"},"storedJob":{"id":"review-output","status":"completed","result":{"rawOutput":"'"$LONGOUT"'"},"rendered":"'"$LONGOUT"'"}}' || true
+if python3 -c "
+import json
+d = json.load(open('$arc/review-output.meta.json'))
+sj = d['storedJob']
+assert sj['result']['rawOutput'] == '''$LONGOUT''', sj['result']
+assert sj['rendered'] == '''$LONGOUT''', sj['rendered']
+" 2>/dev/null; then
+  echo "PASS: storedJob.result and storedJob.rendered survive verbatim and unbounded"; pass=$((pass + 1))
+else
+  echo "FAIL: the output subtrees were redacted: $(cat "$arc/review-output.meta.json" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
+# Case 20s: an EXACTLY CANONICAL marker arriving from the companion. Case 20j
+# covers the near-miss; this is the one that a fullmatch alone cannot stop,
+# because the string genuinely IS a marker — it is just not OURS. The live
+# await path reads user-controlled data and must therefore trust no marker at
+# all, so the value is re-markered to the length of the string it received.
+arc="$TMP/struct/arc-canon"
+struct_await task-canon "$arc" '{"job":{"id":"task-canon","status":"completed"},"storedJob":{"id":"task-canon","status":"completed","request":{"cwd":"/w","prompt":"<redacted: 42 chars>"}}}' || true
+if python3 -c "
+import json
+d = json.load(open('$arc/task-canon.meta.json'))
+r = d['storedJob']['request']
+# '<redacted: 42 chars>' is 20 characters. Passing it through would record 42 —
+# a length this archive never measured, attesting to text it never saw.
+assert r['prompt'] == '<redacted: 20 chars>', r
+" 2>/dev/null; then
+  echo "PASS: await trusts no marker — a canonical one from the companion is re-markered"; pass=$((pass + 1))
+else
+  echo "FAIL: await trusted a companion-supplied marker: $(cat "$arc/task-canon.meta.json" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
+# Case 20t: a UNICODE-digit marker. `\d` without re.ASCII matches Devanagari
+# digits, so "<redacted: ६ chars>" satisfied the old pattern. Under marker
+# trust that is a bypass; the ASCII flag closes it. Asserted through the sweep,
+# which is the caller that trusts markers.
+canon="$TMP/canon-archive"
+mkdir -p "$canon"
+printf '{"job":{"id":"task-uni","status":"completed","summary":"<redacted: \xe0\xa5\xac chars>"},"storedJob":{"id":"task-uni","status":"completed"}}\n' \
+  > "$canon/task-uni.meta.json"
+out="$(bash "$CREW" sanitize-archive --dir "$canon" 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" == 0 ]] && grep -q '"summary": "<redacted: 19 chars>"' "$canon/task-uni.meta.json"; then
+  echo "PASS: a unicode-digit marker is not mistaken for a canonical one"; pass=$((pass + 1))
+else
+  echo "FAIL: unicode-digit marker trusted (exit=$rc): $(cat "$canon/task-uni.meta.json")"; fail=$((fail + 1))
+fi
+
+# Case 20u: a TRANSIENT sanitizer failure must not destroy a result an earlier
+# pass already sanitized. The old code stubbed unconditionally, so one node
+# crash or one closed pipe replaced an unrepeatable model answer with an
+# apology. The trap below is a DIRECTORY at the meta's atomic-write path: the
+# sanitizer raises before it reaches the result, exactly like a transient fault.
+arc="$TMP/struct/arc-sentinel"
+struct_await task-sent "$arc" '{"job":{"id":"task-sent","status":"completed"},"storedJob":{"id":"task-sent","status":"completed","result":{"rawOutput":"KEEP-THIS-ANSWER"}}}' || true
+cp "$arc/task-sent.result.txt" "$TMP/sent-before.txt"
+mkdir -p "$arc/task-sent.meta.json.tmp"
+struct_await task-sent "$arc" '{"job":{"id":"task-sent","status":"completed"}}' || true
+if cmp -s "$arc/task-sent.result.txt" "$TMP/sent-before.txt" \
+   && grep -q "FINAL-RESULT-KEEP" "$arc/task-sent.result.txt"; then
+  echo "PASS: a sentinel-verified result survives a transient sanitizer failure"; pass=$((pass + 1))
+else
+  echo "FAIL: a transient failure destroyed a verified result: $(cat "$arc/task-sent.result.txt" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
+# ...and the sentinel must not become a licence to keep ANY file that happens
+# to be there. A legacy result with no sentinel is still replaced, which is the
+# stale-leak contract case 20l pins.
+printf 'legacy unsanitized render mentioning %s\n' "$SECRET" > "$arc/task-sent.result.txt"
+rm -f "$arc/task-sent.sanitized"
+struct_await task-sent "$arc" '{"job":{"id":"task-sent","status":"completed"}}' || true
+if ! grep -q "$SECRET" "$arc/task-sent.result.txt" \
+   && grep -q "result withheld" "$arc/task-sent.result.txt"; then
+  echo "PASS: an unverified legacy result is still replaced on sanitizer failure"; pass=$((pass + 1))
+else
+  echo "FAIL: unverified legacy result survived: $(cat "$arc/task-sent.result.txt")"; fail=$((fail + 1))
+fi
+# ...and a sentinel whose digest no longer matches the file is not a sentinel.
+printf 'sanitized-looking but tampered\n' > "$arc/task-sent.result.txt"
+printf '{"jobId":"task-sent","sha256":"%s","bytes":1}\n' "$(printf 'd%.0s' {1..64})" \
+  > "$arc/task-sent.sanitized"
+struct_await task-sent "$arc" '{"job":{"id":"task-sent","status":"completed"}}' || true
+if grep -q "result withheld" "$arc/task-sent.result.txt" \
+   && [[ ! -f "$arc/task-sent.sanitized" ]]; then
+  echo "PASS: a stale sentinel does not vouch for the file beside it"; pass=$((pass + 1))
+else
+  echo "FAIL: a mismatched sentinel was trusted: $(cat "$arc/task-sent.result.txt")"; fail=$((fail + 1))
+fi
+rmdir "$arc/task-sent.meta.json.tmp" 2>/dev/null || true
+
+# Case 20v: the staging path must be UNPREDICTABLE. "$dst.satmp.$$" is derived
+# from a pid, so in a group- or world-writable archive an attacker precreates a
+# symlink at the name the sweep is about to use and the write lands wherever
+# they point — defeating the destination symlink check the sweep performs one
+# line earlier. mktemp creates O_EXCL under an unguessable name. Asserted by
+# recording the templates mktemp is actually asked for: the old code never
+# called it for staging at all.
+mkdir -p "$TMP/mkshim"
+REAL_MKTEMP="$(command -v mktemp)"
+cat > "$TMP/mkshim/mktemp" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "\$MKTEMP_LOG"
+exec "$REAL_MKTEMP" "\$@"
+EOF
+chmod +x "$TMP/mkshim/mktemp"
+stagearc="$TMP/stage-archive"
+mkdir -p "$stagearc"
+cat > "$stagearc/task-stage.meta.json" <<EOF
+{"job":{"id":"task-stage","status":"completed","summary":"Investigate $SECRET"},
+ "storedJob":{"id":"task-stage","status":"completed"}}
+EOF
+export MKTEMP_LOG="$TMP/mktemp-calls.txt"
+: > "$MKTEMP_LOG"
+out="$(PATH="$TMP/mkshim:$PATH" bash "$CREW" sanitize-archive --dir "$stagearc" 2>&1)" && rc=0 || rc=$?
+unset MKTEMP_LOG
+if [[ "$rc" == 0 ]] && ! grep -rq "$SECRET" "$stagearc" \
+   && grep -q "$stagearc/\.crew-sa\.XXXXXX" "$TMP/mktemp-calls.txt"; then
+  echo "PASS: sanitize-archive stages through mktemp in the destination directory"; pass=$((pass + 1))
+else
+  echo "FAIL: staging path is predictable or the sweep failed (exit=$rc; calls: $(cat "$TMP/mktemp-calls.txt"); output: $out)"; fail=$((fail + 1))
+fi
+if [[ -z "$(find "$stagearc" -name '*.satmp.*' -o -name '.crew-sa.*' 2>/dev/null)" ]]; then
+  echo "PASS: no staging residue is left in the archive"; pass=$((pass + 1))
+else
+  echo "FAIL: staging residue survived: $(find "$stagearc" -name '*.satmp.*' -o -name '.crew-sa.*')"; fail=$((fail + 1))
+fi
+
+# Case 20w: a filename containing a NEWLINE. The sweep used to join every id
+# into one newline-delimited string and `sort -u` it, which split this single
+# real file into two ids that do not exist. Both were then "inspected" and
+# found absent, the sweep exited 0 calling the archive clean, and the actual
+# prompt-bearing file was never opened.
+nlarc="$TMP/nl-archive"
+mkdir -p "$nlarc"
+nlname=$'task-nl\nghost'
+printf '# Codex Task\n\nJob: %s\nStatus: completed\nSummary: Investigate %s\n\nNo captured result payload was stored for this job.\n' \
+  "task-nl" "$SECRET" > "$nlarc/$nlname.result.txt"
+out="$(bash "$CREW" sanitize-archive --dir "$nlarc" 2>&1)" && rc=0 || rc=$?
+if ! grep -rq "$SECRET" "$nlarc"; then
+  echo "PASS: a newline in a filename does not hide the file from the sweep"; pass=$((pass + 1))
+else
+  echo "FAIL: newline-named file was skipped (exit=$rc; output: $out; file: $(cat "$nlarc/$nlname.result.txt"))"; fail=$((fail + 1))
 fi
 
 # --- reap: sweep stuck registry entries --------------------------------------
@@ -1746,10 +1980,22 @@ EOF
   # puts the new job INTO the snapshot and tests nothing. No sleep race: reap
   # is blocked opening the FIFO below and cannot reach the mirror until this
   # subshell opens it for reading.
+  # ⚠️ The deadline is not a formality. If it expires and this subshell injects
+  # anyway, the injection may land BEFORE reap took its snapshot — in which
+  # case a snapshot writeback preserves job-injected too and the case passes
+  # while testing nothing. Record whether the transition was actually observed
+  # and let the assertion below fail on a blind run.
   for _ in $(seq 1 600); do
-    grep -q 'reaped' "$MERGE_DATA/state/repo-m/jobs/dead.json" 2>/dev/null && break
+    if grep -q 'reaped' "$MERGE_DATA/state/repo-m/jobs/dead.json" 2>/dev/null; then
+      : > "$MERGE_DATA/observed"
+      break
+    fi
     sleep 0.05
   done
+  if [[ ! -f "$MERGE_DATA/observed" ]]; then
+    timeout 60 cat "$MERGE_FIFO" >/dev/null 2>&1 || true
+    exit 0
+  fi
   python3 - "$MERGE_DATA/state/repo-m/state.json" <<'INJECT' || true
 import json, sys
 p = sys.argv[1]
@@ -1765,11 +2011,98 @@ out="$(timeout 90 env CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$MERGE_
 wait "$MERGE_READER" 2>/dev/null || true
 if [[ "$rc" == 124 ]]; then
   echo "FAIL: reap hung against a FIFO logFile"; fail=$((fail + 1))
+elif [[ ! -f "$MERGE_DATA/observed" ]]; then
+  # Not a pass and not a skip: the ordering this case depends on never
+  # happened, so whatever the registry says now proves nothing either way.
+  echo "FAIL: 54z never observed the reaped transition — the injection window was not established"; fail=$((fail + 1))
 elif grep -q '"id": "job-injected"' "$MERGE_DATA/state/repo-m/state.json" \
    && grep -q '"status": "failed"' "$MERGE_DATA/state/repo-m/state.json"; then
   echo "PASS: reap merged into a fresh read and kept a concurrently added job"; pass=$((pass + 1))
 else
   echo "FAIL: reap clobbered a concurrent registry write (exit=$rc; output: $out; state: $(cat "$MERGE_DATA/state/repo-m/state.json"))"; fail=$((fail + 1))
+fi
+
+# --- reap two-phase: validate before mutating, roll back on a late conflict ---
+# The registry read is the ONLY place these cases can be raced deterministically
+# from outside, so state.json is a FIFO: reap's successive opens block until the
+# feeder hands over the next payload, which makes "what the sweep saw on read N"
+# something the test dictates rather than something it hopes for. Read order in
+# a workspace that gets reaped is exactly three: the baseline, the phase-(a)
+# pre-check, and the mirror.
+reap_fifo_fixture() {  # $1 = fixture root, $2 = workspace name, $3 = dead pid
+  mkdir -p "$1/state/$2/jobs"
+  printf 'log line\n' > "$1/state/$2/jobs/dead.log"
+  touch -d '2 hours ago' "$1/state/$2/jobs/dead.log"
+  cat > "$1/state/$2/jobs/dead.json" <<EOF
+{"id":"job-fifo","status":"running","pid":$3,"logFile":"$1/state/$2/jobs/dead.log","createdAt":"2026-07-01T00:00:00Z"}
+EOF
+  mkfifo "$1/state/$2/state.json"
+}
+
+DEAD_PID_F=$(bash -c 'echo $$')
+
+# Case 56: PHASE (a). A conflict discovered before the first write must leave
+# the workspace byte-identical. The old order wrote every jobs/*.json first and
+# only then looked, so an abort left per-job records saying "failed" beside a
+# registry the companion still served as running — a split brain it had no way
+# to undo, and the reason this rewrite exists.
+PRE_DATA="$TMP/reap-pre"
+reap_fifo_fixture "$PRE_DATA" repo-p "$DEAD_PID_F"
+cp "$PRE_DATA/state/repo-p/jobs/dead.json" "$TMP/reap-pre-before.json"
+(
+  # read 1 — the baseline the classification runs on
+  timeout 30 bash -c "printf '%s' '[{\"id\":\"job-fifo\",\"status\":\"running\",\"pid\":$DEAD_PID_F}]' > '$PRE_DATA/state/repo-p/state.json'" || true
+  # read 2 — phase (a). Another session resumed the job: pid moved, status did
+  # NOT. A status-only comparison calls this "nothing happened".
+  timeout 30 bash -c "printf '%s' '[{\"id\":\"job-fifo\",\"status\":\"running\",\"pid\":999999}]' > '$PRE_DATA/state/repo-p/state.json'" || true
+) &
+PRE_FEEDER=$!
+out="$(timeout 90 env CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$PRE_DATA" \
+  bash "$CREW" reap 2>&1)" && rc=0 || rc=$?
+wait "$PRE_FEEDER" 2>/dev/null || true
+if [[ "$rc" == 124 ]]; then
+  echo "FAIL: reap hung against a FIFO state.json (phase-a case)"; fail=$((fail + 1))
+elif [[ "$rc" == 3 ]] && grep -q "not touching this workspace" <<<"$out" \
+   && ! grep -q "^reaped: " <<<"$out" \
+   && cmp -s "$PRE_DATA/state/repo-p/jobs/dead.json" "$TMP/reap-pre-before.json"; then
+  echo "PASS: reap aborts before any mutation when the registry moved under it"; pass=$((pass + 1))
+else
+  echo "FAIL: phase-(a) abort mutated the workspace (exit=$rc; output: $out; job: $(cat "$PRE_DATA/state/repo-p/jobs/dead.json"))"; fail=$((fail + 1))
+fi
+
+# Case 57: PHASE (b). The conflict appears only in the window the per-job
+# rewrite itself opens — phase (a) saw nothing wrong. The identity test is the
+# FULL tuple, so a resume that moves `pid` while `status` stays "running" is a
+# conflict; status-only equality read that as quiet and marked another
+# session's live job failed. The rollback is what makes aborting there safe.
+POST_DATA="$TMP/reap-post"
+reap_fifo_fixture "$POST_DATA" repo-q "$DEAD_PID_F"
+cp "$POST_DATA/state/repo-q/jobs/dead.json" "$TMP/reap-post-before.json"
+(
+  for _payload in \
+    "[{\"id\":\"job-fifo\",\"status\":\"running\",\"pid\":$DEAD_PID_F}]" \
+    "[{\"id\":\"job-fifo\",\"status\":\"running\",\"pid\":$DEAD_PID_F}]" \
+    "[{\"id\":\"job-fifo\",\"status\":\"running\",\"pid\":999999}]"; do
+    timeout 30 bash -c "printf '%s' '$_payload' > '$POST_DATA/state/repo-q/state.json'" || true
+  done
+) &
+POST_FEEDER=$!
+out="$(timeout 90 env CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$POST_DATA" \
+  bash "$CREW" reap 2>&1)" && rc=0 || rc=$?
+wait "$POST_FEEDER" 2>/dev/null || true
+if [[ "$rc" == 124 ]]; then
+  echo "FAIL: reap hung against a FIFO state.json (phase-b case)"; fail=$((fail + 1))
+elif [[ "$rc" == 3 ]] && grep -q "changed status while this sweep ran" <<<"$out" \
+   && grep -q "^rolled back: " <<<"$out" \
+   && cmp -s "$POST_DATA/state/repo-q/jobs/dead.json" "$TMP/reap-post-before.json"; then
+  echo "PASS: a pid-only concurrent change is a conflict, and the jobs/*.json writes roll back"; pass=$((pass + 1))
+else
+  echo "FAIL: late conflict left a split brain (exit=$rc; output: $out; job: $(cat "$POST_DATA/state/repo-q/jobs/dead.json"))"; fail=$((fail + 1))
+fi
+if grep -q "0 reaped" <<<"$out"; then
+  echo "PASS: a rolled-back reap is not counted as a reap"; pass=$((pass + 1))
+else
+  echo "FAIL: the summary still claims the rolled-back job was reaped: $out"; fail=$((fail + 1))
 fi
 
 # Case 55: a live job recorded ONLY in state.json, in a workspace with NO jobs/

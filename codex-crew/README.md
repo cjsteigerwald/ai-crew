@@ -223,12 +223,29 @@ carries its request: a background task keeps its prompt in
 of the prompt. Unsanitized, that put the original incident text, credentials,
 hostnames and paths in the same directory as a carefully redacted
 `.dispatch.json` — an archive that exists precisely to outlive the vendor's
-session cleanup. Prompt-shaped fields are now replaced by a
-`<redacted: N chars>` marker, stripped **by key shape and recursively** so a
-vendor rename cannot reopen the leak silently; result, thread, status, timing
-and routing fields are kept. A payload that cannot be parsed is **withheld**
-rather than archived raw. Sanitization is best-effort in the same sense as
-stamping: it never changes `await`'s exit code or its single stdout line.
+session cleanup.
+
+The sanitizer is a **structural allowlist**: a field survives because of *where
+it sits*, and anything unrecognized is replaced by a `<redacted: N chars>`
+marker regardless of its name or its length. Only `job` and `storedJob` are
+recognized at the top level; inside them `request` keeps a routing allowlist,
+`result` and `rendered` are the only preserved output subtrees (verbatim and
+unbounded, at that depth only), a `task-` job's prompt-derived `summary` goes
+while a review's finding summary stays, and a fixed set of ids, timings, status
+and routing fields is kept as length-capped scalars. A new vendor field
+therefore fails **closed**. A payload that cannot be parsed, or that is not a
+mapping, is **withheld** rather than archived raw. Sanitization is best-effort
+in the same sense as stamping: it never changes `await`'s exit code or its
+single stdout line.
+
+Alongside the result, `await` writes `<job-id>.sanitized` — a SHA-256 of the
+archived `result.txt` and nothing else. It is what lets a later run tell an
+already-sanitized result from a legacy unsanitized one, so a transient
+sanitizer failure still fails closed without destroying an unrepeatable model
+answer. `crew-codex sanitize-archive [--dir <path>] [--dry-run]` applies the
+identical sanitizer to jobs archived by an earlier version; it never deletes,
+rewrites only when the bytes differ, and a second pass is a byte-for-byte
+no-op. `.log` files are copied verbatim and are **not** sanitized by any path.
 
 **Capacity retries**: "model is at capacity" rejections are retried by
 `crew-codex` automatically — up to 3 attempts with jittered 5/15/45s backoff
