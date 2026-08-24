@@ -66,19 +66,74 @@ unpacked into its own directory and the old ones stay put.
 └── 0.6.0/   <- the update added this; it did not replace anything
 ```
 
-A session that is already running resolved its path at startup and keeps calling
-the old directory for its whole life. So an update mid-session leaves you running
+Each session resolves its plugin `PATH` when it starts, and then keeps calling
+that directory for its whole life. So an update mid-session leaves you running
 the previous version while `claude plugin list` reports the new one — the update
-succeeded and had no effect, with nothing to indicate it. Restart, then confirm
-what is actually live:
+succeeded and had no effect, with nothing to indicate it.
+
+**Opening a new session is enough.** A session started after the update picks up
+the new version on its own; you do not need to restart anything above it. If you
+run Claude Code through a `claude remote-control` daemon, the daemon does not
+need restarting either — sessions do not inherit a frozen `PATH` from it.
+
+### Confirming which version is live
+
+⚠️ **Run these inside a Claude Code session, not in a plain terminal.** The
+plugin `bin` directories are injected into the environment of Claude Code's own
+sessions; they are not added to your shell profile. In an ordinary terminal
+`which crew-codex` returns nothing whether the update worked or not, so it tells
+you nothing either way.
+
+Inside a session:
 
 ```bash
-# what the resolver will pick up next session
-python3 -c "import json,os; d=json.load(open(os.path.expanduser('~/.claude/plugins/installed_plugins.json'))); print(d['plugins']['codex-crew@cjs-plugins'][0]['installPath'])"
+# the version this session is actually bound to
+echo "$PATH" | tr : '\n' | grep codex-crew
 
 # and that the wrapper resolves the vendor companion
 crew-codex --resolve
 ```
+
+From anywhere, including a plain terminal — these read the files the resolver
+reads, so they show what a NEW session will pick up (not what a running one is
+bound to):
+
+The shortest answer — resolve the install path, then read that version's own
+manifest:
+
+```bash
+P=$(python3 -c "import json,os;d=json.load(open(os.path.expanduser('~/.claude/plugins/installed_plugins.json')));print(d['plugins']['codex-crew@cjs-plugins'][0]['installPath'])")
+cat "$P/.claude-plugin/plugin.json"
+```
+
+```json
+{
+  "name": "codex-crew",
+  "version": "0.6.0",
+  ...
+}
+```
+
+The manifest is the version's own declaration of itself, so it cannot disagree
+with what is on disk the way a separate registry can.
+
+For more context:
+
+```bash
+# the authoritative record: which version, installed when, from which commit sha
+cat ~/.claude/plugins/installed_plugins.json
+
+# every version still unpacked — they accumulate, they are not replaced
+ls ~/.claude/plugins/cache/cjs-plugins/codex-crew/
+
+# where the marketplace points, and when it was last refreshed
+cat ~/.claude/plugins/known_marketplaces.json
+```
+
+⚠️ The marketplace file is `known_marketplaces.json`. There is **no**
+`~/.claude/plugins/config.json` — a `cat` of it with stderr suppressed prints
+nothing and looks exactly like an empty config, so a check built on it reports
+success by printing nothing at all.
 
 Old version directories are safe to leave; `claude plugin prune` removes
 auto-installed dependencies that are no longer needed.

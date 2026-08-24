@@ -49,9 +49,13 @@ Installs are **version-keyed**: each version unpacks into its own directory and
 the old ones stay put, so a running session keeps calling the path it resolved at
 startup for its whole life. Update mid-session and you are still running the old
 version while `claude plugin list` reports the new one — the update succeeded and
-did nothing, with nothing to indicate it. See
-[`codex-crew/README.md`](codex-crew/README.md#update) for how to verify which
-version is actually live.
+did nothing, with nothing to indicate it.
+
+**Opening a new session is enough** — a session started after the update resolves
+the new version itself. See
+[`codex-crew/README.md`](codex-crew/README.md#update) for how to confirm which
+version is live — including checks that work from an ordinary terminal, and why
+the `crew-codex` one does not.
 
 ## Requirements
 
