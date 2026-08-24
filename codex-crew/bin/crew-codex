@@ -282,13 +282,21 @@ CREW_ARCHIVE_DIR="${CREW_CODEX_ARCHIVE_DIR:-$CLAUDE_DIR/plugins/data/codex-crew/
 # $CREW_META_OUT; if $CREW_RESULT_OUT is set, sanitizes $CREW_RESULT_IN into
 # it. Idempotent — re-running it over an already-clean archive is a no-op.
 read -r -d '' CREW_SANITIZER_PY <<'CREW_SANITIZER_EOF' || true
-import hashlib, json, os, re, sys
+import hashlib, json, os, re, sys, tempfile
 
 JOB_ID = os.environ.get("CREW_META_JOB_ID", "")
 # A TASK summary is shorten(prompt) — prompt text wearing a routing-looking
 # name. A REVIEW summary is the model finding summary: output, not input, and
 # worth keeping. The job-id prefix is the discriminator crew-codex already has.
-DROP_SUMMARY = JOB_ID.startswith("task-")
+# ⚠️ INVERTED DELIBERATELY: keep the summary only for job kinds KNOWN to put
+# model output there, rather than dropping it only for job kinds known to put
+# input there. `review-` summaries are the model's finding summary; `task-`
+# summaries are shorten(prompt, 96). A future vendor job kind under any third
+# prefix is unknown, and unknown has to mean redacted — the old
+# `startswith("task-")` test let exactly that leak silently, which is the
+# failure mode this whole rewrite exists to remove.
+KEEP_SUMMARY = JOB_ID.startswith("review-")
+DROP_SUMMARY = not KEEP_SUMMARY
 
 # ⚠️ MARKER TRUST IS A PRIVILEGE, NOT A PROPERTY OF THE STRING. A value that
 # looks like something an earlier pass wrote is only believable when the input
@@ -300,9 +308,17 @@ DROP_SUMMARY = JOB_ID.startswith("task-")
 TRUST_MARKERS = os.environ.get("CREW_TRUST_MARKERS") == "1"
 
 
-def norm(key):
-    return "".join(c for c in str(key).lower() if c.isalnum())
-
+# ⚠️ EVERY structural test below compares the key EXACTLY. There is deliberately
+# no normalization step. An earlier version lowercased and stripped
+# non-alphanumerics first, which felt defensive and was the opposite: under a
+# DENYLIST normalization tightens (more spellings caught), but under an
+# ALLOWLIST it can only loosen. `r-e-s-u-l-t` normalized to `result` and took
+# the verbatim-output branch; `j-o-b` normalized to `job`; `t-h-r-e-a-d-I-d`
+# and `m-o-d-e-l` normalized into the metadata and request allowlists and kept
+# short secrets there. Nothing in the payload path spells these keys any other
+# way, and a vendor that starts to must fail CLOSED — an over-redacted archive
+# is a bug report, an under-redacted one is a disclosure nobody notices. A
+# genuine vendor alias gets added to these sets by hand, deliberately.
 
 # ---- the structural allowlist ----------------------------------------------
 # Ground truth, from a real archived payload:
@@ -310,21 +326,23 @@ def norm(key):
 #   job/storedJob= ids, timings, status, routing, request, result, rendered
 #   request      = cwd base scope model effort focusText pluginRoot ... prompt
 #
-# The rule is POSITIONAL, not name-shaped: a key is recognized by WHERE it sits,
-# and anything unrecognized is redacted regardless of its length or its name.
-# The predecessor of this design leaked in three ways that all share one root —
-# it decided by name. A `*prompt`/`*focusText` DENYLIST cannot survive a vendor
-# rename; an output allowlist matched at ANY depth let a nested key called
-# `result` carry anything; and a 512-char length guard as the catch-all let
-# every SHORT secret — a token, a hostname, a bearer header — walk straight
-# through. Unknown is now redacted. New vendor fields fail CLOSED until someone
-# adds them here deliberately.
+# The rule is POSITIONAL: a key is recognized by WHERE it sits, and anything
+# unrecognized is redacted regardless of its length or its name. The predecessor
+# of this design decided by name instead, and leaked three ways that share one
+# root — a `*prompt`/`*focusText` DENYLIST cannot survive a vendor rename; an
+# output allowlist matched at ANY depth let a nested key called `result` carry
+# anything; and a 512-char length guard as the catch-all let every SHORT secret
+# — a token, a hostname, a bearer header — walk straight through. Unknown is now
+# redacted, and new vendor fields fail CLOSED until someone adds them here.
 
 # Level 1 — the payload root. Only these two hold a job.
-TOP_LEVEL_JOB_KEYS = {"job", "storedjob"}
-# ...and these are the withheld record this script itself writes, recognized so
-# that re-sanitizing our own output stays a byte-for-byte no-op.
-TOP_LEVEL_SCALAR_KEYS = {"jobid", "crewarchive", "reason"}
+TOP_LEVEL_JOB_KEYS = {"job", "storedJob"}
+# ...and these are the withheld record this script itself writes. ⚠️ Recognized
+# ONLY under marker trust: the sole reason they exist is so that re-sanitizing
+# our own output stays a byte-for-byte no-op, and that is the sweep's job. On
+# the live path the payload is companion output, where a top-level `reason`
+# under 512 chars would otherwise be preserved verbatim for no benefit at all.
+TOP_LEVEL_SCALAR_KEYS = {"jobId", "crewArchive", "reason"}
 
 # Level 2 — inside job/storedJob. The ONLY preserved output subtrees, and only
 # at this exact depth. A key named `result` nested anywhere else is not an
@@ -334,29 +352,32 @@ OUTPUT_SUBTREE_KEYS = {"result", "rendered"}
 # Level 2 — routing/metadata worth keeping. Kept, but type-checked as scalars
 # and length-capped as a SECONDARY bound: the allowlist is the defence, the cap
 # only stops a recognized field from becoming a smuggling channel.
+# Deliberately absent: `title`, an unconstrained string whose contents this
+# script cannot predict — the id and kind already say what the job was.
 ALLOWED_META_KEYS = {
-    "id", "kind", "kindlabel", "jobclass", "status", "phase", "pid",
-    "createdat", "updatedat", "startedat", "completedat", "reapedat",
-    "cancelledat", "elapsed", "exitcode", "threadid", "turnid", "sessionid",
-    "dispatchedby", "model", "effort", "effortrequested", "efforteffective",
-    "codexpluginversion", "workspaceroot", "logfile", "cwd", "base",
-    "background", "reapreason",
+    "id", "kind", "kindLabel", "jobClass", "status", "phase", "pid",
+    "createdAt", "updatedAt", "startedAt", "completedAt", "reapedAt",
+    "cancelledAt", "elapsed", "exitCode", "threadId", "turnId", "sessionId",
+    "dispatchedBy", "model", "effort", "effortRequested", "effortEffective",
+    "codexPluginVersion", "workspaceRoot", "logFile", "cwd", "base",
+    "background", "reapReason",
 }
 
 # Level 3 — inside a request. Routing only; values are scalars by the same rule.
+# Deliberately absent, though the vendor sends them: `scope` and `title`. Both
+# are unconstrained strings, and neither is worth an archive leak.
 ALLOWED_REQUEST_KEYS = {
-    "cwd", "base", "model", "effort", "effortrequested",
-    "efforteffective", "pluginroot", "pluginversion", "kind", "jobclass",
-    "resumelast", "sandbox", "approval", "background", "json",
-    "wait", "promptfile", "threadid", "turnid", "sessionid", "dispatchedby",
-    "workspaceroot",
+    "cwd", "base", "model", "effort", "effortRequested", "effortEffective",
+    "pluginRoot", "pluginVersion", "kind", "jobClass", "resumeLast", "sandbox",
+    "approval", "background", "json", "wait", "promptFile", "threadId",
+    "turnId", "sessionId", "dispatchedBy", "workspaceRoot",
 }
-# Deliberately NOT allowlisted, though the vendor sends them: `scope` and
-# `title`. Both are unconstrained strings whose contents this script cannot
-# predict, and neither is worth an archive leak — the job id and kind already
-# say what the job was.
 
 MAX_METADATA_CHARS = 512
+
+# The prompt-derived summary strings to strip out of preserved output, filled in
+# from the payload once it is parsed. Empty unless DROP_SUMMARY applies.
+SUMMARY_STRINGS = []
 
 # ⚠️ ANCHORED with fullmatch and ASCII-only. A prefix test here is a redaction
 # bypass, and `\d` without re.ASCII matches Devanagari digits, so a crafted
@@ -404,9 +425,29 @@ def scrub_request(value):
     if not isinstance(value, dict):
         return marker(value)
     return dict(
-        (k, keep_scalar(v) if norm(k) in ALLOWED_REQUEST_KEYS else marker(v))
+        (k, keep_scalar(v) if k in ALLOWED_REQUEST_KEYS else marker(v))
         for k, v in value.items()
     )
+
+
+def scrub_output(value):
+    """Preserved verbatim — with ONE substitution. When the summary is
+    prompt-derived, `renderStoredJobResult` can embed it in the rendered text,
+    and the .result.txt path below already strips it from exactly that string.
+    Doing it there and not here would mean the archive redacts a prompt in the
+    file a human reads and keeps it in the file beside it. Structure, lengths
+    and every other character are untouched."""
+    if not SUMMARY_STRINGS:
+        return value
+    if isinstance(value, str):
+        for summary in SUMMARY_STRINGS:
+            value = value.replace(summary, "<redacted: %d chars>" % len(summary))
+        return value
+    if isinstance(value, dict):
+        return dict((k, scrub_output(v)) for k, v in value.items())
+    if isinstance(value, list):
+        return [scrub_output(v) for v in value]
+    return value
 
 
 def scrub_job(value):
@@ -414,16 +455,18 @@ def scrub_job(value):
         return marker(value)
     out = {}
     for k, v in value.items():
-        nk = norm(k)
-        if nk == "request":
+        if k == "request":
             out[k] = scrub_request(v)
-        elif nk in OUTPUT_SUBTREE_KEYS:
+        elif k in OUTPUT_SUBTREE_KEYS:
             # The reason the archive exists. Verbatim, arbitrarily long, and
-            # only here — this is the one place no bound applies.
-            out[k] = v
-        elif nk == "summary":
-            out[k] = marker(v) if DROP_SUMMARY else v
-        elif nk in ALLOWED_META_KEYS:
+            # only here — this is the one place no length bound applies.
+            out[k] = scrub_output(v)
+        elif k == "summary":
+            # Capped like any other kept metadata even when it is output: an
+            # allowlisted NAME is not a promise about content, and the full
+            # finding text lives in `result`/`rendered` regardless.
+            out[k] = keep_scalar(v) if KEEP_SUMMARY else marker(v)
+        elif k in ALLOWED_META_KEYS:
             out[k] = keep_scalar(v)
         else:
             out[k] = marker(v)
@@ -433,10 +476,9 @@ def scrub_job(value):
 def scrub_payload(value):
     out = {}
     for k, v in value.items():
-        nk = norm(k)
-        if nk in TOP_LEVEL_JOB_KEYS:
+        if k in TOP_LEVEL_JOB_KEYS:
             out[k] = scrub_job(v)
-        elif nk in TOP_LEVEL_SCALAR_KEYS:
+        elif TRUST_MARKERS and k in TOP_LEVEL_SCALAR_KEYS:
             out[k] = keep_scalar(v)
         else:
             out[k] = marker(v)
@@ -444,10 +486,26 @@ def scrub_payload(value):
 
 
 def write_atomic(path, text):
-    tmp_path = path + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as handle:
-        handle.write(text)
-    os.replace(tmp_path, path)
+    # ⚠️ Staged through mkstemp in the DESTINATION directory, not at
+    # `path + ".tmp"`. This is the same reasoning `sanitize-archive`'s commit
+    # helper uses, and it applies identically here: the archive directory can be
+    # group- or world-writable, `path + ".tmp"` is perfectly predictable, and a
+    # plain open(..., "w") follows a symlink planted there. mkstemp creates the
+    # file O_EXCL under an unguessable name, so there is nothing to precreate.
+    directory = os.path.dirname(path) or "."
+    fd, tmp_path = tempfile.mkstemp(prefix=".crew-w.", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp_path, path)
+    except BaseException:
+        # Never leave staging residue behind: it is unsanitized-adjacent bytes
+        # in the one directory built to outlive the vendor cleanup.
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 raw = sys.stdin.read()
@@ -466,6 +524,13 @@ if not isinstance(payload, dict):
         "reason": "companion result --json was empty or unparseable; the raw payload is NOT archived because it can carry unredacted prompt text",
     }
 else:
+    if DROP_SUMMARY:
+        for _holder in ("job", "storedJob"):
+            _node = payload.get(_holder)
+            if isinstance(_node, dict):
+                _summary = _node.get("summary")
+                if isinstance(_summary, str) and _summary.strip() and _summary not in SUMMARY_STRINGS:
+                    SUMMARY_STRINGS.append(_summary)
     record = scrub_payload(payload)
 
 out = os.environ["CREW_META_OUT"]
@@ -685,6 +750,10 @@ print("\t".join([
         if [[ "$CREW_SANITIZED_OK" -ne 1 ]]; then
           if ! crew_sentinel_ok "$CREW_ARCHIVE_DIR/$JOB_ID.sanitized" "$CREW_ARCHIVE_DIR/$JOB_ID.result.txt"; then
             rm -f "$CREW_ARCHIVE_DIR/$JOB_ID.sanitized" 2>/dev/null || true
+            # rm FIRST: a bare `>` redirect follows a symlink, so a link planted
+            # at this path would send the stub — and, on the next successful
+            # await, the result — outside the archive entirely.
+            rm -f "$CREW_ARCHIVE_DIR/$JOB_ID.result.txt" 2>/dev/null || true
             printf '%s\n' "crew-codex: result withheld — the archive sanitizer did not complete, and the raw render can carry prompt text." \
               >"$CREW_ARCHIVE_DIR/$JOB_ID.result.txt" 2>/dev/null || true
           fi
@@ -1135,21 +1204,35 @@ def state_conflicts(entries, ids, baseline):
             and entry_identity(e) != baseline.get(e.get("id"))]
 
 
-def restore_originals(originals):
+def restore_originals(originals, written):
     """Undo the jobs/*.json writes from the exact bytes read before them. A
     re-serialization would not be byte-identical, and the point of a rollback
-    is that the workspace is indistinguishable from untouched."""
-    restored = []
+    is that the workspace is indistinguishable from untouched.
+
+    ⚠️ ONLY where the file still holds what THIS sweep wrote. A phase-(b)
+    rollback fires precisely because another session is active, so the record
+    may already have been rewritten by them in the meantime — and restoring a
+    pre-image over that discards their fresher write, which is the exact harm
+    the rollback exists to prevent. Leave those alone and report them: "stale
+    but theirs" beats "clobbered by us"."""
+    restored, conflicted = [], []
     for path, blob in originals.items():
-        if blob is None:
+        try:
+            with open(path, "rb") as handle:
+                current = handle.read()
+        except OSError:
+            conflicted.append(path)
+            continue
+        if current != written.get(path):
+            conflicted.append(path)
             continue
         try:
             with open(path, "wb") as handle:
                 handle.write(blob)
             restored.append(path)
         except OSError:
-            pass
-    return restored
+            conflicted.append(path)
+    return restored, conflicted
 
 
 stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -1294,6 +1377,19 @@ for state_dir in state_dirs:
     baseline = {e.get("id"): entry_identity(e)
                 for e in state_entries if isinstance(e, dict)}
 
+    # Two jobs/*.json carrying the SAME id is a registry this sweep cannot
+    # reason about: the per-file accounting and the id-keyed registry mirror
+    # disagree by construction, and one `id` in state.json cannot describe two
+    # records. Corrupt input, and the honest answer is to touch nothing.
+    id_counts = {}
+    for _p, (j, _w) in to_reap.items():
+        id_counts[j.get("id")] = id_counts.get(j.get("id"), 0) + 1
+    dup_ids = sorted(i for i, n in id_counts.items() if n > 1 and i is not None)
+    if dup_ids:
+        print(f"skipped: {state_dir} — {dup_ids} appear in more than one jobs/*.json record, not touching this workspace")
+        skipped += 1
+        continue
+
     # ---- PHASE (a): validate BEFORE the first mutation ----------------------
     # The old order wrote every jobs/*.json first and only THEN discovered a
     # concurrent writer — and an abort at that point was unrecoverable: per-job
@@ -1313,31 +1409,84 @@ for state_dir in state_dirs:
             skipped += 1
             continue
 
+    if dry or not to_reap:
+        for p, (j, why) in to_reap.items():
+            print(f"would reap: {state_dir}/{j.get('id')} ({j.get('status')}, {why})")
+            reaped += 1
+        for p, j in stuck.items():
+            if p not in to_reap:
+                print(f"kept: {state_dir}/{j.get('id')} (no stuck signal)")
+                kept += 1
+        continue
+
+    # Exact pre-image bytes, captured before the write that overwrites them.
+    # This is what makes phase (b)'s abort a rollback rather than an apology.
+    # ⚠️ ALL of them first, and a failure to read even one aborts before the
+    # first write. Capturing per-record inside the write loop meant an
+    # unreadable pre-image still got overwritten, and the rollback then skipped
+    # it while printing that the workspace was restored — a false claim over
+    # exactly the split brain this rewrite exists to prevent. Rollback-ability
+    # is a precondition, the same way phase (a) is. This read can fail even
+    # though the classification loop read the same file moments ago: another
+    # session may have removed it in between.
+    originals = {}
+    unreadable_pre = []
     for p, (j, why) in to_reap.items():
-        verb = "would reap" if dry else "reaped"
-        print(f"{verb}: {state_dir}/{j.get('id')} ({j.get('status')}, {why})")
+        try:
+            with open(p, "rb") as f:
+                originals[p] = f.read()
+        except OSError as exc:
+            unreadable_pre.append(f"{os.path.basename(p)}({exc.__class__.__name__})")
+    if unreadable_pre:
+        print(f"skipped: {state_dir} — {unreadable_pre} could not be read for rollback, not touching this workspace")
+        skipped += 1
+        continue
+
+    # ⚠️ NOTHING above this line has printed a `reaped:` line or moved a counter.
+    # Every precondition — the duplicate-id check, the registry conflict check
+    # and the pre-image capture — clears first, because a workspace that aborts
+    # must not have already claimed reaps it then did not perform. The summary
+    # is read as a statement about what is on disk, so it has to be one.
+    for p, (j, why) in to_reap.items():
+        print(f"reaped: {state_dir}/{j.get('id')} ({j.get('status')}, {why})")
         reaped += 1
     for p, j in stuck.items():
         if p not in to_reap:
             print(f"kept: {state_dir}/{j.get('id')} (no stuck signal)")
             kept += 1
-    if dry or not to_reap:
-        continue
-    # Exact pre-image bytes, captured before the write that overwrites them.
-    # This is what makes phase (b)'s abort a rollback rather than an apology.
-    originals = {}
+
+    written = {}
     reaped_ids = set()
+    # ⚠️ GUARDED. The forward writes used to sit outside every try block, so a
+    # second file that turned read-only after phase (a) raised PermissionError
+    # straight out of the sweep: Python exited 1 with the FIRST file already
+    # marked failed, no mirror, no rollback, and no summary — the exact split
+    # brain the two-phase design advertises it cannot produce. A partial
+    # mutation now unwinds through the same path a late conflict does.
+    try:
+        for p, (j, why) in to_reap.items():
+            j.update(status="failed", phase="reaped", reapedAt=stamp, reapReason=why)
+            j["pid"] = None
+            blob = json.dumps(j, indent=2)
+            with open(p, "w") as f:
+                f.write(blob)
+            # What we wrote, byte for byte — the rollback compares against this
+            # to tell "still ours" from "somebody rewrote it after us".
+            written[p] = blob.encode("utf-8")
+            reaped_ids.add(j.get("id"))
+    except OSError as exc:
+        restored, conflicted = restore_originals(originals, written)
+        print(f"skipped: {state_dir} — a jobs/*.json write failed ({exc.__class__.__name__}), rolling back")
+        print(f"rolled back: {state_dir} — {len(restored)} record(s) restored")
+        if conflicted:
+            print(f"NOT restored: {state_dir} — {[os.path.basename(c) for c in conflicted]}; this workspace is left inconsistent and needs a look")
+            skipped += len(conflicted)
+        reaped -= len(restored)
+        skipped += 1
+        continue
+    # Logged only after every forward write committed, so a rolled-back sweep
+    # never leaves "marked failed" in a log for a record that still says running.
     for p, (j, why) in to_reap.items():
-        try:
-            with open(p, "rb") as f:
-                originals[p] = f.read()
-        except OSError:
-            originals[p] = None
-        j.update(status="failed", phase="reaped", reapedAt=stamp, reapReason=why)
-        j["pid"] = None
-        with open(p, "w") as f:
-            json.dump(j, f, indent=2)
-        reaped_ids.add(j.get("id"))
         log = j.get("logFile")
         if log:
             try:
@@ -1368,10 +1517,15 @@ for state_dir in state_dirs:
             fresh = _fresh_root
             conflicts = state_conflicts(fresh_entries, reaped_ids, baseline)
             if conflicts:
-                restored = restore_originals(originals)
+                restored, conflicted = restore_originals(originals, written)
                 print(f"skipped: {state_dir} — {conflicts} changed status while this sweep ran, not overwriting another session's update")
-                print(f"rolled back: {state_dir} — {len(restored)} jobs/*.json record(s) restored, the workspace is as this sweep found it")
-                reaped -= len(reaped_ids)
+                print(f"rolled back: {state_dir} — {len(restored)} jobs/*.json record(s) restored")
+                if conflicted:
+                    print(f"NOT restored: {state_dir} — {[os.path.basename(c) for c in conflicted]}; either another session rewrote them after this sweep did, or the restore itself failed. Left alone deliberately: a stale pre-image written over somebody's newer record is worse than an unrolled-back one.")
+                    skipped += len(conflicted)
+                # Only what actually went back is un-reaped. `reaped` counts one
+                # per FILE, so decrement by files restored, not by distinct ids.
+                reaped -= len(restored)
                 skipped += 1
                 for _p, (j, _why) in to_reap.items():
                     log = j.get("logFile")
@@ -1407,10 +1561,13 @@ for state_dir in state_dirs:
             # — so it gets the same answer: undo the per-job writes and leave
             # the workspace exactly as this sweep found it. Still unfinished
             # work, so it still counts toward the non-zero exit below.
-            restored = restore_originals(originals)
+            restored, conflicted = restore_originals(originals, written)
             print(f"warning: could not update {state_path}: {exc}")
-            print(f"rolled back: {state_dir} — {len(restored)} jobs/*.json record(s) restored, the workspace is as this sweep found it")
-            reaped -= len(reaped_ids)
+            print(f"rolled back: {state_dir} — {len(restored)} jobs/*.json record(s) restored")
+            if conflicted:
+                print(f"NOT restored: {state_dir} — {[os.path.basename(c) for c in conflicted]}; either another session rewrote them after this sweep did, or the restore itself failed. Left alone deliberately.")
+                skipped += len(conflicted)
+            reaped -= len(restored)
             skipped += 1
 print(f"reap summary: {reaped} {'flagged' if dry else 'reaped'}, {kept} kept, "
       f"{skipped} skipped (unreadable, unreconciled, live workspace or unwritable)")

@@ -230,10 +230,18 @@ it sits*, and anything unrecognized is replaced by a `<redacted: N chars>`
 marker regardless of its name or its length. Only `job` and `storedJob` are
 recognized at the top level; inside them `request` keeps a routing allowlist,
 `result` and `rendered` are the only preserved output subtrees (verbatim and
-unbounded, at that depth only), a `task-` job's prompt-derived `summary` goes
-while a review's finding summary stays, and a fixed set of ids, timings, status
-and routing fields is kept as length-capped scalars. A new vendor field
-therefore fails **closed**. A payload that cannot be parsed, or that is not a
+unbounded, at that depth only), `summary` is kept only for job kinds known to
+put model output there (`review-`) and capped like any other scalar, and a
+fixed set of ids, timings, status and routing fields is kept as length-capped
+scalars. A new vendor field, and a job kind under an unrecognized id prefix,
+therefore fail **closed**.
+
+Every one of those comparisons is against the **exact** key spelling. An
+earlier version normalized keys first (lowercase, strip punctuation), which
+reads as defensive and is the opposite: normalization tightens a denylist but
+can only loosen an allowlist, so `r-e-s-u-l-t` reached the verbatim-output
+branch and `t-h-r-e-a-d-I-d` reached the metadata allowlist. A vendor alias is
+added to those sets by hand or not at all. A payload that cannot be parsed, or that is not a
 mapping, is **withheld** rather than archived raw. Sanitization is best-effort
 in the same sense as stamping: it never changes `await`'s exit code or its
 single stdout line.

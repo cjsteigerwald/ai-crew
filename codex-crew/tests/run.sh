@@ -860,7 +860,11 @@ fi
 arc="$TMP/struct/arc-sentinel"
 struct_await task-sent "$arc" '{"job":{"id":"task-sent","status":"completed"},"storedJob":{"id":"task-sent","status":"completed","result":{"rawOutput":"KEEP-THIS-ANSWER"}}}' || true
 cp "$arc/task-sent.result.txt" "$TMP/sent-before.txt"
-mkdir -p "$arc/task-sent.meta.json.tmp"
+# The trap is a DIRECTORY at the meta's own path: write_atomic stages through
+# mkstemp now, so the old "$path.tmp" trap no longer fires — but os.replace onto
+# a directory still raises, which is what a transient fault looks like here.
+rm -f "$arc/task-sent.meta.json"
+mkdir "$arc/task-sent.meta.json"
 struct_await task-sent "$arc" '{"job":{"id":"task-sent","status":"completed"}}' || true
 if cmp -s "$arc/task-sent.result.txt" "$TMP/sent-before.txt" \
    && grep -q "FINAL-RESULT-KEEP" "$arc/task-sent.result.txt"; then
@@ -892,7 +896,7 @@ if grep -q "result withheld" "$arc/task-sent.result.txt" \
 else
   echo "FAIL: a mismatched sentinel was trusted: $(cat "$arc/task-sent.result.txt")"; fail=$((fail + 1))
 fi
-rmdir "$arc/task-sent.meta.json.tmp" 2>/dev/null || true
+rmdir "$arc/task-sent.meta.json" 2>/dev/null || true
 
 # Case 20v: the staging path must be UNPREDICTABLE. "$dst.satmp.$$" is derived
 # from a pid, so in a group- or world-writable archive an attacker precreates a
@@ -946,6 +950,105 @@ if ! grep -rq "$SECRET" "$nlarc"; then
   echo "PASS: a newline in a filename does not hide the file from the sweep"; pass=$((pass + 1))
 else
   echo "FAIL: newline-named file was skipped (exit=$rc; output: $out; file: $(cat "$nlarc/$nlname.result.txt"))"; fail=$((fail + 1))
+fi
+
+# --- round-3 review findings -------------------------------------------------
+
+# Case 20x: fv-2. `summary` used to be dropped only for a `task-` prefix, so
+# every OTHER job kind kept it verbatim and unbounded. That is fail-OPEN: a
+# future vendor job kind whose summary is prompt-derived leaks silently, which
+# is the exact failure mode the structural rewrite exists to remove. The test is
+# inverted with it — only a known output prefix keeps a summary.
+arc="$TMP/struct/arc-prefix"
+struct_await job-newkind "$arc" '{"job":{"id":"job-newkind","status":"completed","summary":"Investigate NEWKINDSECRET"},"storedJob":{"id":"job-newkind","status":"completed"}}' || true
+if [[ -f "$arc/job-newkind.meta.json" ]] && ! grep -q "NEWKINDSECRET" "$arc/job-newkind.meta.json"; then
+  echo "PASS: an unknown job-id prefix does not keep its summary"; pass=$((pass + 1))
+else
+  echo "FAIL: summary failed open for an unknown prefix: $(cat "$arc/job-newkind.meta.json" 2>/dev/null)"; fail=$((fail + 1))
+fi
+# ...while a review summary still survives, or the archive stops being useful.
+arc="$TMP/struct/arc-prefix-review"
+struct_await review-keep "$arc" '{"job":{"id":"review-keep","status":"completed","summary":"Review found 2 issues"},"storedJob":{"id":"review-keep","status":"completed"}}' || true
+if grep -q '"summary": "Review found 2 issues"' "$arc/review-keep.meta.json" 2>/dev/null; then
+  echo "PASS: a review finding summary is still kept"; pass=$((pass + 1))
+else
+  echo "FAIL: review summary was over-redacted: $(cat "$arc/review-keep.meta.json" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
+# Case 20y: fv-3. The withheld-record keys exist so the SWEEP can re-read its
+# own output idempotently. Honoring them on the live await path — where the
+# payload is companion output — preserved a top-level `reason` for no benefit.
+arc="$TMP/struct/arc-toplevel"
+struct_await task-top "$arc" '{"reason":"top-level TOPLEVELSECRET","job":{"id":"task-top","status":"completed"}}' || true
+if [[ -f "$arc/task-top.meta.json" ]] && ! grep -q "TOPLEVELSECRET" "$arc/task-top.meta.json"; then
+  echo "PASS: top-level scalar recognition is a sweep privilege, not a live-path one"; pass=$((pass + 1))
+else
+  echo "FAIL: live path preserved a top-level scalar: $(cat "$arc/task-top.meta.json" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
+# Case 20z: the output boundary is compared EXACTLY. Everywhere else norm() can
+# only tighten the rule; here it hands out unbounded verbatim preservation, so
+# an aliased spelling would alias straight into it.
+arc="$TMP/struct/arc-alias"
+struct_await task-alias "$arc" '{"job":{"id":"task-alias","status":"completed","R_e_s_u_l_t":{"leak":"ALIASSECRET"}},"storedJob":{"id":"task-alias","status":"completed"}}' || true
+if [[ -f "$arc/task-alias.meta.json" ]] && ! grep -q "ALIASSECRET" "$arc/task-alias.meta.json"; then
+  echo "PASS: an aliased output key does not reach the verbatim branch"; pass=$((pass + 1))
+else
+  echo "FAIL: norm() aliased into the output boundary: $(cat "$arc/task-alias.meta.json" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
+# Case 20aa: fv-1. A prompt-derived summary embedded in a PRESERVED output
+# string. The .result.txt path already strips it; keeping it in the meta beside
+# that file would mean redacting a prompt in the file a human reads and
+# archiving it one filename away.
+arc="$TMP/struct/arc-rendered"
+struct_await task-rend "$arc" '{"job":{"id":"task-rend","status":"completed","summary":"Investigate RENDSECRET"},"storedJob":{"id":"task-rend","status":"completed","rendered":"# Codex Task\n\nSummary: Investigate RENDSECRET\n\nmodel output continues here"}}' || true
+if [[ -f "$arc/task-rend.meta.json" ]] && ! grep -q "RENDSECRET" "$arc/task-rend.meta.json" \
+   && grep -q "model output continues here" "$arc/task-rend.meta.json"; then
+  echo "PASS: a prompt-derived summary is stripped from preserved output, the rest kept"; pass=$((pass + 1))
+else
+  echo "FAIL: rendered output kept the prompt summary or lost its content: $(cat "$arc/task-rend.meta.json" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
+# Case 20ab: fv-4. write_atomic staged at the fully predictable "$path.tmp" and
+# opened it with a plain open(..., "w"), which follows a symlink. The archive
+# directory is the one place this matters, and the sweep's commit helper was
+# hardened against exactly this in the same commit — await was not.
+arc="$TMP/struct/arc-symlink"
+mkdir -p "$arc"
+printf 'victim contents\n' > "$TMP/victim-await.txt"
+ln -s "$TMP/victim-await.txt" "$arc/task-sym.meta.json.tmp"
+struct_await task-sym "$arc" '{"job":{"id":"task-sym","status":"completed"},"storedJob":{"id":"task-sym","status":"completed"}}' || true
+if [[ "$(cat "$TMP/victim-await.txt")" == "victim contents" ]] \
+   && [[ -f "$arc/task-sym.meta.json" ]] && grep -q '"id": "task-sym"' "$arc/task-sym.meta.json"; then
+  echo "PASS: await does not stage through a predictable, symlinked temp path"; pass=$((pass + 1))
+else
+  echo "FAIL: await wrote through the planted symlink (victim: $(cat "$TMP/victim-await.txt"))"; fail=$((fail + 1))
+fi
+
+# Case 20ac: the alias defect at EVERY boundary, not just the output one.
+# Fixing only the verbatim-output comparison leaves the rest fail-open: an
+# aliased TOP-LEVEL key normalizes to `job`, after which the exactly-spelled
+# nested `result` under it is preserved verbatim anyway.
+arc="$TMP/struct/arc-alias-top"
+struct_await task-atop "$arc" '{"j-o-b":{"result":{"prompt":"TOPALIASSECRET"}},"storedJob":{"id":"task-atop","status":"completed"}}' || true
+if [[ -f "$arc/task-atop.meta.json" ]] && ! grep -q "TOPALIASSECRET" "$arc/task-atop.meta.json"; then
+  echo "PASS: an aliased top-level key does not become a job container"; pass=$((pass + 1))
+else
+  echo "FAIL: top-level alias reached the job branch: $(cat "$arc/task-atop.meta.json" 2>/dev/null)"; fail=$((fail + 1))
+fi
+
+# ...and the same for the metadata and request allowlists, where the value is
+# capped but a SHORT secret fits inside the cap with room to spare.
+arc="$TMP/struct/arc-alias-meta"
+struct_await task-ameta "$arc" '{"job":{"id":"task-ameta","status":"completed","t-h-r-e-a-d-I-d":"sk-meta-1"},"storedJob":{"id":"task-ameta","status":"completed","request":{"cwd":"/w","m-o-d-e-l":"sk-req-1"}}}' || true
+if [[ -f "$arc/task-ameta.meta.json" ]] \
+   && ! grep -q "sk-meta-1" "$arc/task-ameta.meta.json" \
+   && ! grep -q "sk-req-1" "$arc/task-ameta.meta.json" \
+   && grep -q '"cwd": "/w"' "$arc/task-ameta.meta.json"; then
+  echo "PASS: aliased metadata and request keys are redacted, real ones still kept"; pass=$((pass + 1))
+else
+  echo "FAIL: an aliased key reached an allowlist: $(cat "$arc/task-ameta.meta.json" 2>/dev/null)"; fail=$((fail + 1))
 fi
 
 # --- reap: sweep stuck registry entries --------------------------------------
@@ -2103,6 +2206,146 @@ if grep -q "0 reaped" <<<"$out"; then
   echo "PASS: a rolled-back reap is not counted as a reap"; pass=$((pass + 1))
 else
   echo "FAIL: the summary still claims the rolled-back job was reaped: $out"; fail=$((fail + 1))
+fi
+
+# Case 58: rollback-ability is a PRECONDITION, not a best effort. When a record
+# this sweep is about to mutate cannot be captured as a pre-image, the sweep used
+# to overwrite it anyway and then silently skip it during the rollback while
+# still claiming the workspace was restored — a false claim over exactly the
+# split brain the two-phase design exists to prevent.
+#
+# ⚠️ The pre-image read is NOT the first read of the file — the classification
+# loop already read it — so a statically unreadable fixture is caught by the
+# earlier unreadable-record guard and never reaches this path. The gap only
+# opens mid-sweep, so the FIFO state.json is used to hold the sweep still while
+# the record is removed: reap blocks on the phase-(a) open, the feeder deletes
+# jobs/dead.json, and only then hands over a non-conflicting payload.
+GONE_DATA="$TMP/reap-gone"
+reap_fifo_fixture "$GONE_DATA" repo-g "$DEAD_PID_F"
+(
+  timeout 30 bash -c "printf '%s' '[{\"id\":\"job-fifo\",\"status\":\"running\",\"pid\":$DEAD_PID_F}]' > '$GONE_DATA/state/repo-g/state.json'" || true
+  # reap is now blocked opening state.json for phase (a). The record it has
+  # classified but not yet captured goes away underneath it.
+  rm -f "$GONE_DATA/state/repo-g/jobs/dead.json"
+  timeout 30 bash -c "printf '%s' '[{\"id\":\"job-fifo\",\"status\":\"running\",\"pid\":$DEAD_PID_F}]' > '$GONE_DATA/state/repo-g/state.json'" || true
+) &
+GONE_FEEDER=$!
+out="$(timeout 90 env CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$GONE_DATA" \
+  bash "$CREW" reap 2>&1)" && rc=0 || rc=$?
+wait "$GONE_FEEDER" 2>/dev/null || true
+if [[ "$rc" == 124 ]]; then
+  echo "FAIL: reap hung against a FIFO state.json (pre-image case)"; fail=$((fail + 1))
+elif [[ "$rc" == 3 ]] && grep -q "could not be read for rollback" <<<"$out" \
+   && ! grep -q "^reaped: " <<<"$out" \
+   && [[ ! -e "$GONE_DATA/state/repo-g/jobs/dead.json" ]]; then
+  echo "PASS: reap refuses to mutate a record it could not capture for rollback"; pass=$((pass + 1))
+else
+  echo "FAIL: mutated or recreated an unrollbackable record (exit=$rc; output: $out)"; fail=$((fail + 1))
+fi
+
+# Case 59: fv-6. The rollback fires precisely BECAUSE another session is active,
+# so that session may have rewritten the same record in the meantime. Writing
+# our pre-image back over it destroys their fresher write — the very harm the
+# rollback was added to prevent. Same FIFO rendezvous as case 57, with the
+# feeder also rewriting jobs/dead.json in the window our write opens.
+CLOB_DATA="$TMP/reap-clobber"
+reap_fifo_fixture "$CLOB_DATA" repo-c "$DEAD_PID_F"
+(
+  timeout 30 bash -c "printf '%s' '[{\"id\":\"job-fifo\",\"status\":\"running\",\"pid\":$DEAD_PID_F}]' > '$CLOB_DATA/state/repo-c/state.json'" || true
+  timeout 30 bash -c "printf '%s' '[{\"id\":\"job-fifo\",\"status\":\"running\",\"pid\":$DEAD_PID_F}]' > '$CLOB_DATA/state/repo-c/state.json'" || true
+  # reap has now passed phase (a) and is about to write jobs/dead.json. Wait for
+  # that write, then stand in for the other session and rewrite it ourselves.
+  for _ in $(seq 1 600); do
+    if grep -q 'reaped' "$CLOB_DATA/state/repo-c/jobs/dead.json" 2>/dev/null; then
+      : > "$CLOB_DATA/observed"
+      break
+    fi
+    sleep 0.05
+  done
+  if [[ -f "$CLOB_DATA/observed" ]]; then
+    printf '%s' '{"id":"job-fifo","status":"running","pid":424242,"note":"OTHER-SESSION-WROTE-THIS"}' \
+      > "$CLOB_DATA/state/repo-c/jobs/dead.json"
+  fi
+  # ...and only now hand over the conflicting registry read that triggers the
+  # rollback, so the ordering is a rendezvous rather than a race.
+  timeout 30 bash -c "printf '%s' '[{\"id\":\"job-fifo\",\"status\":\"running\",\"pid\":999999}]' > '$CLOB_DATA/state/repo-c/state.json'" || true
+) &
+CLOB_FEEDER=$!
+out="$(timeout 90 env CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$CLOB_DATA" \
+  bash "$CREW" reap 2>&1)" && rc=0 || rc=$?
+wait "$CLOB_FEEDER" 2>/dev/null || true
+if [[ "$rc" == 124 ]]; then
+  echo "FAIL: reap hung against a FIFO state.json (clobber case)"; fail=$((fail + 1))
+elif [[ ! -f "$CLOB_DATA/observed" ]]; then
+  echo "FAIL: case 59 never observed the reaped transition — the clobber window was not established"; fail=$((fail + 1))
+elif grep -q "OTHER-SESSION-WROTE-THIS" "$CLOB_DATA/state/repo-c/jobs/dead.json" \
+   && grep -q "NOT restored" <<<"$out"; then
+  echo "PASS: the rollback leaves a record another session rewrote after us"; pass=$((pass + 1))
+else
+  echo "FAIL: rollback clobbered a concurrent writer (exit=$rc; output: $out; job: $(cat "$CLOB_DATA/state/repo-c/jobs/dead.json"))"; fail=$((fail + 1))
+fi
+
+# Case 60: a forward write that fails PART WAY through the mutation loop. The
+# writes used to sit outside every try block, so the second file raising
+# PermissionError exited the sweep with the first already marked failed — no
+# mirror, no rollback, no summary. That is the split brain the two-phase design
+# claims it cannot produce, so the claim has to be tested, not asserted.
+PART_DATA="$TMP/reap-partial"
+mkdir -p "$PART_DATA/state/repo-w/jobs"
+for n in a b; do
+  printf 'log line\n' > "$PART_DATA/state/repo-w/jobs/$n.log"
+  touch -d '2 hours ago' "$PART_DATA/state/repo-w/jobs/$n.log"
+  cat > "$PART_DATA/state/repo-w/jobs/$n.json" <<EOF
+{"id":"job-$n","status":"running","pid":$DEAD_PID_F,"logFile":"$PART_DATA/state/repo-w/jobs/$n.log","createdAt":"2026-07-01T00:00:00Z"}
+EOF
+done
+cat > "$PART_DATA/state/repo-w/state.json" <<EOF
+[{"id":"job-a","status":"running","pid":$DEAD_PID_F},{"id":"job-b","status":"running","pid":$DEAD_PID_F}]
+EOF
+cp "$PART_DATA/state/repo-w/jobs/a.json" "$TMP/reap-part-a-before.json"
+cp "$PART_DATA/state/repo-w/jobs/b.json" "$TMP/reap-part-b-before.json"
+# Readable (the pre-image capture succeeds) but not writable (the forward write
+# raises). Whichever of the two the loop reaches second, one write lands first.
+chmod 400 "$PART_DATA/state/repo-w/jobs/b.json"
+if [[ -w "$PART_DATA/state/repo-w/jobs/b.json" ]]; then
+  skip "reap rolls back a partial mutation" "running as root defeats chmod 400"
+else
+  out="$(timeout 60 env CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$PART_DATA" \
+    bash "$CREW" reap 2>&1)" && rc=0 || rc=$?
+  chmod 600 "$PART_DATA/state/repo-w/jobs/b.json"
+  if [[ "$rc" == 3 ]] && grep -q "a jobs/\*\?.json write failed\|write failed" <<<"$out" \
+     && grep -q "reap summary" <<<"$out" \
+     && cmp -s "$PART_DATA/state/repo-w/jobs/a.json" "$TMP/reap-part-a-before.json" \
+     && cmp -s "$PART_DATA/state/repo-w/jobs/b.json" "$TMP/reap-part-b-before.json"; then
+    echo "PASS: a partial forward write rolls back and still prints a summary"; pass=$((pass + 1))
+  else
+    echo "FAIL: partial mutation left a split brain (exit=$rc; output: $out; a: $(cat "$PART_DATA/state/repo-w/jobs/a.json"))"; fail=$((fail + 1))
+  fi
+fi
+
+# Case 61: two jobs/*.json carrying the SAME id. One registry entry cannot
+# describe two records, so the per-file accounting and the id-keyed mirror
+# disagree by construction. Corrupt input; touch nothing.
+DUP_DATA="$TMP/reap-dup"
+mkdir -p "$DUP_DATA/state/repo-d/jobs"
+for n in one two; do
+  printf 'log line\n' > "$DUP_DATA/state/repo-d/jobs/$n.log"
+  touch -d '2 hours ago' "$DUP_DATA/state/repo-d/jobs/$n.log"
+  cat > "$DUP_DATA/state/repo-d/jobs/$n.json" <<EOF
+{"id":"job-dup","status":"running","pid":$DEAD_PID_F,"logFile":"$DUP_DATA/state/repo-d/jobs/$n.log","createdAt":"2026-07-01T00:00:00Z"}
+EOF
+done
+cat > "$DUP_DATA/state/repo-d/state.json" <<EOF
+[{"id":"job-dup","status":"running","pid":$DEAD_PID_F}]
+EOF
+cp "$DUP_DATA/state/repo-d/jobs/one.json" "$TMP/reap-dup-before.json"
+out="$(timeout 60 env CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$DUP_DATA" \
+  bash "$CREW" reap 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" == 3 ]] && grep -q "more than one jobs/\*\?.json record\|more than one" <<<"$out" \
+   && cmp -s "$DUP_DATA/state/repo-d/jobs/one.json" "$TMP/reap-dup-before.json"; then
+  echo "PASS: duplicate job ids abort the workspace instead of miscounting it"; pass=$((pass + 1))
+else
+  echo "FAIL: duplicate ids were swept (exit=$rc; output: $out)"; fail=$((fail + 1))
 fi
 
 # Case 55: a live job recorded ONLY in state.json, in a workspace with NO jobs/

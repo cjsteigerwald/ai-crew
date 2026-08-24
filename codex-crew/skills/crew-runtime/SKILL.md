@@ -169,11 +169,18 @@ because of **where it sits**, and anything unrecognized is replaced by a
 `<redacted: N chars>` marker regardless of its name or its length. Only `job`
 and `storedJob` are recognized at the top; inside them, `request` keeps a
 routing allowlist, `result` and `rendered` are the **only** preserved output
-subtrees (verbatim, unbounded, at that exact depth), a `task-` job's `summary`
-goes while a review's finding summary stays, and a fixed list of ids, timings,
-status and routing fields is kept as length-capped scalars. Everything else is
-markered. A new vendor field therefore fails **closed** until somebody adds it
-here deliberately.
+subtrees (verbatim, unbounded, at that exact depth), `summary` is kept only for
+job kinds known to put model output there (`review-`) and capped like any other
+scalar, and a fixed list of ids, timings, status and routing fields is kept as
+length-capped scalars. Everything else is markered. A new vendor field — and a
+job kind under an unrecognized id prefix — therefore fails **closed** until
+somebody adds it here deliberately.
+
+⚠️ Those comparisons are against the **exact** key spelling, with no
+normalization step. Normalizing first tightens a denylist but can only loosen an
+allowlist: `r-e-s-u-l-t` would alias into the verbatim-output branch and
+`t-h-r-e-a-d-I-d` into the metadata allowlist. Over-redaction is a bug report;
+under-redaction is a disclosure nobody notices.
 
 ⚠️ Marker trust is a privilege of `sanitize-archive` alone (`CREW_TRUST_MARKERS`),
 because that is the one caller re-reading this script's own output — which is
