@@ -16,14 +16,37 @@ working out what was already here cost more than applying the changes did.
 | Synced on | 2026-08-28 |
 | This plugin's version | **0.7.0** |
 
-Upstream is a git remote here, so the next port is a diff and not an
+Upstream is **not** wired up for you. Git remotes are per-clone: they are never
+committed and never travel with the repo, so every fresh checkout of this fork
+starts with `origin` alone. Add it once and the next port is a diff instead of an
 investigation:
 
 ```bash
-git remote add upstream https://github.com/sidkik/claude-plugins.git   # once
+# once per clone — `git remote add` errors if `upstream` already exists
+git remote add upstream https://github.com/sidkik/claude-plugins.git
+
+# confirm the URL, not just the name: an `upstream` left over from something
+# else still satisfies any check that only looks for the word
+git remote get-url upstream   # must print https://github.com/sidkik/claude-plugins.git
+
 git fetch upstream --tags
 git diff 965b419 upstream/main -- codex-crew/
 ```
+
+Two failure modes share one signature, which is why the check above reads the
+URL. If the remote is missing, `git fetch upstream` aborts with
+`fatal: 'upstream' does not appear to be a git repository` (exit 128). If it
+exists but points at an unrelated repo, `git remote add` errors with
+`error: remote upstream already exists.` (exit 3), a pasted block runs straight
+past it, and the fetch then succeeds — but `965b419` is reachable only from
+upstream's history, so the diff aborts with `fatal: bad revision '965b419'`
+(exit 128) in that case too. Identical message, opposite causes; neither ever
+returns a misleadingly empty diff.
+
+The one genuinely silent case is an `upstream` pointing at some *other* fork of
+`sidkik/claude-plugins`. It carries `965b419`, so every command succeeds and the
+diff quietly compares against the wrong repository. Reading the URL is what
+catches it.
 
 ## Version numbers do not line up, and never will
 
