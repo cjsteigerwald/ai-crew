@@ -63,7 +63,8 @@ unpacked into its own directory and the old ones stay put.
 ├── 0.4.2/
 ├── 0.5.0/
 ├── 0.5.1/
-└── 0.6.0/   <- the update added this; it did not replace anything
+├── 0.6.0/
+└── 0.7.0/   <- the update added this; it did not replace anything
 ```
 
 Each session resolves its plugin `PATH` when it starts, and then keeps calling
@@ -109,7 +110,7 @@ cat "$P/.claude-plugin/plugin.json"
 ```json
 {
   "name": "codex-crew",
-  "version": "0.6.0",
+  "version": "0.7.0",
   ...
 }
 ```
@@ -159,14 +160,123 @@ status line per ~9 minutes rather than a streamed transcript.
 crew-codex await <job-id> [--for <seconds>]
   exit 0  DONE completed      exit 1  DONE failed/cancelled
   exit 2  job not found       exit 3  STALE — died without reporting
+  exit 4  HUNG — pid alive, log frozen
+  exit 5  SUPERSEDED by a redirect (the line names the successor)
   exit 10 RUNNING — call again
 ```
+
+⚠️ **Exit 5 is a deliberate divergence from upstream codex-crew, which returns
+4 for SUPERSEDED.** Exit 4 has meant HUNG in this fork since v0.4.2 and
+downstream agents key a confirm-then-recover protocol to it, so taking 4 for
+SUPERSEDED would make an agent running against a not-yet-updated install read a
+real hang as a redirect and chase a successor id that does not exist — silently,
+and destructively. The divergence fails loudly in the other direction, which is
+why it runs this way round.
 
 `await` waits on the job's **own process** (`tail --pid`), so it wakes the
 instant the job ends — not on a poll tick — and costs no CPU while blocked. It
 falls back to a 5s poll when no live pid is available. If the process
 disappears while the job still claims to be `running`, that's a silent death:
 `await` reports `STALE` with exit 3 instead of waiting out the deadline.
+
+**Correct a running job in flight.** A job going the wrong way does not have to
+be thrown away, and does not have to be interrupted either:
+
+```
+cd <sandbox root> && crew-codex steer <job-id> "Stop adding files; switch to fixing the failing test"
+STEERED task-abc-123 | thread 01a03e70-... | turn 01a03e70-... | the agent reads it at its next step
+```
+
+Steering interjects into the turn the job is running **right now**. Nothing is
+stopped: the tool call in progress finishes normally, and the model reads the
+message at its next step, so it can change course before doing all the wrong
+work. The reply is part of the same turn, so it appears in the job's own result.
+
+**A turn is the whole task, not one step.** That distinction is why steering
+exists and why queueing is not a substitute — everything a job does is one turn,
+so a message that waits for the turn to end arrives after the work is finished.
+
+```
+cd <sandbox root> && crew-codex queue <job-id> "When you are done, also update the changelog"
+QUEUED task-abc-123 | id crew-task-abc-123-1 | the agent reads it when its current turn ends
+```
+
+Because the companion closes a job at its first `turn/completed`, the queued
+turn's answer would otherwise be lost. `await` waits for it and folds it into
+the archived result.
+
+⚠️ The queued message **text is never archived** — only its client id and its
+length. Upstream records the message verbatim; this fork does not, because the
+crew archive deliberately outlives the vendor's session cleanup and a queued
+message carries exactly the free-form operator text that the `.dispatch.json`
+redaction and the `.meta.json` sanitizer exist to keep out of it. Nothing
+downstream needs the text: `await` reads that file for its line count and
+matches replies by client id.
+
+**Redirect is the destructive one.** Reach for it only when a job is genuinely
+off the rails:
+
+```
+cd <sandbox root> && crew-codex redirect <job-id> "Change of plan: <new instruction>"
+```
+
+That INTERRUPTS the live turn and resumes the *same* Codex thread with the new
+text, so everything the job already did stays in context — but the interrupt
+stops the turn wherever it stands, so an edit in progress can be left half
+applied. It prints `REDIRECTED <old> -> <new>`; await the new id. The agent
+awaiting the old id gets exit 5 (`SUPERSEDED`) naming the successor, so it
+follows the thread rather than reporting a failure.
+
+| | What it does | When the agent sees it |
+|---|---|---|
+| `steer` | Interjects into the running turn | At its next step, after the in-flight tool call |
+| `queue` | Appends to the thread queue | After the turn completes, so after the whole task |
+| `redirect` | Interrupts the turn, then resumes | Never sees it; work in flight is destroyed |
+
+**Every job gets its own broker.** The companion runs one broker per working
+directory, and a broker carries exactly one streaming turn. Its answer to a busy
+broker is to run the whole job on a private stdio app-server, which has no
+socket, so nothing can steer, queue or interrupt it, ever. In a shared parent
+directory that means exactly one reachable job: whichever won the broker first.
+
+So `crew-codex` starts a broker per launch, records the endpoint against the
+job, and routes every later `steer`, `queue`, `await`, `status`, `result` and
+`cancel` back to it. Each broker holds a codex app-server, so leaks are
+expensive and retirement is deliberate: terminal state in `await` and a
+successful `cancel` retire that job's broker immediately, every launch sweeps
+first, and `crew-codex reap` does it on demand. `CREW_CODEX_NO_JOB_BROKER=1`
+opts out.
+
+Retiring these is safe in a way the report-only `reap --brokers` sweep is not:
+`crew-codex` **started** them, and each sidecar records the pid together with
+its start time, so it can prove it is signalling the same process it spawned
+rather than a stranger that inherited a recycled pid. Brokers we did not start
+are still never killed.
+
+**Both `steer` and `queue` need the codex plugin patched.** Stock, the plugin
+refuses on two counts: its broker forwards only `turn/interrupt` while a turn is
+streaming, so `turn/steer` and `thread/queue/add` come back `-32001 Shared Codex
+broker is busy`, and its client declares `experimentalApi: false`, which the
+server requires for the queue method. Note what that left behind: interrupt, the
+one destructive option, was the only thing that got through.
+
+```
+crew-codex patch --status     # PATCHED / UNPATCHED, for whatever version is installed
+crew-codex patch --apply      # idempotent, keeps *.crew-orig backups
+crew-codex patch --revert
+```
+
+Everyone installs their own copy of `codex@openai-codex` at their own version,
+so the fix ships as a patch in `patches/` applied by context matching rather
+than line numbers, which absorbs the drift between releases. It refuses to
+half-apply if upstream moves the code out from under it. A SessionStart hook
+re-applies it after the codex plugin updates; set `CREW_CODEX_NO_AUTO_PATCH=1`
+to opt out.
+
+⚠️ `redirect`'s relaunch is **not** dispatch-stamped. It calls the companion
+directly rather than going through the shared dispatch path, so the successor
+job gets no `.dispatch.json`. Same class of gap as the vendor-review one below:
+tracked, not done.
 
 **Guarded flags.** codex-companion has no per-subcommand help handler, and its
 review parser folds every argument it does not recognize into the review's

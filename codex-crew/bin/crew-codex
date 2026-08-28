@@ -7,8 +7,13 @@ set -euo pipefail
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 INSTALLED_JSON="$CLAUDE_DIR/plugins/installed_plugins.json"
 CODEX_PLUGIN_ID="codex@openai-codex"
-# Our own code, shipped beside this script — currently just the effort driver.
-CREW_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib"
+# Our own code, shipped beside this script — the effort driver, the app-server
+# bridge steer/queue ride on, and the codex-plugin patch.
+# NOT `readlink -f`: upstream uses it here, but it is GNU-only and this plugin
+# is installed on darwin too, where the resolution would fail and take the
+# patch file, the bridge and every steer/queue call with it.
+CREW_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CREW_LIB_DIR="$CREW_ROOT/lib"
 
 # ---- usage guards: a help request must never become a dispatch -------------
 # codex-companion has NO per-subcommand help handler, and its review parser
@@ -31,7 +36,35 @@ Subcommands crew-codex handles itself:
   --resolve                     print the resolved codex-companion.mjs path
   await <job-id> [--for <s>]    block until the job leaves running — exit 0
                                 completed, 1 failed/cancelled, 2 not found,
-                                3 stale, 4 hung, 10 still running (call again)
+                                3 stale, 4 hung, 5 SUPERSEDED by a redirect
+                                (the line names the successor id — await THAT
+                                one; a redirect is never a failure),
+                                10 still running (call again)
+  steer <job-id> "<message>"    interject into the turn the job is running RIGHT
+                                NOW. Stops nothing: the in-flight tool call
+                                finishes and the model reads it at its next
+                                step. The normal way to correct a running job.
+                                Needs `crew-codex patch --apply`.
+  queue <job-id> "<message>"    a message for AFTER the current turn. A turn is
+                                the WHOLE task, so this arrives once the work is
+                                done — use it for "then also do X", never for a
+                                correction. Needs `crew-codex patch --apply`.
+  redirect <job-id> [--model <m>] [--effort <e>] "<instruction>"
+                                DESTRUCTIVE. Interrupts the live turn, then
+                                resumes the same Codex thread with the new text,
+                                so an edit in flight can be left half applied.
+                                For a job genuinely off the rails only — reach
+                                for `steer` first. Prints REDIRECTED <old> ->
+                                <new>; await the NEW id.
+  patch [--status|--apply|--revert]
+                                apply the queue-passthrough fix to whichever
+                                codex plugin version is installed. Stock, its
+                                broker forwards only turn/interrupt while a turn
+                                streams, so steer and queue are refused — the
+                                one destructive option was the only one that got
+                                through. Idempotent, keeps *.crew-orig backups.
+                                A SessionStart hook applies it automatically;
+                                CREW_CODEX_NO_AUTO_PATCH=1 opts out.
   sanitize-archive [--dir <path>] [--dry-run]
                                 re-run the archive scrubber over jobs archived
                                 by an earlier crew-codex, which kept focus text
@@ -39,7 +72,10 @@ Subcommands crew-codex handles itself:
                                 Rewrites in place only where the bytes differ;
                                 deletes nothing; never touches .log files.
   reap [--dry-run] [--brokers] [--state]
-                                mark stuck job records failed; --brokers and
+                                retire the per-job brokers crew-codex started
+                                whose jobs have ended (safe: we spawned them and
+                                the sidecar proves identity), and mark stuck job
+                                records failed; --brokers and
                                 --state are REPORT ONLY — they kill no process
                                 and delete no directory, they print the command
                                 for you to run. Exit: 0 the sweep classified
@@ -273,6 +309,394 @@ export CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA:-$CLAUDE_DIR/plugins/data/codex-
 # Our own archive — the companion prunes at 50 jobs (deleting logs) and drops
 # a session's jobs at SessionEnd, so results are copied somewhere it can't reap.
 CREW_ARCHIVE_DIR="${CREW_CODEX_ARCHIVE_DIR:-$CLAUDE_DIR/plugins/data/codex-crew/jobs}"
+
+# ---- per-job brokers -------------------------------------------------------
+# A broker carries ONE streaming turn per cwd. The companion's answer to a busy
+# broker (lib/codex.mjs, withAppServer) is to run the whole job on a private
+# stdio app-server, which has no socket, so nothing can ever steer, queue or
+# interrupt it. In a shared cwd that means exactly one reachable job: whichever
+# won the broker first. Everything launched during its turn is unreachable for
+# life.
+#
+# So every launch gets its OWN broker and we remember the endpoint per job.
+# CODEX_COMPANION_APP_SERVER_ENDPOINT takes priority over broker.json in the
+# companion's own client, which is the seam this rides on.
+#
+# Brokers hold a codex app-server each, so a leak is expensive. Every one is
+# recorded in a sidecar, reaped when its job reaches terminal state, and swept
+# on the next launch plus `crew-codex reap`. A broker's SIGTERM handler closes
+# its app-server child and removes its socket, so one signal is a clean stop.
+CREW_BROKER_ENV="CODEX_COMPANION_APP_SERVER_ENDPOINT"
+CREW_BROKER_SCRIPT="$COMPANION_ROOT/scripts/app-server-broker.mjs"
+
+crew_sidecar() { printf '%s/%s.broker' "$CREW_ARCHIVE_DIR" "$1"; }
+
+crew_job_endpoint() {
+  local f; f="$(crew_sidecar "$1")"
+  [[ -f "$f" ]] || return 0
+  cut -f1 <"$f"
+}
+
+# A pid alone is not an identity: pids get recycled, and a sidecar can outlive
+# its broker by hours. Field 22 of /proc/<pid>/stat is the process start time in
+# clock ticks, which together with the pid is stable and unforgeable enough to
+# prove we are signalling the same process we started.
+# ⚠️ Upstream reads /proc/<pid>/stat and nothing else. That is Linux-only, and
+# this plugin is installed on darwin too, where it returns EMPTY — and an empty
+# start time makes crew_kill_broker skip the ownership check entirely and signal
+# whatever now holds the pid. The check silently degrading to "no check" on half
+# the install base is worse than not having it, so darwin gets a real answer:
+# `ps -o lstart=` is the process start time to the second, stable for the life
+# of the process and unaffected by pid reuse.
+crew_pid_starttime() {
+  local pid="$1" st=""
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  if [[ -r "/proc/$pid/stat" ]]; then
+    st="$(awk '{ n = split($0, a, ") "); print a[n] }' "/proc/$pid/stat" 2>/dev/null \
+      | awk '{ print $20 }' 2>/dev/null || true)"
+  fi
+  if [[ -z "$st" ]] && command -v ps >/dev/null 2>&1; then
+    # Collapse whitespace: the field is compared as a string, so "Thu Aug 28"
+    # and "Thu  Aug 28" must not read as two different processes.
+    st="$(ps -o lstart= -p "$pid" 2>/dev/null | tr -s '[:space:]' '_' || true)"
+    st="${st#_}"; st="${st%_}"
+  fi
+  printf '%s' "$st"
+}
+
+# Stop one broker and remove everything it left behind. Refuses to signal a pid
+# whose start time no longer matches the one recorded at spawn.
+crew_kill_broker() {
+  local pid="$1" dir="$2" expect_start="${3:-}"
+  if [[ -n "$expect_start" && "$pid" =~ ^[0-9]+$ ]]; then
+    local now_start
+    now_start="$(crew_pid_starttime "$pid")"
+    if [[ -n "$now_start" && "$now_start" != "$expect_start" ]]; then
+      # Same pid, different process: the broker died and something else took
+      # its number. Clean the files, never signal the stranger.
+      if [[ -n "$dir" && -d "$dir" ]]; then
+        rm -f "$dir/broker.sock" "$dir/broker.pid" "$dir/broker.log" 2>/dev/null || true
+        rmdir "$dir" 2>/dev/null || true
+      fi
+      return 0
+    fi
+  fi
+  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+    local i=0
+    while [[ $i -lt 20 ]] && kill -0 "$pid" 2>/dev/null; do
+      sleep 0.1
+      i=$((i + 1))
+    done
+    kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+  fi
+  if [[ -n "$dir" && -d "$dir" ]]; then
+    rm -f "$dir/broker.sock" "$dir/broker.pid" "$dir/broker.log" 2>/dev/null || true
+    rmdir "$dir" 2>/dev/null || true
+  fi
+}
+
+# Sweep: any recorded broker whose job is no longer running, plus any of our
+# broker directories whose process is already gone.
+crew_reap_brokers() {
+  local f job pid dir endpoint status
+  for f in "$CREW_ARCHIVE_DIR"/*.broker; do
+    [[ -f "$f" ]] || continue
+    job="$(basename "$f" .broker)"
+    IFS=$'\t' read -r endpoint pid dir _cwd startt _rest <"$f" || true
+    # "running" is not proof of life: a worker killed with the session leaves
+    # the index saying running forever, and its broker with it. Require a live
+    # worker process too, or the leak this whole sidecar exists to prevent just
+    # moves to the crash path.
+    meta="$(crew_job_meta "$job")"
+    IFS=$'\037' read -r mfound status _mthread _mcwd _mmodel _meffort _mwrite _mnewest _mturn jobpid _mrest <<<"$meta"
+    # An unreadable snapshot is usually the companion rewriting the file in
+    # place, not a dead job, and reaping on it would cut a live job off for
+    # good. But a crash mid-rewrite can leave it invalid forever, and skipping
+    # forever leaks the broker, so count strikes and give up after a few.
+    strikes_file="$f.unreadable"
+    if [[ "$mfound" == "UNREADABLE" ]]; then
+      # Age it by WALL CLOCK, not by sweep count: several sweeps can fire in the
+      # same second (a fan-out of launches each sweeping first) and race through
+      # a count while the companion is mid-rewrite, killing a live broker. The
+      # file records when the record first read badly; it has to stay bad for a
+      # while before we believe it.
+      now="$(date +%s)"
+      first="$now"
+      if [[ -f "$strikes_file" ]]; then
+        first="$(cat "$strikes_file" 2>/dev/null || echo "$now")"
+        [[ "$first" =~ ^[0-9]+$ ]] || first="$now"
+      else
+        printf '%s' "$now" >"$strikes_file.tmp.$$" 2>/dev/null \
+          && mv -f "$strikes_file.tmp.$$" "$strikes_file" 2>/dev/null || true
+      fi
+      if [[ $(( now - first )) -lt ${CREW_CODEX_UNREADABLE_SECS:-120} ]]; then
+        continue
+      fi
+      # Unreadable continuously for the whole grace period: a crashed rewrite,
+      # not a busy one. Release the broker rather than hold it forever.
+    else
+      rm -f "$strikes_file" 2>/dev/null || true
+    fi
+    if [[ "$status" == "running" || "$status" == "queued" ]]; then
+      if [[ "$jobpid" =~ ^[0-9]+$ ]] && kill -0 "$jobpid" 2>/dev/null; then
+        continue
+      fi
+    fi
+    crew_kill_broker "$pid" "$dir" "$startt"
+    rm -f "$f" "$f.unreadable" 2>/dev/null || true
+  done
+  local d
+  for d in "${CREW_CODEX_BROKER_TMPDIR:-${TMPDIR:-/tmp}}"/crewb-*; do
+    [[ -d "$d" ]] || continue
+    if [[ -f "$d/broker.pid" ]]; then
+      pid="$(cat "$d/broker.pid" 2>/dev/null || true)"
+      if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+        continue
+      fi
+    fi
+    rm -f "$d/broker.sock" "$d/broker.pid" "$d/broker.log" 2>/dev/null || true
+    rmdir "$d" 2>/dev/null || true
+  done
+  return 0
+}
+
+# ONE cleanup path for the whole script. An unpublished broker is unreferenced,
+# so anything that exits before publication must kill it. Two rules learned the
+# hard way: a second `trap ... EXIT` anywhere silently replaces an earlier one,
+# so there is exactly one EXIT trap and it consults state instead of capturing
+# it; and a signal handler that does not exit lets bash resume, which could
+# publish a sidecar naming the broker it just killed.
+CREW_CLEANUP_PID="" CREW_CLEANUP_DIR="" CREW_CLEANUP_START=""
+
+crew_cleanup() {
+  if [[ -n "${CREW_CLEANUP_PID:-}" ]]; then
+    local p="$CREW_CLEANUP_PID" d="$CREW_CLEANUP_DIR" st="$CREW_CLEANUP_START"
+    CREW_CLEANUP_PID="" CREW_CLEANUP_DIR="" CREW_CLEANUP_START=""
+    crew_kill_broker "$p" "$d" "$st"
+  fi
+  rm -f "${TMP_OUT:-}" "${TMP_ERR:-}" 2>/dev/null || true
+}
+
+crew_arm_cleanup() {
+  trap 'crew_cleanup' EXIT
+  trap 'crew_cleanup; exit 130' INT
+  trap 'crew_cleanup; exit 143' TERM
+}
+
+# Start a broker for one job. Socket paths live under a short tmp dir because a
+# unix
+# socket path is capped near 108 bytes and the plugin data dir can be deep.
+# Sets CREW_SPAWNED_ENDPOINT/PID/DIR/START; returns 1 on failure.
+#
+# Deliberately NOT called through command substitution. A subshell owns $! only
+# inside itself, so between spawning and returning, the parent knows nothing to
+# clean up while the broker is already alive and disowned - a TERM in that
+# window left it running forever. Ownership is handed to the cleanup path on
+# the line after $!, before anything that can block.
+crew_spawn_job_broker() {
+  local cwd="$1" dir sock pid i=0
+  CREW_SPAWNED_ENDPOINT="" CREW_SPAWNED_PID="" CREW_SPAWNED_DIR="" CREW_SPAWNED_START=""
+  [[ -f "$CREW_BROKER_SCRIPT" ]] || return 1
+  dir="$(mktemp -d "${CREW_CODEX_BROKER_TMPDIR:-${TMPDIR:-/tmp}}/crewb-XXXXXXXX" 2>/dev/null)" || return 1
+  sock="$dir/broker.sock"
+  if [[ ${#sock} -ge 100 ]]; then
+    rmdir "$dir" 2>/dev/null || true
+    return 1
+  fi
+  node "$CREW_BROKER_SCRIPT" serve --endpoint "unix:$sock" --cwd "$cwd" \
+    --pid-file "$dir/broker.pid" >"$dir/broker.log" 2>&1 &
+  pid=$!
+  CREW_CLEANUP_PID="$pid" CREW_CLEANUP_DIR="$dir" CREW_CLEANUP_START="$(crew_pid_starttime "$pid")"
+  disown "$pid" 2>/dev/null || true
+  while [[ $i -lt 100 ]]; do
+    [[ -S "$sock" ]] && break
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if [[ ! -S "$sock" ]]; then
+    crew_kill_broker "$pid" "$dir" "$CREW_CLEANUP_START"
+    CREW_CLEANUP_PID="" CREW_CLEANUP_DIR="" CREW_CLEANUP_START=""
+    return 1
+  fi
+  CREW_SPAWNED_ENDPOINT="unix:$sock" CREW_SPAWNED_PID="$pid" CREW_SPAWNED_DIR="$dir"
+  CREW_SPAWNED_START="$CREW_CLEANUP_START"
+  return 0
+}
+
+# Publish ownership atomically. A truncating write can be read half-formed by a
+# concurrent sweep; a rename cannot.
+crew_publish_sidecar() {
+  local job="$1" side tmp
+  side="$(crew_sidecar "$job")"
+  mkdir -p "$CREW_ARCHIVE_DIR" || return 1
+  tmp="$side.tmp.$$"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$CREW_SPAWNED_ENDPOINT" "$CREW_SPAWNED_PID" \
+    "$CREW_SPAWNED_DIR" "$PWD" "$CREW_SPAWNED_START" >"$tmp" || return 1
+  mv -f "$tmp" "$side" || { rm -f "$tmp" 2>/dev/null || true; return 1; }
+  return 0
+}
+
+# --resume-last resolves "newest job in this cwd" at the moment it runs, so a
+# launch landing between redirect's check and its relaunch makes redirect resume
+# the wrong thread - after it has already cancelled the intended one. A per-cwd
+# lock closes that window for the calls that can create the race.
+#
+# Deliberately fails OPEN. A fleet running many jobs in one directory would be
+# far worse off deadlocked than racy, so a missing flock or a wait timeout warns
+# and proceeds instead of blocking the launch.
+crew_lock_acquire() {
+  command -v flock >/dev/null 2>&1 || return 0
+  mkdir -p "$CREW_ARCHIVE_DIR" 2>/dev/null || return 0
+  local key
+  # md5sum is GNU; darwin ships `md5`. cksum is the last resort so the lock is
+  # still per-cwd everywhere rather than silently skipped on a whole platform.
+  key="$(printf '%s' "$PWD" | { md5sum 2>/dev/null || md5 2>/dev/null || cksum 2>/dev/null; } \
+    | tr -cd '[:alnum:]' | cut -c1-16)" || return 0
+  [[ -n "$key" ]] || return 0
+  exec 9>"$CREW_ARCHIVE_DIR/.launch-$key.lock" 2>/dev/null || return 0
+  if ! flock -w "${CREW_CODEX_LOCK_WAIT:-60}" 9 2>/dev/null; then
+    echo "crew-codex: timed out waiting for the per-cwd launch lock; proceeding without it (a concurrent launch could race a redirect)" >&2
+  fi
+  return 0
+}
+
+crew_lock_release() {
+  exec 9>&- 2>/dev/null || true
+}
+
+# One remover, so a sidecar and its strike file never drift apart.
+crew_drop_sidecar() {
+  rm -f "$(crew_sidecar "$1")" "$(crew_sidecar "$1").unreadable" 2>/dev/null || true
+}
+
+# The companion keys job state to a hash of the shell's cwd, and Claude Code
+# resets the cwd between Bash calls, so a job launched from one directory is
+# invisible to a call made from another. Keying stays as it is; we just refuse
+# to report a live job as gone. On "not found", probe the sibling state
+# directories under the same parent and name the cwd to re-run from.
+crew_cwd_hint() {
+  local job="$1" f jcwd
+  for f in "$CLAUDE_PLUGIN_DATA"/state/*/jobs/"$job".json; do
+    [[ -f "$f" ]] || continue
+    jcwd="$(node -e '
+      const fs = require("fs");
+      try {
+        const j = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        process.stdout.write(String((j.request && j.request.cwd) || j.workspaceRoot || ""));
+      } catch (e) {}
+    ' "$f" 2>/dev/null || true)"
+    if [[ "$jcwd" == "$PWD" ]]; then continue; fi
+    if [[ -n "$jcwd" ]]; then
+      printf '; job exists under cwd %s; re-run from that directory' "$jcwd"
+    else
+      printf '; job exists in state dir %s; re-run from the directory it was launched from' \
+        "$(dirname "$(dirname "$f")")"
+    fi
+    return 0
+  done
+  return 0
+}
+
+# One read of a job's state file, as 0x1f-separated fields:
+#   FOUND|MISSING|UNREADABLE, status, threadId, cwd, model, effort, write,
+#   newest-or-id, turnId, pid
+#
+# NOT tab-separated. Tab is IFS whitespace, so bash collapses runs of it and an
+# empty column silently shifts every later field left: a review job has no
+# model or effort, which used to land the turn id in the wrong variable. 0x1f
+# is not IFS whitespace, so empty fields survive.
+#
+# UNREADABLE means the job file exists but did not parse, which happens while
+# the companion rewrites it in place. It is deliberately distinct from MISSING
+# so the reaper never mistakes a transient read for a dead job.
+crew_job_meta() {
+  node -e '
+    const fs = require("fs"), path = require("path");
+    const [dataDir, jobId] = process.argv.slice(1);
+    const stateRoot = path.join(dataDir, "state");
+    const read = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return null; } };
+    const SEP = "\u001f";
+    let dirs = [];
+    let sawUnreadable = false;
+    try { dirs = fs.readdirSync(stateRoot); } catch { }
+    for (const d of dirs) {
+      const jobsDir = path.join(stateRoot, d, "jobs");
+      const file = path.join(jobsDir, `${jobId}.json`);
+      if (!fs.existsSync(file)) continue;
+      const job = read(file);
+      if (!job) { sawUnreadable = true; continue; }
+      const cwd = (job.request && job.request.cwd) || job.workspaceRoot || "";
+      let newest = jobId, newestAt = "";
+      for (const f of fs.readdirSync(jobsDir)) {
+        if (!f.endsWith(".json")) continue;
+        const other = read(path.join(jobsDir, f));
+        if (!other || !String(other.id || "").startsWith("task-")) continue;
+        const at = String(other.createdAt || "");
+        if (at > newestAt) { newestAt = at; newest = other.id; }
+      }
+      const req = job.request || {};
+      process.stdout.write([
+        "FOUND", job.status || "?", job.threadId || "", cwd,
+        req.model || "", req.effort || "", req.write ? "true" : "false",
+        newest === jobId ? "newest" : newest, job.turnId || "", String(job.pid || "")
+      ].join(SEP));
+      process.exit(0);
+    }
+    process.stdout.write((sawUnreadable ? "UNREADABLE" : "MISSING") + SEP.repeat(9));
+  ' "$CLAUDE_PLUGIN_DATA" "$1" 2>/dev/null || printf 'UNREADABLE\037\037\037\037\037\037\037\037\037'
+}
+
+# A redirect cancels the old job and resumes its Codex thread under a NEW job
+# id. An agent still awaiting the old id would otherwise read that cancellation
+# as failure, so name the successor: same threadId, created later.
+crew_successor() {
+  node -e '
+    const fs = require("fs"), path = require("path");
+    const [dataDir, jobId] = process.argv.slice(1);
+    const stateRoot = path.join(dataDir, "state");
+    const read = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return null; } };
+    let dirs = [];
+    try { dirs = fs.readdirSync(stateRoot); } catch { }
+    for (const d of dirs) {
+      const jobsDir = path.join(stateRoot, d, "jobs");
+      const self = read(path.join(jobsDir, `${jobId}.json`));
+      if (!self) continue;
+      if (!self.threadId) process.exit(0);
+      const mine = String(self.createdAt || "");
+      let best = "", bestAt = "";
+      for (const f of fs.readdirSync(jobsDir)) {
+        if (!f.endsWith(".json") || f === `${jobId}.json`) continue;
+        const other = read(path.join(jobsDir, f));
+        if (!other || other.threadId !== self.threadId) continue;
+        const at = String(other.createdAt || "");
+        if (at > mine && at > bestAt) { bestAt = at; best = other.id; }
+      }
+      if (best) process.stdout.write(best);
+      process.exit(0);
+    }
+  ' "$CLAUDE_PLUGIN_DATA" "$1" 2>/dev/null || true
+}
+
+# ---- patch: teach the installed codex plugin to accept a queued message -----
+# Every user installs their own copy of codex@openai-codex, at whatever version
+# they happen to be on, so we carry the fix as a patch and apply it to the tree
+# we resolve rather than pinning a version. Context matching (fuzz 3) absorbs
+# the line drift between plugin releases; a release that moves the code out from
+# under the patch fails loudly instead of half-applying.
+CREW_PATCH_FILE="${CREW_CODEX_PATCH_FILE:-$CREW_ROOT/patches/codex-plugin-queue-passthrough.patch}"
+
+crew_patch_state() {
+  # applied | appliable | stale
+  if patch -p1 -R --dry-run -s -F3 -d "$COMPANION_ROOT" <"$CREW_PATCH_FILE" >/dev/null 2>&1; then
+    echo applied
+  elif patch -p1 --dry-run -s -F3 -d "$COMPANION_ROOT" <"$CREW_PATCH_FILE" >/dev/null 2>&1; then
+    echo appliable
+  else
+    echo stale
+  fi
+}
 
 # ---- the archive sanitizer, shared by `await` and `sanitize-archive` ------
 # ONE copy on purpose. When this lived inline in the await path only, the
@@ -693,6 +1117,358 @@ if [[ "${1:-}" == "--resolve" ]]; then
   exit 0
 fi
 
+if [[ "${1:-}" == "patch" ]]; then
+  shift
+  ACTION="status"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --apply) ACTION="apply"; shift ;;
+      --revert) ACTION="revert"; shift ;;
+      --status) ACTION="status"; shift ;;
+      *) shift ;;
+    esac
+  done
+
+  if ! command -v patch >/dev/null 2>&1; then
+    echo "crew-codex: GNU patch is required to manage the codex plugin patch" >&2
+    exit 1
+  fi
+  if [[ ! -f "$CREW_PATCH_FILE" ]]; then
+    echo "crew-codex: patch file missing at $CREW_PATCH_FILE" >&2
+    exit 1
+  fi
+
+  PLUGIN_VERSION="$(basename "$COMPANION_ROOT")"
+  state="$(crew_patch_state)"
+
+  case "$ACTION" in
+    status)
+      case "$state" in
+        applied)   echo "PATCHED | codex plugin $PLUGIN_VERSION at $COMPANION_ROOT"; exit 0 ;;
+        appliable) echo "UNPATCHED | codex plugin $PLUGIN_VERSION applies cleanly; run: crew-codex patch --apply"; exit 10 ;;
+        *)         echo "crew-codex: patch does not apply to codex plugin $PLUGIN_VERSION at $COMPANION_ROOT — the upstream code moved; re-cut patches/codex-plugin-queue-passthrough.patch" >&2; exit 1 ;;
+      esac
+      ;;
+    apply)
+      if [[ "$state" == "applied" ]]; then
+        echo "PATCHED | codex plugin $PLUGIN_VERSION was already patched; nothing to do"
+        exit 0
+      fi
+      if [[ "$state" != "appliable" ]]; then
+        echo "crew-codex: patch does not apply to codex plugin $PLUGIN_VERSION at $COMPANION_ROOT — refusing to half-apply; re-cut the patch against this version" >&2
+        exit 1
+      fi
+      if ! patch -p1 -s -F3 -b --suffix=.crew-orig -d "$COMPANION_ROOT" <"$CREW_PATCH_FILE"; then
+        echo "crew-codex: applying the patch failed partway; restore from the .crew-orig backups in $COMPANION_ROOT" >&2
+        exit 1
+      fi
+      if [[ "$(crew_patch_state)" != "applied" ]]; then
+        echo "crew-codex: patch reported success but verification failed; inspect $COMPANION_ROOT" >&2
+        exit 1
+      fi
+      echo "PATCHED | codex plugin $PLUGIN_VERSION | backups: *.crew-orig | brokers already running keep the old code until their job ends"
+      exit 0
+      ;;
+    revert)
+      if [[ "$state" != "applied" ]]; then
+        echo "UNPATCHED | codex plugin $PLUGIN_VERSION is not patched; nothing to revert"
+        exit 0
+      fi
+      if ! patch -p1 -R -s -F3 -d "$COMPANION_ROOT" <"$CREW_PATCH_FILE"; then
+        echo "crew-codex: reverting the patch failed; restore from the .crew-orig backups in $COMPANION_ROOT" >&2
+        exit 1
+      fi
+      echo "UNPATCHED | codex plugin $PLUGIN_VERSION restored"
+      exit 0
+      ;;
+  esac
+fi
+
+# ---- steer: interject into the turn a job is running right now --------------
+# The primary way to correct a job in flight. Unlike interrupt, this stops
+# nothing: the tool call in progress finishes, and the model reads the message
+# at its next step, so it can change course before it has done all the wrong
+# work. Verified: a job told to stop at file 9 of 20 read the message and
+# stopped at 16, reporting "I had created exactly 16 iota files when I read
+# your message." Requires the codex plugin patch (crew-codex patch --apply).
+if [[ "${1:-}" == "steer" ]]; then
+  shift
+  JOB_ID="${1:-}"
+  if [[ -z "$JOB_ID" || "$JOB_ID" == --* ]]; then
+    echo "crew-codex: steer needs a job id — usage: crew-codex steer <job-id> \"<message>\"" >&2
+    exit 2
+  fi
+  shift
+  MESSAGE="$*"
+  if [[ -z "$MESSAGE" ]]; then
+    echo "crew-codex: steer needs the message text — usage: crew-codex steer <job-id> \"<message>\"" >&2
+    exit 2
+  fi
+
+  # Name EVERY field and keep a trailing catch-all: `read` hands the unconsumed
+  # remainder, tab separators included, to its last variable, so a short list
+  # silently glues later fields onto it.
+  IFS=$'\037' read -r jfound jstatus jthread jcwd _m _e _w _n jturn _jpid _rest <<<"$(crew_job_meta "$JOB_ID")"
+
+  if [[ "$jfound" != "FOUND" ]]; then
+    echo "crew-codex: job $JOB_ID not found in codex state (pruned, session-cleaned, or wrong id)$(crew_cwd_hint "$JOB_ID")" >&2
+    exit 2
+  fi
+  if [[ -n "$jcwd" && "$jcwd" != "$PWD" ]]; then
+    echo "crew-codex: job $JOB_ID belongs to cwd $jcwd; re-run steer from that directory" >&2
+    exit 2
+  fi
+  if [[ "$jstatus" != "running" ]]; then
+    echo "crew-codex: job $JOB_ID is $jstatus, so there is no live turn to steer; use crew-codex queue to leave a message for its next turn" >&2
+    exit 2
+  fi
+  if [[ -z "$jthread" || -z "$jturn" ]]; then
+    echo "crew-codex: job $JOB_ID has not started a turn yet; try again in a moment" >&2
+    exit 2
+  fi
+
+  steer_ep="$(crew_job_endpoint "$JOB_ID")"
+  if [[ -n "$steer_ep" ]]; then
+    export CODEX_COMPANION_APP_SERVER_ENDPOINT="$steer_ep"
+  else
+    echo "crew-codex: no broker recorded for $JOB_ID (launched before per-job brokers, or by another tool); it may be running on a private app-server that nothing can reach" >&2
+  fi
+
+  src=0
+  steered="$(printf '%s' "$MESSAGE" | node "$CREW_ROOT/lib/appserver-cli.mjs" \
+    steer "$COMPANION_ROOT" "$PWD" "$jthread" "$jturn" 2>&1)" || src=$?
+  if [[ $src -ne 0 ]]; then
+    echo "crew-codex: steering failed: $steered" >&2
+    if grep -qiE "busy|experimentalApi" <<<"$steered"; then
+      echo "crew-codex: that is the unpatched codex plugin refusing to steer — run: crew-codex patch --apply" >&2
+    elif grep -qiE "no active turn|expected active turn|ExpectedTurnMismatch|not steerable" <<<"$steered"; then
+      echo "crew-codex: the turn ended or moved on; use crew-codex queue to leave a message for the next one" >&2
+    fi
+    exit 1
+  fi
+
+  echo "STEERED $JOB_ID | thread $jthread | turn $jturn | the agent reads it at its next step; its reply lands in this job's own result"
+  exit 0
+fi
+
+# ---- queue: say something to a running job without stopping it --------------
+# The non-destructive way to change a job's course. The message waits; the
+# agent reads it when it finishes the turn it is already running, so a job
+# halfway through a multi-file edit lands that edit first. This is how a person
+# redirects an agent, and it is the default: `redirect` interrupts, and an
+# interrupt mid-edit leaves the tree half-written.
+# Requires the codex plugin patch (crew-codex patch --apply).
+if [[ "${1:-}" == "queue" ]]; then
+  shift
+  JOB_ID="${1:-}"
+  if [[ -z "$JOB_ID" || "$JOB_ID" == --* ]]; then
+    echo "crew-codex: queue needs a job id — usage: crew-codex queue <job-id> \"<message>\"" >&2
+    exit 2
+  fi
+  shift
+  MESSAGE="$*"
+  if [[ -z "$MESSAGE" ]]; then
+    echo "crew-codex: queue needs the message text — usage: crew-codex queue <job-id> \"<message>\"" >&2
+    exit 2
+  fi
+
+  IFS=$'\037' read -r jfound jstatus jthread jcwd _jmodel _jeffort _jwrite _jnewest _jturn _jpid _rest <<<"$(crew_job_meta "$JOB_ID")"
+
+  if [[ "$jfound" != "FOUND" ]]; then
+    echo "crew-codex: job $JOB_ID not found in codex state (pruned, session-cleaned, or wrong id)$(crew_cwd_hint "$JOB_ID")" >&2
+    exit 2
+  fi
+  if [[ -n "$jcwd" && "$jcwd" != "$PWD" ]]; then
+    echo "crew-codex: job $JOB_ID belongs to cwd $jcwd; re-run queue from that directory" >&2
+    exit 2
+  fi
+  if [[ -z "$jthread" ]]; then
+    echo "crew-codex: job $JOB_ID has no Codex thread yet; wait for it to start before queueing" >&2
+    exit 2
+  fi
+  if [[ "$jstatus" != "running" && "$jstatus" != "queued" ]]; then
+    echo "crew-codex: job $JOB_ID is $jstatus, so a queued message would never be read; resume the thread instead (crew-codex redirect, or task --resume-last)" >&2
+    exit 2
+  fi
+
+  queue_ep="$(crew_job_endpoint "$JOB_ID")"
+  if [[ -n "$queue_ep" ]]; then
+    export CODEX_COMPANION_APP_SERVER_ENDPOINT="$queue_ep"
+  else
+    echo "crew-codex: no broker recorded for $JOB_ID (launched before per-job brokers, or by another tool); it may be running on a private app-server that nothing can reach" >&2
+  fi
+
+  mkdir -p "$CREW_ARCHIVE_DIR"
+  seq_file="$CREW_ARCHIVE_DIR/$JOB_ID.queued.txt"
+  next=1
+  if [[ -f "$seq_file" ]]; then
+    next=$(( $(wc -l <"$seq_file") + 1 ))
+  fi
+  CLIENT_ID="crew-$JOB_ID-$next"
+
+  qrc=0
+  submission="$(printf '%s' "$MESSAGE" | node "$CREW_ROOT/lib/appserver-cli.mjs" \
+    queue-add "$COMPANION_ROOT" "$PWD" "$jthread" "$CLIENT_ID" 2>&1)" || qrc=$?
+  if [[ $qrc -ne 0 ]]; then
+    echo "crew-codex: queueing failed: $submission" >&2
+    if grep -qiE "busy|experimentalApi" <<<"$submission"; then
+      echo "crew-codex: that is the unpatched codex plugin refusing a queued message — run: crew-codex patch --apply" >&2
+    fi
+    exit 1
+  fi
+
+  # ⚠️ The MESSAGE never goes in. Upstream appends it verbatim, but $CREW_ARCHIVE_DIR
+  # is the directory built to OUTLIVE the vendor's session cleanup — the same
+  # archive .dispatch.json redacts positionals out of and the sanitizer scrubs
+  # .meta.json / .result.txt for. A queued message is free-form operator text and
+  # carries exactly what those two redact: incident logs, hostnames, credentials.
+  # Only the id and the SHAPE are recorded. Nothing downstream needs the text:
+  # `await` reads this file for its LINE COUNT (how many replies to expect) and
+  # matches replies by client id, never by message body.
+  printf '%s\t<redacted: %s chars>\n' "$CLIENT_ID" "${#MESSAGE}" >>"$seq_file"
+  echo "QUEUED $JOB_ID | thread $jthread | id $CLIENT_ID | the agent reads it when its current turn ends; keep awaiting"
+  exit 0
+fi
+
+# ---- redirect: put a running job onto new instructions, keeping its thread --
+# Codex itself can steer a turn in flight (turn/steer), but the codex plugin's
+# broker forwards exactly ONE method while a turn streams: turn/interrupt
+# (app-server-broker.mjs). So mid-turn steering is not reachable from here, and
+# `codex queue` writes to a queue a crew job never drains. What IS reachable is
+# interrupt-then-resume: cancel stops the live turn, and --resume-last picks the
+# same Codex thread back up with the work so far still in context. Verified: a
+# job cancelled after 4 of 30 files resumed knowing it had made exactly 4.
+if [[ "${1:-}" == "redirect" ]]; then
+  shift
+  JOB_ID="${1:-}"
+  if [[ -z "$JOB_ID" || "$JOB_ID" == --* ]]; then
+    echo "crew-codex: redirect needs a job id — usage: crew-codex redirect <job-id> [--model <m>] [--effort <e>] \"<instruction>\"" >&2
+    exit 2
+  fi
+  shift
+
+  R_MODEL="" R_EFFORT="" INSTRUCTION=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --model) R_MODEL="${2:-}"; shift 2 ;;
+      --effort) R_EFFORT="${2:-}"; shift 2 ;;
+      *) INSTRUCTION="${INSTRUCTION:+$INSTRUCTION }$1"; shift ;;
+    esac
+  done
+
+  if [[ -z "$INSTRUCTION" ]]; then
+    echo "crew-codex: redirect needs the new instruction text — usage: crew-codex redirect <job-id> \"<instruction>\"" >&2
+    exit 2
+  fi
+
+  # --resume-last resumes the newest task thread for THIS cwd, so the job being
+  # redirected has to be that newest job or we would silently steer another one.
+  IFS=$'\037' read -r jfound jstatus jthread jcwd jmodel jeffort jwrite jnewest _jturn _jpid _rest <<<"$(crew_job_meta "$JOB_ID")"
+
+  if [[ "$jfound" != "FOUND" ]]; then
+    echo "crew-codex: job $JOB_ID not found in codex state (pruned, session-cleaned, or wrong id)$(crew_cwd_hint "$JOB_ID")" >&2
+    exit 2
+  fi
+  if [[ -n "$jcwd" && "$jcwd" != "$PWD" ]]; then
+    echo "crew-codex: job $JOB_ID belongs to cwd $jcwd; re-run redirect from that directory so --resume-last targets its thread" >&2
+    exit 2
+  fi
+  if [[ "$jnewest" != "newest" ]]; then
+    echo "crew-codex: job $JOB_ID is not the newest task job for this cwd ($jnewest is); redirect resumes the newest thread, so cancel and re-dispatch explicitly instead" >&2
+    exit 2
+  fi
+
+  # Order matters. Cancelling destroys the old turn, so nothing irreversible
+  # happens until the successor's broker exists: allocating it afterwards meant
+  # an allocation failure left the turn destroyed AND the successor on an
+  # unreachable private app-server, the exact failure this release prevents.
+  old_ep="$(crew_job_endpoint "$JOB_ID")"
+  RED_PID="" RED_DIR="" RED_EP="" RED_START=""
+  if [[ -z "${CREW_CODEX_NO_JOB_BROKER:-}" ]]; then
+    if crew_spawn_job_broker "$PWD"; then
+      RED_EP="$CREW_SPAWNED_ENDPOINT" RED_PID="$CREW_SPAWNED_PID"
+      RED_DIR="$CREW_SPAWNED_DIR" RED_START="$CREW_SPAWNED_START"
+      crew_arm_cleanup
+    else
+      echo "crew-codex: could not start a broker for the successor; leaving $JOB_ID running rather than cancelling it and relaunching somewhere unreachable" >&2
+      exit 1
+    fi
+  fi
+
+  # Hold the per-cwd lock from here until the successor exists, so no launch can
+  # slip in and become "newest" between the check and the relaunch.
+  crew_lock_acquire
+
+  # Re-check under the lock, right before the destructive step.
+  IFS=$'\037' read -r _rf _rs _rt _rc _rm _re _rw rnewest _rturn _rpid _rrest <<<"$(crew_job_meta "$JOB_ID")"
+  if [[ "$rnewest" != "newest" ]]; then
+    echo "crew-codex: $JOB_ID stopped being the newest job for this cwd ($rnewest launched since); not cancelling it, re-run the redirect against the newest job" >&2
+    crew_lock_release
+    exit 2
+  fi
+
+  if [[ "$jstatus" == "running" || "$jstatus" == "queued" ]]; then
+    crc=0
+    cancel_out="$(CODEX_COMPANION_APP_SERVER_ENDPOINT="${old_ep:-${CODEX_COMPANION_APP_SERVER_ENDPOINT:-}}" \
+      node "$COMPANION" cancel "$JOB_ID" 2>&1)" || crc=$?
+    if [[ $crc -ne 0 ]]; then
+      echo "crew-codex: cancelling $JOB_ID failed, so the old turn may still be running; refusing to start a second one on the same thread" >&2
+      echo "$cancel_out" >&2
+      exit 1
+    fi
+    echo "crew-codex: interrupted $JOB_ID (was $jstatus)"
+  else
+    echo "crew-codex: $JOB_ID was already $jstatus; resuming its thread"
+  fi
+
+  # The old job is finished, so retire its broker and give the successor its
+  # own. Without this the resumed job falls back to a private app-server and is
+  # unreachable, which is the whole failure this release exists to fix.
+  old_side="$(crew_sidecar "$JOB_ID")"
+  if [[ -f "$old_side" ]]; then
+    IFS=$'\t' read -r _oe obpid obdir _ocwd obstart _orest <"$old_side" || true
+    crew_kill_broker "$obpid" "$obdir" "$obstart"
+    crew_drop_sidecar "$JOB_ID"
+  fi
+  unset CODEX_COMPANION_APP_SERVER_ENDPOINT
+  if [[ -n "$RED_EP" ]]; then
+    export CODEX_COMPANION_APP_SERVER_ENDPOINT="$RED_EP"
+  fi
+
+  relaunch=(task --background --resume-last)
+  [[ "$jwrite" == "true" ]] && relaunch+=(--write)
+  use_model="${R_MODEL:-$jmodel}"
+  use_effort="${R_EFFORT:-$jeffort}"
+  [[ -n "$use_model" ]] && relaunch+=(--model "$use_model")
+  [[ -n "$use_effort" ]] && relaunch+=(--effort "$use_effort")
+  relaunch+=("$INSTRUCTION")
+
+  rrc=0
+  relaunch_out="$(node "$COMPANION" "${relaunch[@]}" 2>&1)" || rrc=$?
+  echo "$relaunch_out"
+  if [[ $rrc -ne 0 ]]; then
+    echo "crew-codex: redirect relaunch failed (exit $rrc); the thread is intact — resume it manually with --resume-last" >&2
+    exit $rrc
+  fi
+
+  NEW_ID="$(grep -oE '\b(task|review)-[a-z0-9]+-[a-z0-9]+\b' <<<"$relaunch_out" | head -1 || true)"
+  if [[ -n "$RED_PID" ]]; then
+    if [[ -n "$NEW_ID" ]]; then
+      if ! crew_publish_sidecar "$NEW_ID"; then
+        # The successor is already running; killing its broker would strand it.
+        echo "crew-codex: successor $NEW_ID started but its broker could not be recorded; steer/queue will not route to it (endpoint $RED_EP)" >&2
+      fi
+      RED_PID="" CREW_CLEANUP_PID="" CREW_CLEANUP_DIR="" CREW_CLEANUP_START=""
+    else
+      crew_kill_broker "$RED_PID" "$RED_DIR" "$RED_START"
+      RED_PID="" CREW_CLEANUP_PID="" CREW_CLEANUP_DIR="" CREW_CLEANUP_START=""
+    fi
+  fi
+  crew_lock_release
+  echo "REDIRECTED $JOB_ID -> ${NEW_ID:-<unknown>} | thread ${jthread:-<pending>} | await the NEW id"
+  exit 0
+fi
+
 # ---- await: poll a detached job toward terminal state, token-free ----------
 # Claude Code's Bash tool caps a single call at 600s, but codex jobs run for
 # hours. Each await call blocks up to --for seconds (default 540, safely under
@@ -701,7 +1477,10 @@ fi
 # model tokens while it runs. Exit: 0 completed, 1 failed/cancelled,
 # 2 job not found, 3 stale (process died silently), 4 hung (process alive but
 # the job log has not moved for CREW_CODEX_HUNG_SECS — a lost model turn),
-# 10 still running (call again).
+# 5 superseded by a redirect (the line names the successor), 10 still running
+# (call again).
+# ⚠️ 5, not upstream's 4, for SUPERSEDED — 4 has meant HUNG in this fork since
+# v0.4.2 and downstream agents key a recovery protocol to it. See README.
 if [[ "${1:-}" == "await" ]]; then
   shift
   JOB_ID="${1:-}"
@@ -729,6 +1508,11 @@ if [[ "${1:-}" == "await" ]]; then
   # before any destructive recovery.
   HUNG_SECS="${CREW_CODEX_HUNG_SECS:-900}"
   HUNG_POLL_SECS="${CREW_CODEX_HUNG_POLL_SECS:-30}"
+
+  # Talk to the broker this job actually runs on, not whichever one the cwd's
+  # broker.json happens to name right now.
+  await_ep="$(crew_job_endpoint "$JOB_ID")"
+  [[ -n "$await_ep" ]] && export CODEX_COMPANION_APP_SERVER_ENDPOINT="$await_ep"
 
   deadline=$(( $(date +%s) + FOR_SECS ))
   missing_streak=0
@@ -774,6 +1558,57 @@ print("\t".join([
         trap 'rm -f "$CREW_RAW_RESULT"' EXIT HUP INT TERM
         if [[ -n "$CREW_RAW_RESULT" ]]; then
           node "$COMPANION" result "$JOB_ID" >"$CREW_RAW_RESULT" 2>/dev/null || true
+        fi
+        # ---- queued follow-ups, captured BEFORE the sanitizer runs ---------
+        # The companion closes a job at its FIRST turn/completed, so a turn
+        # started from a queued message finishes outside the job record and its
+        # answer would be lost. Upstream appends it to the ARCHIVED .result.txt
+        # after the fact; here it goes into the PRIVATE staged render instead,
+        # and for two reasons that both matter:
+        #   1. it is raw model output, so it must pass through the same
+        #      sanitizer as the rest of the result rather than around it, and
+        #   2. the sentinel is a SHA-256 of the archived .result.txt — text
+        #      appended after that hash is written makes every later
+        #      crew_sentinel_ok call report the file as unrecognized, so a
+        #      transient sanitizer failure would then destroy a good result.
+        # Appending here keeps one sanitize pass and one hash over the whole
+        # thing.
+        if [[ -n "$CREW_RAW_RESULT" && -s "$CREW_ARCHIVE_DIR/$JOB_ID.queued.txt" ]]; then
+          # Name every field plus a trailing catch-all: `read` hands the
+          # unconsumed remainder to its last variable, so a short list silently
+          # glues later fields onto it (the v0.6.1 bug, upstream).
+          IFS=$'\037' read -r _qf _qs qthread _qcwd _qm _qe _qw _qn _qturn _qpid _qrest \
+            <<<"$(crew_job_meta "$JOB_ID")"
+          if [[ -n "$qthread" ]]; then
+            # The job reports terminal the moment its FIRST turn ends, which is
+            # before the queued turn has run. Wait for the replies we know were
+            # queued rather than racing them, but stay bounded: a queued turn
+            # can be lost if the worker tears down first.
+            expected=$(wc -l <"$CREW_ARCHIVE_DIR/$JOB_ID.queued.txt")
+            grace_deadline=$(( $(date +%s) + ${CREW_CODEX_QUEUE_GRACE_SECS:-180} ))
+            followups=""
+            while :; do
+              followups="$(node "$CREW_ROOT/lib/appserver-cli.mjs" followups \
+                "$COMPANION_ROOT" "$PWD" "$qthread" "crew-$JOB_ID-" 2>/dev/null || true)"
+              got=$(grep -c "^\[crew-$JOB_ID-" <<<"$followups" || true)
+              [[ "$got" -ge "$expected" ]] && break
+              if [[ $(date +%s) -ge $grace_deadline ]]; then
+                # Out of patience: take whatever the turn has said so far rather
+                # than reporting nothing, and let the count show it is partial.
+                followups="$(node "$CREW_ROOT/lib/appserver-cli.mjs" followups --any-phase \
+                  "$COMPANION_ROOT" "$PWD" "$qthread" "crew-$JOB_ID-" 2>/dev/null || true)"
+                got=$(grep -c "^\[crew-$JOB_ID-" <<<"$followups" || true)
+                break
+              fi
+              sleep "${CREW_CODEX_POLL_SECS:-5}"
+            done
+            if [[ -n "$followups" ]]; then
+              printf '\n--- queued follow-ups ---\n%s\n' "$followups" >>"$CREW_RAW_RESULT"
+              echo "QUEUED-REPLIES $got/$expected captured | appended to $CREW_ARCHIVE_DIR/$JOB_ID.result.txt"
+            else
+              echo "QUEUED-REPLIES 0/$expected | the queued turn did not run before the job's runtime went away; resume the thread to deliver it" >&2
+            fi
+          fi
         fi
         # ---- .meta.json sanitization: a DURABLE prompt leak, not a nicety --
         # `result --json` hands back the companion's storedJob verbatim, and a
@@ -826,6 +1661,37 @@ print("\t".join([
         fi
         if [[ -f "$jlog" ]]; then
           cp -f "$jlog" "$CREW_ARCHIVE_DIR/$JOB_ID.log" 2>/dev/null || true
+        fi
+        # ---- superseded by a redirect ---------------------------------------
+        # A redirect cancels the old job and resumes its Codex thread under a
+        # NEW id. An agent still awaiting the old id would otherwise read that
+        # cancellation as a failure, so name the successor instead.
+        #
+        # ⚠️ EXIT 5, NOT 4. Upstream returns 4 here. In this fork 4 has meant
+        # HUNG since v0.4.2 (pid alive, job log frozen), and the devops
+        # codex-adversary agent keys a confirm-then-recover protocol to it.
+        # Taking 4 for SUPERSEDED would make an agent running against a
+        # still-installed older codex-crew read a real hang as a redirect and
+        # chase a successor id that does not exist — silent and destructive.
+        # This divergence from upstream is deliberate; see README § Exit codes.
+        if [[ "$jstatus" == "cancelled" ]]; then
+          successor="$(crew_successor "$JOB_ID")"
+          if [[ -n "$successor" ]]; then
+            echo "SUPERSEDED $JOB_ID -> $successor | redirected onto the same Codex thread; await the NEW id"
+            exit 5
+          fi
+        fi
+        # Terminal: this job's broker has nothing left to serve, and each one
+        # holds a codex app-server, so it is retired here rather than left to a
+        # later sweep. Killing it is safe in a way the vendor-broker sweep is
+        # not — we spawned this one, and the sidecar carries the pid AND its
+        # start time, so crew_kill_broker can prove it is signalling the same
+        # process it started rather than a stranger that inherited the pid.
+        side="$(crew_sidecar "$JOB_ID")"
+        if [[ -f "$side" ]]; then
+          IFS=$'\t' read -r _ep bpid bdir _bcwd bstart _brest <"$side" || true
+          crew_kill_broker "$bpid" "$bdir" "$bstart"
+          crew_drop_sidecar "$JOB_ID"
         fi
         echo "DONE $jstatus | ${jelapsed} | archived: $CREW_ARCHIVE_DIR/$JOB_ID.result.txt"
         if [[ "$jstatus" == "completed" ]]; then exit 0; fi
@@ -1208,6 +2074,30 @@ if [[ "${1:-}" == "reap" ]]; then
     if [[ "$REAP_EXIT" -eq 0 || "$rc" -lt "$REAP_EXIT" ]]; then REAP_EXIT="$rc"; fi
     return 0
   }
+
+  # ---- crew-OWNED per-job brokers: the one sweep that may actually kill ----
+  # Everything else in `reap` is report-only, and deliberately so (see the long
+  # note above the --brokers block). This sweep is different in kind, not in
+  # nerve: crew-codex STARTED these brokers, recorded each one in a sidecar
+  # carrying its pid AND its start time, and crew_kill_broker refuses to signal
+  # a pid whose start time no longer matches. So there is no "might belong to
+  # another session" case to be careful about — an unmatched pid is a stranger
+  # and is left alone, files cleaned, no signal sent. A broker holds a whole
+  # codex app-server, so NOT retiring these is the expensive failure.
+  # --dry-run skips it: it is the one part of reap that changes anything.
+  # ⚠️ SILENT in the default mode, on purpose. `reap`'s default output is a
+  # fixed contract — the opt-in sweeps must add lines, the default must not —
+  # and this retirement is not a user-facing action anyway: it is the same
+  # automatic housekeeping that already runs before every launch and on every
+  # terminal `await`. The COUNT is reported under --brokers, beside the vendor
+  # broker survey, where broker output belongs.
+  BROKERS_HELD=0
+  if [[ "$DRY" -eq 0 ]]; then
+    crew_reap_brokers || true
+  fi
+  for f in "$CREW_ARCHIVE_DIR"/*.broker; do
+    [[ -f "$f" ]] && BROKERS_HELD=$((BROKERS_HELD + 1))
+  done
 
   rc=0
   REAP_LOG_AGE="${CREW_CODEX_REAP_LOG_AGE:-3600}" \
@@ -1852,6 +2742,17 @@ PY
   #     ABSENT (safe); every other OSError means UNREADABLE (not safe).
   if [[ "$SWEEP_BROKERS" -eq 1 ]]; then
     echo
+    # Two different populations, and the difference is ownership — say so before
+    # the REPORT ONLY line, or it reads as though nothing was retired at all.
+    # crew-OWNED brokers (recorded in a sidecar carrying pid AND start time) are
+    # retired automatically, here and on every launch and terminal await:
+    # crew-codex started them, so it can prove identity before signalling.
+    # Everything below is about brokers we did NOT start and cannot prove idle.
+    if [[ "$DRY" -eq 1 ]]; then
+      echo "crew-owned job brokers: $BROKERS_HELD recorded (--dry-run: none retired)"
+    else
+      echo "crew-owned job brokers: $BROKERS_HELD still held by running jobs (finished ones were retired)"
+    fi
     echo "reap --brokers: REPORT ONLY — this sweep kills no process and deletes no socket dir."
     if [[ "$DRY" -eq 1 ]]; then
       echo "note: --dry-run is redundant with --brokers (accepted, no effect) — the broker sweep never acts."
@@ -2399,7 +3300,59 @@ MAX_ATTEMPTS=$(( ${#RETRY_DELAYS[@]} + 1 ))
 CAPACITY_PATTERN="at capacity"
 
 TMP_OUT="$(mktemp)" TMP_ERR="$(mktemp)"
-trap 'rm -f "$TMP_OUT" "$TMP_ERR"' EXIT
+# ONE EXIT trap for the whole script. A second `trap ... EXIT` silently replaces
+# an earlier one, so the temp-file removal moved inside crew_cleanup rather than
+# staying a trap of its own — otherwise arming the broker cleanup here would
+# have quietly disabled it (or the reverse, leaking a broker on every exit).
+crew_arm_cleanup
+
+# ---- per-job broker: make this job reachable for its whole life -------------
+# A broker carries ONE streaming turn per cwd, and the companion's answer to a
+# busy broker is to run the job on a private stdio app-server with no socket —
+# unreachable by steer, queue or cancel for life. In a shared parent directory
+# that leaves exactly one reachable job: whichever won the broker first. So each
+# launch gets its own broker and every later call routes back to it.
+# This sits AFTER the effort routing above on purpose: RUN_CMD may point at the
+# vendor companion or at our own driver, and both run their turn through the
+# app-server, so both need the broker.
+CREW_SPAWNED_ENDPOINT="" CREW_SPAWNED_PID="" CREW_SPAWNED_DIR="" CREW_SPAWNED_START="" CREW_HELD_LOCK=""
+case "${1:-}" in
+  task|review|adversarial-review)
+    # The `-f $CREW_BROKER_SCRIPT` test is not redundant with the failure branch
+    # below. A codex plugin without app-server-broker.mjs has no broker support
+    # at all — that is a fact about the install, not a failure of this dispatch,
+    # and warning about it would put a scary line on the stderr of every single
+    # call on such an install (and inside anything capturing stdout+stderr).
+    # Warn only when brokers ARE available and we could not get one.
+    if [[ -z "${CREW_CODEX_NO_JOB_BROKER:-}" && -z "${!CREW_BROKER_ENV:-}" \
+          && -f "$CREW_BROKER_SCRIPT" ]]; then
+      crew_reap_brokers || true
+      # Only detached launches take the lock: they return in seconds. A
+      # foreground launch holds for the whole job, which would serialise the
+      # fleet, so it stays unlocked and can still race a redirect.
+      if [[ " $* " == *" --background "* ]]; then
+        crew_lock_acquire
+        CREW_HELD_LOCK=1
+      fi
+      if crew_spawn_job_broker "$PWD"; then
+        export CODEX_COMPANION_APP_SERVER_ENDPOINT="$CREW_SPAWNED_ENDPOINT"
+      else
+        # Degrading quietly here recreates the exact failure this exists to
+        # prevent: the job runs on a private app-server nothing can reach.
+        echo "crew-codex: could not start a per-job broker; this job may be unreachable to steer/queue/cancel if another job holds the shared broker" >&2
+      fi
+    fi
+    ;;
+  status|result|cancel)
+    for arg in "$@"; do
+      if [[ "$arg" =~ ^(task|review|adversarial-review)-[A-Za-z0-9]+-[A-Za-z0-9]+$ ]]; then
+        ep="$(crew_job_endpoint "$arg")"
+        [[ -n "$ep" ]] && export CODEX_COMPANION_APP_SERVER_ENDPOINT="$ep"
+        break
+      fi
+    done
+    ;;
+esac
 
 attempt=1
 while :; do
@@ -2602,4 +3555,72 @@ esac
 
 cat "$TMP_OUT"
 cat "$TMP_ERR" >&2
+
+# ---- tie the broker to the job the launch just printed ----------------------
+# No job id means the launch failed, and an unreferenced broker is exactly the
+# leak we cannot afford, so it goes now.
+if [[ -n "$CREW_SPAWNED_PID" ]]; then
+  launched_id="$(grep -ohE '\b(task|review|adversarial-review)-[A-Za-z0-9]+-[A-Za-z0-9]+\b' "$TMP_OUT" | head -1 || true)"
+  if [[ -n "$launched_id" && $rc -eq 0 ]]; then
+    if crew_publish_sidecar "$launched_id"; then
+      # Ownership is published, so cleanup must stop treating it as a leak.
+      CREW_CLEANUP_PID="" CREW_CLEANUP_DIR="" CREW_CLEANUP_START=""
+    else
+      # The job is live. Killing its broker now would disconnect it, so keep
+      # the broker and say what is unrouted; the sweep retires it later.
+      echo "crew-codex: job $launched_id started but its broker could not be recorded; steer/queue will not route to it (endpoint $CREW_SPAWNED_ENDPOINT)" >&2
+      CREW_CLEANUP_PID="" CREW_CLEANUP_DIR="" CREW_CLEANUP_START=""
+    fi
+    CREW_SPAWNED_PID=""
+    if [[ -n "$CREW_HELD_LOCK" ]]; then crew_lock_release; CREW_HELD_LOCK=""; fi
+    # A foreground launch has already finished by the time it returns, so its
+    # broker has nothing left to serve and goes now rather than at the next
+    # sweep.
+    if [[ " $* " != *" --background "* ]]; then
+      side="$(crew_sidecar "$launched_id")"
+      if [[ -f "$side" ]]; then
+        IFS=$'\t' read -r _fe fbpid fbdir _fcwd fbstart _frest <"$side" || true
+        crew_kill_broker "$fbpid" "$fbdir" "$fbstart"
+        crew_drop_sidecar "$launched_id"
+      fi
+    fi
+  else
+    crew_kill_broker "$CREW_SPAWNED_PID" "$CREW_SPAWNED_DIR" "$CREW_SPAWNED_START"
+    CREW_SPAWNED_PID="" CREW_CLEANUP_PID="" CREW_CLEANUP_DIR="" CREW_CLEANUP_START=""
+    if [[ -n "$CREW_HELD_LOCK" ]]; then crew_lock_release; CREW_HELD_LOCK=""; fi
+  fi
+fi
+
+# A cancelled job is finished, so its broker goes with it. Only on success: a
+# cancel that FAILED (wrong cwd, transient RPC error) leaves the worker running,
+# and tearing its broker down would disconnect a live job for good.
+if [[ "${1:-}" == "cancel" && $rc -eq 0 ]]; then
+  for arg in "$@"; do
+    if [[ "$arg" =~ ^(task|review|adversarial-review)-[A-Za-z0-9]+-[A-Za-z0-9]+$ ]]; then
+      side="$(crew_sidecar "$arg")"
+      if [[ -f "$side" ]]; then
+        IFS=$'\t' read -r _ep bpid bdir _bcwd bstart _brest <"$side" || true
+        crew_kill_broker "$bpid" "$bdir" "$bstart"
+        crew_drop_sidecar "$arg"
+      fi
+      break
+    fi
+  done
+fi
+
+# The companion keys job state to a hash of the cwd, so status/result/cancel say
+# "not found" when the call comes from a directory other than the launch one.
+# Name the directory to re-run from rather than letting a live job read as gone.
+if [[ $rc -ne 0 ]] && grep -qi "not found" "$TMP_OUT" "$TMP_ERR"; then
+  for arg in "$@"; do
+    if [[ "$arg" =~ ^(task|review|adversarial-review)-[A-Za-z0-9]+-[A-Za-z0-9]+$ ]]; then
+      hint="$(crew_cwd_hint "$arg")"
+      if [[ -n "$hint" ]]; then
+        echo "crew-codex: job $arg${hint}" >&2
+      fi
+      break
+    fi
+  done
+fi
+
 exit $rc

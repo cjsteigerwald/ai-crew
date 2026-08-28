@@ -1,0 +1,77 @@
+codex-plugin: let a message be queued onto a thread while its turn is streaming
+
+Target: the codex@openai-codex Claude Code plugin (any 1.0.x; applied with
+context matching, not line numbers, so it survives version bumps).
+
+Why:
+  A Codex job launched through the companion runs as an app-server thread
+  behind a per-cwd broker. While a turn streams, the broker answers every
+  request from another socket with -32001 "Shared Codex broker is busy",
+  with exactly one exception: turn/interrupt.
+
+  That leaves interrupt as the only way to say anything to a running job, and
+  interrupt is destructive - it stops the turn wherever it happens to be,
+  which for a large multi-file edit means a half-applied change. The
+  non-destructive equivalent already exists in the app-server as
+  thread/queue/add: the message waits and the agent picks it up when it
+  finishes the turn it is running, which is how a human redirects an agent.
+
+  Two things block it: the broker does not forward the method during an
+  active stream, and the plugin's client declares experimentalApi: false, so
+  the server rejects thread/queue/add outright.
+
+What this changes:
+  1. scripts/lib/app-server.mjs - declare experimentalApi: true in the default
+     client capabilities.
+  2. scripts/app-server-broker.mjs - forward thread/queue/add alongside
+     turn/interrupt while another socket owns the stream.
+
+Nothing else is touched; job state keying, streaming and interrupt behaviour
+are unchanged. Reverse with: crew-codex patch --revert
+
+--- a/scripts/lib/app-server.mjs
++++ b/scripts/lib/app-server.mjs
+@@ -31,7 +31,7 @@
+ 
+ /** @type {InitializeCapabilities} */
+ const DEFAULT_CAPABILITIES = {
+-  experimentalApi: false,
++  experimentalApi: true,
+   requestAttestation: false,
+   optOutNotificationMethods: [
+     "item/agentMessage/delta",
+--- a/scripts/app-server-broker.mjs
++++ b/scripts/app-server-broker.mjs
+@@ -33,8 +33,21 @@
+   socket.write(`${JSON.stringify(message)}\n`);
+ }
+
+-function isInterruptRequest(message) {
+-  return message?.method === "turn/interrupt";
++// Requests that stay safe to forward while another socket owns the stream.
++// turn/interrupt was already allowed and is the destructive one: it stops the
++// turn wherever it stands. The other two are not destructive. turn/steer
++// interjects a message into the running turn, which the model reads at its
++// next step once the in-flight tool call has finished, and thread/queue/add
++// leaves a message the agent picks up after the turn completes. Refusing them
++// leaves interrupt as the only way to say anything to a running job.
++const ACTIVE_STREAM_PASSTHROUGH_METHODS = new Set([
++  "turn/interrupt",
++  "turn/steer",
++  "thread/queue/add"
++]);
++
++function isActiveStreamPassthrough(message) {
++  return ACTIVE_STREAM_PASSTHROUGH_METHODS.has(message?.method);
+ }
+ 
+ function writePidFile(pidFile) {
+@@ -168,7 +177,7 @@
+         }
+ 
+         const allowInterruptDuringActiveStream =
+-          isInterruptRequest(message) && activeStreamSocket && activeStreamSocket !== socket && !activeRequestSocket;
++          isActiveStreamPassthrough(message) && activeStreamSocket && activeStreamSocket !== socket && !activeRequestSocket;
+ 
+         if (
+           ((activeRequestSocket && activeRequestSocket !== socket) || (activeStreamSocket && activeStreamSocket !== socket)) &&

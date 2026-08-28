@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"${CREW_CODEX_NO_AUTO_PATCH:-}\" ] || \"${CLAUDE_PLUGIN_ROOT}/bin/crew-codex\" patch --apply"
+          }
+        ]
+      }
+    ]
+  }
+}
