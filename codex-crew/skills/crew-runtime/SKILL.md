@@ -47,7 +47,8 @@ Primary helper — `crew-codex`, on PATH while the plugin is enabled:
 - `crew-codex await <job-id> [--for <seconds>]` — block until the job leaves
   `running`, or until the deadline; prints ONE line. Exit 0 completed,
   1 failed/cancelled, 2 job not found, 3 job died silently, 4 job hung,
-  10 still running (call again). It waits on the job's own process
+  5 SUPERSEDED by a redirect, 10 still running (call again). It waits on the
+  job's own process
   (`tail --pid`), so it wakes the instant the job ends rather than on a poll
   timer.
   Exit 3 (STALE) means the process vanished without ever reporting terminal —
@@ -59,6 +60,44 @@ Primary helper — `crew-codex`, on PATH while the plugin is enabled:
   `code-mode-host` processes so the wedged runtime is not reused by the next
   dispatch, then re-dispatch ONCE on the fresh runtime; if that also hangs,
   report HUNG verbatim and stop.
+  Exit 5 (SUPERSEDED) means the job was redirected onto new instructions; the
+  line names the successor id. Await that one and own it to the end. A redirect
+  is never a failure. ⚠️ This fork returns **5**, where upstream codex-crew
+  returns 4 — 4 has meant HUNG here since v0.4.2 and downstream agents key a
+  recovery protocol to it.
+- `crew-codex steer <job-id> "<message>"` — interject into the turn the job is
+  running RIGHT NOW. Nothing is stopped: the in-flight tool call finishes and
+  the model reads the message at its next step, so it can change course before
+  doing all the wrong work. Its reply is part of that same turn, so it lands in
+  the job's own result. Prints `STEERED <job-id> | ...`. This is the normal
+  correction path. Requires `crew-codex patch --apply`.
+- `crew-codex queue <job-id> "<message>"` — a message for AFTER the current
+  turn. A turn is the WHOLE task, so this arrives once the work is finished:
+  right for "when you are done, also do X", wrong for a correction. Prints
+  `QUEUED <job-id> | ... | id crew-<job-id>-<n>`. `await` waits for the queued
+  turn's answer and appends it to the archived result — relay a
+  `QUEUED-REPLIES n/n captured` result in full, and say so plainly on
+  `QUEUED-REPLIES 0/n` rather than implying the message was acted on.
+  Requires `crew-codex patch --apply`.
+  ⚠️ The message TEXT is never archived. Only the client id and its length are
+  recorded, because the crew archive deliberately outlives the vendor's session
+  cleanup and a queued message carries the same free-form operator text the
+  `.dispatch.json` redaction and the `.meta.json` sanitizer exist to keep out.
+- `crew-codex redirect <job-id> [--model <m>] [--effort <e>] "<instruction>"` —
+  **destructive**, and the exception rather than the rule. It INTERRUPTS the
+  live turn, then resumes the same Codex thread with the new text. Interrupting
+  stops the turn wherever it stands, so a job mid-way through a multi-file edit
+  can be left half written. Use it only when a job is genuinely off the rails;
+  for an ordinary course correction use `steer`. Prints
+  `REDIRECTED <old> -> <new>`; await the NEW id. Model, effort and write posture
+  carry over unless overridden.
+- `crew-codex patch [--status|--apply|--revert]` — apply the queue-passthrough
+  fix to whichever codex plugin version is installed. Stock, the plugin's broker
+  forwards only `turn/interrupt` while a turn streams, so `steer` and `queue`
+  are refused — note what that left behind: interrupt, the one destructive
+  option, was the only thing that got through. Idempotent and reversible, keeps
+  `*.crew-orig` backups; a SessionStart hook applies it automatically and
+  `CREW_CODEX_NO_AUTO_PATCH=1` opts out.
 - `crew-codex reap [--dry-run] [--brokers] [--state]` — sweep every state dir
   for jobs stuck in `running`/`queued` whose process is dead or whose log has
   been frozen past `CREW_CODEX_REAP_LOG_AGE` (default 3600s), and mark them
@@ -114,8 +153,33 @@ Execution rules:
 - Each agent's model/effort/write pins are defaults; only an explicit
   model or effort named in the request overrides them. `spark` maps to
   `--model gpt-5.3-codex-spark`.
-- `cancel` and cross-job triage belong to the main thread (`/codex:status`,
-  `/codex:cancel`); a crew agent only awaits the one job it launched.
+- `cancel`, `redirect` and cross-job triage belong to the main thread
+  (`/codex:status`, `/codex:cancel`); a crew agent only awaits the one job it
+  launched, or the successor a redirect hands it via exit 5.
+- **Changing a running job's instructions.** A turn is the WHOLE task, not one
+  step, so anything that waits for the turn to end arrives after the work is
+  done. To correct a job, `crew-codex steer` it: the message goes into the
+  running turn and the model reads it at its next step. `crew-codex queue` is
+  for work that should FOLLOW the current task. `crew-codex redirect` is
+  destructive — it interrupts first, so an edit in flight can be left half
+  applied — and `cancel` plus a fresh dispatch is worse still, throwing away
+  everything the job had already done.
+- **Every job is reachable, whatever else is running.** A broker carries one
+  streaming turn per directory, and the companion's answer to a busy broker is
+  to run the job on a private app-server that nothing can reach. In a shared
+  parent directory that left exactly one steerable job: whichever won the broker
+  first. `crew-codex` now gives each launch its own broker and routes later
+  calls back to it, so concurrency no longer decides which jobs can be
+  corrected. Brokers are retired when their job ends — on every launch, on
+  terminal `await`, on `cancel`, and on `crew-codex reap` after an abnormal
+  exit. `CREW_CODEX_NO_JOB_BROKER=1` opts out.
+- **Pin every call to the directory the job was launched from.** The companion
+  keys job state to a hash of the working directory and Claude Code resets that
+  between Bash calls, so `cd <sandbox root> && crew-codex ...` is the shape of
+  every dispatch, await, steer, queue and result call. A call made elsewhere
+  reports a live job as missing; on "not found" `crew-codex` probes the sibling
+  state directories and names the cwd to re-run from, so check that before
+  treating exit 2 as a dead job.
 - Every `task`/`review`/`adversarial-review` dispatch also drops
   `<id>.dispatch.json` in the crew archive below, recording the model, the requested
   effort and the `model_reasoning_effort` actually in force. Companion-written

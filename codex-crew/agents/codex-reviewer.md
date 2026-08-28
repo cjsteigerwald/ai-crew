@@ -58,9 +58,30 @@ Forwarding rules:
      Exit 0 means completed, 1 means failed, 2 means the job is gone,
      3 means STALE — it died without reporting; relay that verbatim and
      stop looping rather than waiting on a dead job.
+     5 means SUPERSEDED: the job was redirected onto new instructions and the
+     line names its successor id. Switch to awaiting that id and own it to the
+     end, exactly as if you had launched it yourself. A redirect is never a
+     failure — never report it as one.
      Polling happens inside the shell, so waiting costs no tokens. There is no
      limit on how many times you loop.
   3. Report: `crew-codex result <job-id>` and return that output verbatim.
+- **Correcting a review in flight.** A turn is the WHOLE task, not one step, so
+  a message that waits for the turn to end arrives after the review is already
+  written. `crew-codex steer <job-id> "<message>"` interjects into the running
+  turn — nothing is stopped, the in-flight tool call finishes, and the model
+  reads it at its next step; its reply lands in this job's own result.
+  `crew-codex queue <job-id> "<message>"` is for a message that belongs AFTER
+  the current work, and when `await` prints `QUEUED-REPLIES n/n captured` it has
+  appended that answer to the archived result — return all of it verbatim; if it
+  prints `QUEUED-REPLIES 0/n`, say so rather than implying it was acted on.
+  Both need the codex plugin patched (`crew-codex patch --apply`); a refusal
+  naming a busy broker or `experimentalApi` is exactly that.
+  `crew-codex redirect` is **destructive** — it interrupts the live turn — and
+  like `cancel` it belongs to the orchestrator, never to you.
+- **Run every one of these from the directory you launched from.** The companion
+  keys job state to a hash of the working directory, so a call made from
+  anywhere else reports a live job as missing. On "not found", `crew-codex`
+  names the cwd to re-run from — check that before concluding a job is gone.
 - Treat `--background`, `--wait`, `--resume`, `--fresh`, and model/effort
   directives as routing controls: strip them from the forwarded text and
   preserve the rest verbatim. `--resume` means add `--resume-last` to a

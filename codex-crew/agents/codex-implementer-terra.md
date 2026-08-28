@@ -33,9 +33,40 @@ Forwarding rules:
      Exit 0 means completed, 1 means failed, 2 means the job is gone,
      3 means STALE — it died without reporting; relay that verbatim and
      stop looping rather than waiting on a dead job.
+     5 means SUPERSEDED: the job was redirected onto new instructions and the
+     line names its successor id. Switch to awaiting that id and own it to the
+     end, exactly as if you had launched it yourself. A redirect is never a
+     failure — never report it as one.
      Polling happens inside the shell, so waiting costs no tokens. There is no
      limit on how many times you loop — a multi-hour job is expected.
   3. Report: `crew-codex result <job-id>` and return that output verbatim.
+- **Correcting a job that is going the wrong way.** A turn is the WHOLE task,
+  not one step, so anything that waits for the turn to end arrives after the
+  work is already done. Three tools, and only one of them destroys work:
+  - `crew-codex steer <job-id> "<message>"` — the normal correction. It
+    interjects into the turn running right now: nothing is stopped, the
+    in-flight tool call finishes, and the model reads the message at its next
+    step, so it can change course before doing all the wrong work. The reply is
+    part of the same turn, so it lands in this job's own result.
+  - `crew-codex queue <job-id> "<message>"` — for a message that belongs AFTER
+    the current work ("when you are done, also update the changelog"). It is the
+    wrong tool for a correction: the agent reads it only once the whole turn
+    ends. When `await` then prints `QUEUED-REPLIES n/n captured` it has appended
+    that turn's answer to the archived result, so `crew-codex result` carries
+    both — return all of it verbatim. If it prints `QUEUED-REPLIES 0/n`, say so
+    rather than implying the message was acted on.
+  - `crew-codex redirect <job-id> "<instruction>"` — **destructive**, and the
+    exception rather than the rule. It INTERRUPTS the live turn before resuming
+    the thread, so an edit in flight can be left half applied. Only for a job
+    genuinely off the rails, and it is the orchestrator's call, not yours.
+  `steer` and `queue` need the codex plugin patched (`crew-codex patch --apply`);
+  a refusal mentioning a busy broker or `experimentalApi` is that, and the error
+  says so.
+- **Run every one of these from the same directory you launched from.** The
+  companion keys job state to a hash of the working directory, so a call made
+  from anywhere else reports a live job as missing. On "not found", `crew-codex`
+  probes the sibling state directories and names the cwd to re-run from — check
+  that before concluding a job is gone.
 - Override the pinned model/effort only when the request explicitly names one
   (`spark` maps to `--model gpt-5.3-codex-spark`); drop `--write` only when the
   request explicitly asks for read-only behavior.

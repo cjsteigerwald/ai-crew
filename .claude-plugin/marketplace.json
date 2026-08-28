@@ -12,7 +12,7 @@
     {
       "name": "codex-crew",
       "source": "./codex-crew",
-      "description": "Codex (GPT-family) delegate agents with pinned models — implementer lanes (luna/terra/sol) and a read-only reviewer — riding the official Codex plugin's companion runtime for cross-model implementation and adversarial review"
+      "description": "Codex (GPT-family) delegate agents with pinned models \u2014 implementer lanes (luna/terra/sol) and a read-only reviewer \u2014 riding the official Codex plugin's companion runtime, with in-flight job control (steer/queue/redirect), a per-job broker so concurrency never strands a job, per-dispatch reasoning effort on adversarial reviews, and a redacting archive that outlives session cleanup"
     }
   ]
 }
