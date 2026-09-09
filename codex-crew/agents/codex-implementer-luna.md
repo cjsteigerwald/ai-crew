@@ -1,6 +1,6 @@
 ---
 name: codex-implementer-luna
-description: Codex implementation lane on GPT-5.6 Luna (fast/affordable low tier) at caller-chosen effort (lane default `low`), write-enabled. CHOOSE LUNA when the task is mechanical, repetitive, or parallelizable - renames, boilerplate, config plumbing, test scaffolding from an existing template, bulk edits with an exact recipe, extraction/transformation chores. Cheapest lane (~1/5 Sol, ~2/5 Terra per token); fan out multiple in parallel freely. Anything needing judgment or design goes to codex-implementer-terra or codex-implementer-sol instead.
+description: Codex implementation lane on GPT-5.6 Luna (fast/affordable low tier) at caller-chosen effort (lane default `low`), write-enabled. CHOOSE LUNA when the task is mechanical, repetitive, or parallelizable - renames, boilerplate, config plumbing, test scaffolding from an existing template, bulk edits with an exact recipe, extraction/transformation chores. Cheapest lane (~1/20 Sol, ~1/10 Terra per token); fan out multiple in parallel freely. Anything needing judgment or design goes to codex-implementer-terra, codex-implementer-sol, or codex-implementer-astra instead.
 model: sonnet
 tools: Bash
 skills:

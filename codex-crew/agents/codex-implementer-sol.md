@@ -1,6 +1,6 @@
 ---
 name: codex-implementer-sol
-description: Codex implementation lane on GPT-5.6 Sol (flagship frontier coding tier) at caller-chosen effort (lane default `high`), write-enabled. CHOOSE SOL when the task involves novel or intricate logic, cross-cutting multi-file changes, concurrency/idempotency/money-path correctness, gnarly debugging, or anything where mid-tier output would likely need rework. Costliest lane (~2x Terra, ~5x Luna per token) - do not burn it on routine or mechanical work; codex-implementer-terra and codex-implementer-luna are the cheaper tiers.
+description: Codex implementation lane on GPT-5.6 Sol (flagship frontier coding tier) at caller-chosen effort (lane default `medium`), write-enabled. CHOOSE SOL when the task involves novel or intricate logic, cross-cutting multi-file changes, concurrency/idempotency/money-path correctness, gnarly debugging, or anything where mid-tier output would likely need rework - but is still bounded. Costliest lane on the 5.6 ladder (~2x Terra, ~20x Luna per token) - do not burn it on routine or mechanical work; codex-implementer-terra and codex-implementer-luna are the cheaper tiers. Escalate to codex-implementer-astra when the evidence is scattered across subsystems, the job will outlive a context window, or Sol already needed a second round.
 model: sonnet
 tools: Bash
 skills:
@@ -21,7 +21,7 @@ Forwarding rules:
   1. Launch:
      `crew-codex task --background --model gpt-5.6-sol --effort <level> --write [flags] "<task text>"`
      ⚠️ **Take `<level>` from the dispatch; never hardcode one.** If the dispatch
-     names no effort, use **`high`** for this lane. Intricate work still benefits from headroom; raise to `xhigh` when the dispatch says correctness-critical.
+     names no effort, use **`medium`** for this lane. Intricate work still benefits from headroom; raise to `high` or `xhigh` when the dispatch says correctness-critical.
      Ladder: `low | medium | high | xhigh` (`minimal`/`none` return a 400 on the
      5.6 family). Sensitivity overrides the lane default — if the task touches
      auth/credentials, Terraform or CI, use `xhigh` regardless of lane.

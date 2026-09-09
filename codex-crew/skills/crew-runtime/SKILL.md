@@ -6,8 +6,9 @@ user-invocable: false
 
 # Crew Runtime
 
-Use this skill only inside `codex-crew` agents (`codex-implementer-sol`,
-`codex-implementer-terra`, `codex-implementer-luna`, `codex-reviewer`).
+Use this skill only inside `codex-crew` agents (`codex-implementer-astra`,
+`codex-implementer-sol`, `codex-implementer-terra`, `codex-implementer-luna`,
+`codex-reviewer`).
 
 Primary helper — `crew-codex`, on PATH while the plugin is enabled:
 
@@ -262,6 +263,13 @@ sanitizer to what is already on disk, for jobs archived by an earlier version.
 It never deletes an archived job, rewrites only when the sanitized bytes differ,
 and a second pass is byte-for-byte a no-op.
 
+One generation above the 5.6 ladder: **gpt-6-astra** = frontier flagship,
+reserved for the hardest work — cross-cutting changes whose evidence is
+scattered across many files or subsystems, multi-hour jobs that will outlive
+a context window (Astra keeps its notes across windows rather than
+compressing them), debugging that Sol already needed a second round on, or
+logic spanning retries, ownership and persisted state.
+
 GPT-5.6 family ladder (per OpenAI's own model registry): **sol** = flagship
 frontier coding tier, **terra** = balanced everyday mid tier, **luna** =
 fast/affordable low tier. Other known models (Codex CLI 0.144.0): gpt-5.5,
@@ -271,9 +279,11 @@ efforts — `xhigh` is the ceiling through this plugin, and `crew-codex`'s effor
 driver keeps that same ceiling rather than widening it.
 
 The practical **floor** is narrower than the validator's: the GPT-5.6 family
-(sol/terra/luna) returns a 400 on `reasoning.effort` for `none` and `minimal`,
-so the usable ladder there is `low|medium|high|xhigh`. Both values are still
-accepted — the validator mirrors the runtime's contract, not one family's — but
-`crew-codex` warns on stderr before dispatching when `none`/`minimal` is paired
-with a `gpt-5.6*` model or with no `--model` at all (the config default is a
-5.6 model). The job then fails at the API, not in the wrapper.
+(sol/terra/luna) *and* gpt-6-astra return a 400 on `reasoning.effort` for
+`none` and `minimal`, so the usable ladder there is `low|medium|high|xhigh` —
+treat a request for `none` or `minimal` on any of these models as `low`. Both
+values are still accepted by the validator — it mirrors the runtime's
+contract, not one family's — but `crew-codex` warns on stderr before
+dispatching when `none`/`minimal` is paired with a `gpt-5.6*` model, `gpt-6-astra`,
+or no `--model` at all (the config default is a 5.6 model). The job then fails
+at the API, not in the wrapper.

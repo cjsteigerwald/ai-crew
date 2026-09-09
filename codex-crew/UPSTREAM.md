@@ -12,9 +12,9 @@ working out what was already here cost more than applying the changes did.
 | | |
 |---|---|
 | Upstream repo | `sidkik/claude-plugins` (marketplace `sidkik-plugins`) |
-| Synced to | **v0.6.1**, commit `965b419` (`test(codex-crew): make the suite leave nothing behind`) |
-| Synced on | 2026-08-28 |
-| This plugin's version | **0.7.0** |
+| Synced to | **v0.7.0**, commit `4a68b5e` |
+| Synced on | 2026-09-09 (ported from upstream 2026-09-08) |
+| This plugin's version | **0.8.0** |
 
 Upstream is **not** wired up for you. Git remotes are per-clone: they are never
 committed and never travel with the repo, so every fresh checkout of this fork
@@ -30,7 +30,7 @@ git remote add upstream https://github.com/sidkik/claude-plugins.git
 git remote get-url upstream   # must print https://github.com/sidkik/claude-plugins.git
 
 git fetch upstream --tags
-git diff 965b419 upstream/main -- codex-crew/
+git diff 4a68b5e upstream/main -- codex-crew/
 ```
 
 Two failure modes share one signature, which is why the check above reads the
@@ -38,8 +38,8 @@ URL. If the remote is missing, `git fetch upstream` aborts with
 `fatal: 'upstream' does not appear to be a git repository` (exit 128). If it
 exists but points at an unrelated repo, `git remote add` errors with
 `error: remote upstream already exists.` (exit 3), a pasted block runs straight
-past it, and the fetch then succeeds — but `965b419` is reachable only from
-upstream's history, so the diff aborts with `fatal: bad revision '965b419'`
+past it, and the fetch then succeeds — but `4a68b5e` is reachable only from
+upstream's history, so the diff aborts with `fatal: bad revision '4a68b5e'`
 (exit 128) in that case too. Identical message, opposite causes; neither ever
 returns a misleadingly empty diff.
 
@@ -51,9 +51,9 @@ catches it.
 ## Version numbers do not line up, and never will
 
 Both projects independently reached `0.6.0` with **completely different code**.
-This fork jumped to `0.7.0` to get clear of the collision. Never assume a shared
-version number means shared code — compare against the commit in the table
-above, never against a tag name.
+This fork jumped to `0.7.0` to get clear of the collision. Now at `0.8.0` after
+porting upstream v0.7.0. Never assume a shared version number means shared code —
+compare against the commit in the table above, never against a tag name.
 
 ## Deliberate divergences
 
@@ -70,6 +70,14 @@ without changing the decision first.
 | `crew_pid_starttime` | `/proc/<pid>/stat` only | `/proc` with a `ps -o lstart=` fallback | `/proc` is Linux-only and this plugin is installed on darwin too, where upstream's version returns empty — which makes `crew_kill_broker` skip its ownership check and signal whatever now holds the pid. |
 | `crew_lock_acquire` key | `md5sum` | `md5sum` → `md5` → `cksum` | `md5sum` is GNU; darwin ships `md5`. Upstream fails open, so the per-cwd launch lock was silently skipped on a whole platform. |
 | `CREW_ROOT` | `readlink -f` | `cd ... && pwd` | `readlink -f` is GNU-only; resolution failure would take the patch file, the app-server bridge and every steer/queue call with it. |
+
+### Divergences from upstream v0.7.0
+
+**Caller-chosen effort is retained; upstream's fixed `xhigh` pins are NOT adopted.** Upstream v0.7.0 converted every lane (sol, terra, luna, reviewer) from caller-chosen effort to a hardcoded `xhigh`. This fork keeps per-lane defaults that a dispatch can override, because the fork's `lib/review-with-effort.mjs` driver exists specifically to make effort a per-job decision. Adopting the pins would delete that capability.
+
+**Lane defaults lowered to `medium`.** `codex-implementer-sol` and `codex-reviewer` previously defaulted to `high`; both now default to `medium`. `terra` stays `medium`, `luna` stays `low`. The sensitivity override is unchanged: auth/credentials, Terraform or CI work still uses `xhigh` regardless of lane default.
+
+**Astra was ported into the fork's idiom, not copied verbatim.** Upstream's `agents/codex-implementer-astra.md` documents exit code **4** for SUPERSEDED and prefixes every command with `cd <sandbox root> && `. This fork uses exit code **5** for SUPERSEDED and the "run from the directory you launched from; `crew-codex` probes sibling state directories on a miss" idiom. Copying upstream's file verbatim would have shipped a wrong exit code.
 
 ## Fork-only features (upstream has none of these)
 
@@ -92,3 +100,7 @@ Do not expect a port to touch them, and do not let one regress them:
   run on a machine without the codex plugin installed even though it only
   touches local archive files. Pre-existing; it is why 15 suite cases fail in a
   container with no codex plugin.
+- `lib/review-with-effort.mjs:730` gates the "`none`/`minimal` are rejected"
+  check behind `GPT_5_6_MODEL_PATTERN` (`/^gpt-5\.6/i`), so `--model gpt-6-astra
+  --effort none` slips past the local guard and would only fail at the API.
+  Astra rejects `none`/`minimal` too, but the local guard should catch it first.
