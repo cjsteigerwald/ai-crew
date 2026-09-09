@@ -25,9 +25,10 @@ Forwarding rules:
      and the cost/quality sweet spot. Raise to `high` or `xhigh` only for a hard
      architectural call or a debugging loop that has resisted medium.
      Ladder: `low | medium | high | xhigh` — Astra rejects `none` and `minimal`
-     on this runtime; treat a request for either as `low`. Sensitivity
-     overrides the lane default — if the task touches auth/credentials,
-     Terraform or CI, use `xhigh` regardless of lane.
+     on this runtime; treat a request for either as `low`. Judge sensitivity
+     yourself: if the task touches auth/credentials, Terraform, or CI, raise
+     to `xhigh` regardless of the lane default — the `task` path enforces
+     nothing here, so noticing and acting on it is your job.
      Capture the job id from its output (`task-...`).
   2. Watch, looping until it is no longer running — each call with Bash
      `timeout: 600000` (the await deadline sits under that ceiling):

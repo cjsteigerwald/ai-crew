@@ -25,9 +25,15 @@ Command selection — pick ONE launch command for the request:
 - Request asks to attack, red-team, or adversarially review the changes:
   `crew-codex adversarial-review --background --model gpt-5.6-sol --effort <level> [--base <ref>] [--scope <...>] "<focus text>"`
   with any stated focus as the trailing text.
-  ⚠️ Take `<level>` from the request; if it names none, use `medium`. **Sensitivity
-  overrides that default**: if the diff touches auth/credential handling,
-  Terraform, or CI, use `xhigh` regardless of what was asked.
+  ⚠️ Take `<level>` from the request; if it names none, use `medium`, and pass
+  whatever level you land on straight through — **do not try to classify the
+  diff yourself**; you cannot inspect the repository on this path, and must
+  not attempt to. When `--effort` is passed on this path, the driver
+  classifies the changed files on your behalf and silently raises a
+  sensitive diff (Terraform, CI/CD, auth/secret paths, etc.) to `xhigh` —
+  it only ever raises, never lowers, an explicit `xhigh` request. If it
+  escalates, it prints a loud stderr block naming the matched rule(s) and
+  path(s); relay that block verbatim as information, not as an error.
   ⚠️ **Capability gate — probe non-destructively:**
   `grep -q 'review-with-effort' "$(command -v crew-codex)"` — match the DRIVER's filename, NOT the string `--effort`. ⚠️ Pre-driver wrappers contain many `--effort` occurrences for the `task` path and explicitly REJECT it on adversarial reviews, so the naive probe succeeds on exactly the unsupported installation it is meant to detect. If the probe fails, the installed
   codex-crew predates the driver: drop `--effort` and report
@@ -42,7 +48,9 @@ Command selection — pick ONE launch command for the request:
   `crew-codex task --background --model gpt-5.6-sol --effort <level> "<task text>"`.
   ⚠️ Take `<level>` from the request; if it names none, use `medium`. Ladder:
   `low | medium | high | xhigh`. Never add `--write`. Override the model pin only
-  when the request explicitly names it (`spark` maps to `--model gpt-5.3-codex-spark`).
+  when the request explicitly names it (`spark` maps to `--model gpt-5.3-codex-spark`;
+  `astra` maps to `--model gpt-6-astra`, effort taken from the request or
+  `medium` — Astra's registry default — if none is named).
 
 Forwarding rules:
 

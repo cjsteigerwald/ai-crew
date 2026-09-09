@@ -84,7 +84,8 @@ unpacked into its own directory and the old ones stay put.
 ├── 0.5.0/
 ├── 0.5.1/
 ├── 0.6.0/
-└── 0.7.0/   <- the update added this; it did not replace anything
+├── 0.7.0/
+└── 0.8.0/   <- the update added this; it did not replace anything
 ```
 
 Each session resolves its plugin `PATH` when it starts, and then keeps calling
@@ -130,7 +131,7 @@ cat "$P/.claude-plugin/plugin.json"
 ```json
 {
   "name": "codex-crew",
-  "version": "0.7.0",
+  "version": "0.8.0",
   ...
 }
 ```
@@ -363,15 +364,34 @@ same output schema and same job-record shape, so `status`, `await`, `result` and
   **`xhigh` stays the ceiling** — the registry's `max`/`ultra` tiers are refused,
   because the driver bypasses the vendor validator and nothing has proven the
   app-server accepts them. The practical **floor** is narrower still: the
-  GPT-5.6 family 400s on `reasoning.effort` for `none` and `minimal`, so those
-  two are accepted but warned about on stderr when paired with a `gpt-5.6*`
-  model or no `--model` at all.
+  GPT-5.6 family *and* `gpt-6-astra` 400 on `reasoning.effort` for `none` and
+  `minimal`, so those two are accepted but warned about on stderr when paired
+  with a `gpt-5.6*` model, `gpt-6-astra`, or no `--model` at all — the warning
+  never blocks the dispatch, and the job then fails at the API instead.
 - These imports are internal vendor modules that merely happen to be exported,
   so an upstream rename can break them. If any import or symbol is missing the
   driver **fails loudly** — naming the installed plugin version, the module and
   the symbol — and exits non-zero. It never silently falls back to the vendor
   path: that would run a review at an effort the caller did not ask for while
   reporting success, the exact failure this feature exists to prevent.
+
+**Sensitivity gate.** Whenever `--effort` is passed, the driver classifies the
+changed files of the very diff it is about to review — Terraform, Bicep/ARM,
+CloudFormation, Kubernetes RBAC/NetworkPolicy manifests, CI/CD pipeline
+definitions, key/cert/dotenv-shaped secret material, and auth/identity source
+paths — and **raises** the effort to `xhigh` on a match. It only ever raises:
+an explicit `--effort xhigh` is left unchanged, and a diff that matches
+nothing runs at exactly the effort requested. A match is announced on stderr,
+naming the matched rule(s) and the paths that tripped them.
+`CREW_CODEX_SENSITIVITY_OVERRIDE="<reason>"` opts out for one dispatch — it
+requires a non-empty value and echoes it back on stderr so it lands wherever
+that dispatch's stderr is captured. ⚠️ Only emptiness is checked, so a bare
+`=1` does satisfy it — treat the reason as a courtesy to the next reader, not
+as a control (see UPSTREAM.md § Known gaps).
+⚠️ **Scope limit**: the gate runs only on `adversarial-review` invoked *with*
+`--effort` — it never sees the `task` path, and `adversarial-review` with no
+`--effort` stays on the vendor review path, ungated, at whatever
+`model_reasoning_effort` the codex config carries, however sensitive the diff.
 
 **Dispatch stamping.** Each `task`/`review`/`adversarial-review` dispatch writes
 `<job-id>.dispatch.json` into the crew archive

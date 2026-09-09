@@ -23,8 +23,10 @@ Forwarding rules:
      ⚠️ **Take `<level>` from the dispatch; never hardcode one.** If the dispatch
      names no effort, use **`low`** for this lane. Mechanical recipe work does not need frontier reasoning.
      Ladder: `low | medium | high | xhigh` (`minimal`/`none` return a 400 on the
-     5.6 family). Sensitivity overrides the lane default — if the task touches
-     auth/credentials, Terraform or CI, use `xhigh` regardless of lane.
+     5.6 family). Sensitivity is on you to catch, not on the lane: if the task
+     touches auth/credentials, Terraform, or CI, raise to `xhigh` yourself
+     regardless of Luna's low default — nothing enforces that for you on the
+     `task` path.
      Capture the job id from its output (`task-...`).
   2. Watch, looping until it is no longer running — each call with Bash
      `timeout: 600000` (the await deadline sits under that ceiling):
@@ -69,8 +71,9 @@ Forwarding rules:
   that before concluding a job is gone.
 - Override the pinned model/effort only when the request explicitly names one
   (`spark` maps to `--model gpt-5.3-codex-spark`, `mini` to
-  `--model gpt-5.4-mini`); drop `--write` only when the
-  request explicitly asks for read-only behavior.
+  `--model gpt-5.4-mini`, `astra` to `--model gpt-6-astra` — effort from the
+  request, or `medium`, Astra's registry default, if none is named); drop
+  `--write` only when the request explicitly asks for read-only behavior.
 - If the request includes `--resume`, or clearly continues prior Codex work in
   this repository ("continue", "keep going", "apply the top fix", "dig
   deeper"), add `--resume-last` to the launch — unless `--fresh` is present,

@@ -73,7 +73,9 @@ without changing the decision first.
 
 ### Divergences from upstream v0.7.0
 
-**Caller-chosen effort is retained; upstream's fixed `xhigh` pins are NOT adopted.** Upstream v0.7.0 converted every lane (sol, terra, luna, reviewer) from caller-chosen effort to a hardcoded `xhigh`. This fork keeps per-lane defaults that a dispatch can override, because the fork's `lib/review-with-effort.mjs` driver exists specifically to make effort a per-job decision. Adopting the pins would delete that capability.
+**Caller-chosen effort is retained; upstream's fixed `xhigh` pins are NOT adopted.** Upstream has long defaulted every lane (sol, terra, luna, reviewer) to a hardcoded `xhigh` — at the *previous* sync point (`965b419`), upstream's `codex-implementer-sol.md:3` already read "at xhigh effort", so v0.7.0 did not convert anything; those diff rows are context-only. Caller-chosen per-dispatch effort has only ever existed in this fork — it is fork-only, not a capability upstream removed. Upstream's agents also still let an explicitly requested effort override the `xhigh` pin, so upstream's `xhigh` is a strong *default*, not a fixed effort; "adopting the pins would delete a capability" would therefore have overstated the difference. This fork keeps per-lane defaults that a dispatch can override because the user explicitly asked for effort to stay a per-job decision, and because the fork's `lib/review-with-effort.mjs` driver exists specifically to make effort a per-dispatch decision on the review path.
+
+**Upstream's lane-pin test block was not ported.** Upstream's suite asserts that sol/terra/luna/reviewer dispatch at a fixed `xhigh` regardless of the caller's request. This fork deliberately does not have that behavior (see above), so porting the test block would assert something the fork intentionally does not do; it stays unported until the pin decision itself changes.
 
 **Lane defaults lowered to `medium`.** `codex-implementer-sol` and `codex-reviewer` previously defaulted to `high`; both now default to `medium`. `terra` stays `medium`, `luna` stays `low`. The sensitivity override is unchanged: auth/credentials, Terraform or CI work still uses `xhigh` regardless of lane default.
 
@@ -84,6 +86,18 @@ without changing the decision first.
 Do not expect a port to touch them, and do not let one regress them:
 
 - `adversarial-review --effort` and `lib/review-with-effort.mjs`
+- the deterministic sensitivity gate (`lib/review-with-effort.mjs`,
+  `SENSITIVE_PATH_RULES` / `SENSITIVE_CONTENT_RULES` / `resolveEffectiveEffort`):
+  classifies the changed files of an `adversarial-review --effort` dispatch
+  (Terraform, Bicep/ARM, CloudFormation, Kubernetes RBAC/NetworkPolicy, CI/CD,
+  secret material, auth-ish source paths) and RAISES the effort to `xhigh` on a
+  match — never lowers, always announces the match on stderr.
+  `CREW_CODEX_SENSITIVITY_OVERRIDE="<reason>"` opts out for one dispatch and
+  requires a non-empty value (only emptiness is checked — see Known gaps).
+  Upstream has nothing like it.
+  ⚠️ **SCOPE LIMIT**: only `adversarial-review` invoked *with* `--effort` goes
+  through this gate. The `task` path is not covered, and `adversarial-review`
+  with no `--effort` routes to the vendor review path ungated (see Known gaps).
 - dispatch stamping (`<job>.dispatch.json`)
 - the archive sanitizer, the `.sanitized` provenance sentinel, and `sanitize-archive`
 - `reap`'s report-only `--brokers` / `--state` sweeps and its exit-3 "incomplete" contract
@@ -100,7 +114,35 @@ Do not expect a port to touch them, and do not let one regress them:
   run on a machine without the codex plugin installed even though it only
   touches local archive files. Pre-existing; it is why 15 suite cases fail in a
   container with no codex plugin.
-- `lib/review-with-effort.mjs:730` gates the "`none`/`minimal` are rejected"
-  check behind `GPT_5_6_MODEL_PATTERN` (`/^gpt-5\.6/i`), so `--model gpt-6-astra
-  --effort none` slips past the local guard and would only fail at the API.
-  Astra rejects `none`/`minimal` too, but the local guard should catch it first.
+- **FIXED.** `lib/review-with-effort.mjs` used to gate the "`none`/`minimal` are
+  rejected" check behind `GPT_5_6_MODEL_PATTERN` (`/^gpt-5\.6/i`) alone, so
+  `--model gpt-6-astra --effort none` slipped past the local guard and only
+  failed at the API. That pattern is gone; `modelRejectsMinimalEfforts()` now
+  checks a table covering both the GPT-5.6 family and `gpt-6-astra` (verified
+  against `codex-crew/lib/review-with-effort.mjs` and exercised by
+  `codex-crew/tests/run.sh` Case 59, "the none/minimal guard covers the Astra
+  lane").
+- `adversarial-review` invoked with **no `--effort`** bypasses the sensitivity
+  gate and the effort driver entirely — it runs through the vendor review path
+  at whatever `model_reasoning_effort` the codex config carries, even on a
+  Terraform/CI/auth-touching diff. The gate only ever sees a dispatch that
+  already passed `--effort`.
+- `CREW_CODEX_SENSITIVITY_OVERRIDE` enforces only that its value is **non-empty**,
+  not that it is reason-shaped (`lib/review-with-effort.mjs`, the
+  `override !== ""` check). `CREW_CODEX_SENSITIVITY_OVERRIDE=1` therefore
+  satisfies the "written reason" requirement and bypasses the gate, recording
+  `stated reason: 1`. That is exactly the flip-it-once-in-a-shell-profile switch
+  the surrounding comment says the reason string exists to prevent. The
+  override's loud stderr block still fires, so the bypass is never silent — but
+  the reason it prints can be meaningless. Wants a minimum-length or
+  multi-word check.
+
+## Open questions
+
+- **UNVERIFIED**: upstream claims `gpt-5.4-mini` was retired 2026-08-31.
+  `codex-crew/README.md` and `codex-crew/skills/crew-runtime/SKILL.md` still
+  offer it (the `mini` → `gpt-5.4-mini` alias). This claim has not been checked
+  against the actual model registry or a live dispatch, and the `mini`
+  references are deliberately left in place — removing them on an unverified
+  retirement claim risks breaking a lane that still works. Verify against a
+  live Codex CLI/API call before acting on this.

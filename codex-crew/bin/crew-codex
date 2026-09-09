@@ -123,10 +123,19 @@ Flag crew-codex adds on top of the companion:
                                 job record, which vendor review records lack.
 
 Validator ceiling is xhigh — the registry's max/ultra tiers are refused here.
-Practical FLOOR on the gpt-5.6 family (sol/terra/luna) is low: 5.6 models
-return a 400 on reasoning.effort for 'none' and 'minimal', so those two are
-accepted (other model families may take them) but warned about, and the job
-fails at the API rather than in the wrapper.
+Practical FLOOR on the gpt-5.6 family (sol/terra/luna) and on gpt-6-astra is
+low: those models return a 400 on reasoning.effort for 'none' and 'minimal',
+so those two are accepted (other model families may take them) but warned
+about, and the job fails at the API rather than in the wrapper.
+
+SENSITIVITY GATE. Before the turn starts, the driver classifies the changed
+files of the very diff it is about to review — Terraform, Bicep/ARM,
+CloudFormation, Kubernetes RBAC and network policy, CI/CD pipelines, keys and
+dotenvs, auth/identity source paths — and RAISES the effort to xhigh when any
+of them match, naming the paths on stderr. It only ever raises: an explicit
+--effort xhigh is left alone, and an unmatched diff runs at exactly what you
+asked for. CREW_CODEX_SENSITIVITY_OVERRIDE="<why>" opts out for one dispatch
+and says so, loudly, with your reason.
 
 WITHOUT --effort this is a verbatim codex-companion passthrough and the turn
 runs at model_reasoning_effort from ${CODEX_HOME:-$HOME/.codex}/config.toml.
@@ -3394,9 +3403,18 @@ case "${1:-}" in
       JOB_ID="$(grep -ohE '(review|task)-[A-Za-z0-9]+-[A-Za-z0-9]+' "$TMP_OUT" "$TMP_ERR" 2>/dev/null | head -n 1 || true)"
       if [[ -n "$JOB_ID" ]]; then
         mkdir -p "$CREW_ARCHIVE_DIR"
+        # The effort driver's sensitivity gate can RAISE the effort above the
+        # flag (lib/review-with-effort.mjs), and the stamper below only ever sees
+        # argv — so an escalated review would be archived as having run at the
+        # effort the caller asked for, which is the one number the audit record
+        # exists to get right. The gate's stderr line is the only place the
+        # effective value exists, and its wording is a contract on both sides.
+        CREW_STAMP_EFFORT_GATE="$(grep -oE 'sensitivity gate: raising --effort [a-z]+ -> [a-z]+' "$TMP_ERR" 2>/dev/null \
+          | tail -n 1 | awk '{ print $NF }')" || CREW_STAMP_EFFORT_GATE=""
         CREW_STAMP_JOB_ID="$JOB_ID" \
         CREW_STAMP_OUT="$CREW_ARCHIVE_DIR/$JOB_ID.dispatch.json" \
         CREW_STAMP_CONFIG="${CODEX_HOME:-$HOME/.codex}/config.toml" \
+        CREW_STAMP_EFFORT_GATE="$CREW_STAMP_EFFORT_GATE" \
         python3 - "$@" <<'PY'
 import json, os, re, sys, time
 
@@ -3525,14 +3543,23 @@ effort_config = config_effort(os.environ["CREW_STAMP_CONFIG"])
 # On the native `review` path it does not exist at all, and crew-codex rejects
 # it before we ever get here — so there it can only be config-sourced.
 from_flag = subcommand in ("task", "adversarial-review") and effort_requested is not None
+effort_effective = effort_requested if from_flag else effort_config
+effort_source = "flag" if from_flag else "config"
+# The sensitivity gate outranks both: when it fires, the turn ran at ITS value,
+# not the flag's and not the config's. Scraped from the driver's own stderr by
+# the caller of this script; absent means the gate did not raise anything.
+effort_gate = os.environ.get("CREW_STAMP_EFFORT_GATE") or None
+if effort_gate:
+    effort_effective = effort_gate
+    effort_source = "sensitivity-gate"
 record = {
     "jobId": os.environ["CREW_STAMP_JOB_ID"],
     "subcommand": subcommand,
     "model": flag_value("--model"),
     "effortRequested": effort_requested,
-    "effortEffective": effort_requested if from_flag else effort_config,
+    "effortEffective": effort_effective,
     "effortConfig": effort_config,
-    "effortSource": "flag" if from_flag else "config",
+    "effortSource": effort_source,
     # NOT the raw argv. Positionals on these subcommands are the review focus
     # text and task prompts, which routinely carry pasted incident logs, internal
     # hostnames and secret-bearing commands -- and this archive is deliberately
