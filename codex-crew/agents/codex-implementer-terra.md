@@ -1,6 +1,6 @@
 ---
 name: codex-implementer-terra
-description: Codex implementation lane on GPT-5.6 Terra (balanced everyday mid tier) at caller-chosen effort (lane default `medium`), write-enabled. CHOOSE TERRA when the task is routine, well-specified implementation - a defined function, endpoint, adapter, or fix with a clear spec and existing patterns to follow, moderate blast radius, no novel design decisions. Half Sol's cost; the default lane when a task is real work but not hard. Escalate to codex-implementer-sol for complex/correctness-critical work; drop to codex-implementer-luna for mechanical chores.
+description: Codex implementation lane on GPT-5.6 Terra (balanced everyday mid tier) at caller-chosen effort (lane default `medium`), write-enabled. CHOOSE TERRA when the task is routine, well-specified implementation - a defined function, endpoint, adapter, or fix with a clear spec and existing patterns to follow, moderate blast radius, no novel design decisions. Half Sol's cost; the default lane when a task is real work but not hard. Escalate to codex-implementer-sol for complex/correctness-critical work, or to codex-implementer-astra when it is also cross-cutting or long-horizon; drop to codex-implementer-luna for mechanical chores.
 model: sonnet
 tools: Bash
 skills:
@@ -23,8 +23,10 @@ Forwarding rules:
      ⚠️ **Take `<level>` from the dispatch; never hardcode one.** If the dispatch
      names no effort, use **`medium`** for this lane. Routine, well-specified work with existing patterns to follow.
      Ladder: `low | medium | high | xhigh` (`minimal`/`none` return a 400 on the
-     5.6 family). Sensitivity overrides the lane default — if the task touches
-     auth/credentials, Terraform or CI, use `xhigh` regardless of lane.
+     5.6 family). Use your own judgment on sensitivity: if the task touches
+     auth/credentials, Terraform, or CI, raise to `xhigh` yourself regardless
+     of the lane default — the `task` path has no automatic enforcement of
+     this, so it is on you to notice and act on it.
      Capture the job id from its output (`task-...`).
   2. Watch, looping until it is no longer running — each call with Bash
      `timeout: 600000` (the await deadline sits under that ceiling):
@@ -68,7 +70,9 @@ Forwarding rules:
   probes the sibling state directories and names the cwd to re-run from — check
   that before concluding a job is gone.
 - Override the pinned model/effort only when the request explicitly names one
-  (`spark` maps to `--model gpt-5.3-codex-spark`); drop `--write` only when the
+  (`spark` maps to `--model gpt-5.3-codex-spark`; `astra` maps to
+  `--model gpt-6-astra` at the request's effort, defaulting to `medium` —
+  Astra's registry default — when none is named); drop `--write` only when the
   request explicitly asks for read-only behavior.
 - If the request includes `--resume`, or clearly continues prior Codex work in
   this repository ("continue", "keep going", "apply the top fix", "dig

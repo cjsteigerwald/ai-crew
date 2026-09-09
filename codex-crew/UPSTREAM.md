@@ -12,9 +12,9 @@ working out what was already here cost more than applying the changes did.
 | | |
 |---|---|
 | Upstream repo | `sidkik/claude-plugins` (marketplace `sidkik-plugins`) |
-| Synced to | **v0.6.1**, commit `965b419` (`test(codex-crew): make the suite leave nothing behind`) |
-| Synced on | 2026-08-28 |
-| This plugin's version | **0.7.0** |
+| Synced to | **v0.7.0**, commit `4a68b5e` |
+| Synced on | 2026-09-09 (ported from upstream 2026-09-08) |
+| This plugin's version | **0.8.0** |
 
 Upstream is **not** wired up for you. Git remotes are per-clone: they are never
 committed and never travel with the repo, so every fresh checkout of this fork
@@ -30,7 +30,7 @@ git remote add upstream https://github.com/sidkik/claude-plugins.git
 git remote get-url upstream   # must print https://github.com/sidkik/claude-plugins.git
 
 git fetch upstream --tags
-git diff 965b419 upstream/main -- codex-crew/
+git diff 4a68b5e upstream/main -- codex-crew/
 ```
 
 Two failure modes share one signature, which is why the check above reads the
@@ -38,8 +38,8 @@ URL. If the remote is missing, `git fetch upstream` aborts with
 `fatal: 'upstream' does not appear to be a git repository` (exit 128). If it
 exists but points at an unrelated repo, `git remote add` errors with
 `error: remote upstream already exists.` (exit 3), a pasted block runs straight
-past it, and the fetch then succeeds — but `965b419` is reachable only from
-upstream's history, so the diff aborts with `fatal: bad revision '965b419'`
+past it, and the fetch then succeeds — but `4a68b5e` is reachable only from
+upstream's history, so the diff aborts with `fatal: bad revision '4a68b5e'`
 (exit 128) in that case too. Identical message, opposite causes; neither ever
 returns a misleadingly empty diff.
 
@@ -51,9 +51,9 @@ catches it.
 ## Version numbers do not line up, and never will
 
 Both projects independently reached `0.6.0` with **completely different code**.
-This fork jumped to `0.7.0` to get clear of the collision. Never assume a shared
-version number means shared code — compare against the commit in the table
-above, never against a tag name.
+This fork jumped to `0.7.0` to get clear of the collision. Now at `0.8.0` after
+porting upstream v0.7.0. Never assume a shared version number means shared code —
+compare against the commit in the table above, never against a tag name.
 
 ## Deliberate divergences
 
@@ -71,11 +71,33 @@ without changing the decision first.
 | `crew_lock_acquire` key | `md5sum` | `md5sum` → `md5` → `cksum` | `md5sum` is GNU; darwin ships `md5`. Upstream fails open, so the per-cwd launch lock was silently skipped on a whole platform. |
 | `CREW_ROOT` | `readlink -f` | `cd ... && pwd` | `readlink -f` is GNU-only; resolution failure would take the patch file, the app-server bridge and every steer/queue call with it. |
 
+### Divergences from upstream v0.7.0
+
+**Caller-chosen effort is retained; upstream's fixed `xhigh` pins are NOT adopted.** Upstream has long defaulted every lane (sol, terra, luna, reviewer) to a hardcoded `xhigh` — at the *previous* sync point (`965b419`), upstream's `codex-implementer-sol.md:3` already read "at xhigh effort", so v0.7.0 did not convert anything; those diff rows are context-only. Caller-chosen per-dispatch effort has only ever existed in this fork — it is fork-only, not a capability upstream removed. Upstream's agents also still let an explicitly requested effort override the `xhigh` pin, so upstream's `xhigh` is a strong *default*, not a fixed effort; "adopting the pins would delete a capability" would therefore have overstated the difference. This fork keeps per-lane defaults that a dispatch can override because the user explicitly asked for effort to stay a per-job decision, and because the fork's `lib/review-with-effort.mjs` driver exists specifically to make effort a per-dispatch decision on the review path.
+
+**Upstream's lane-pin test block was not ported.** Upstream's suite (`check_contains ... 'crew-codex task --background --model gpt-5.6-sol --effort xhigh --write'`, and the matching lines for terra/luna/reviewer) asserts that each agent file's *default launch string* is hardcoded to `xhigh` — it greps the static launch line in each agent's markdown; it never dispatches a job or exercises a caller-supplied effort. Upstream's own agents still let an explicit request override that default (see above), so the test only pins what ships when no effort is named, not what happens when one is. This fork deliberately does not pin that default launch string (see above), so porting the test block would assert something the fork intentionally does not do; it stays unported until the pin decision itself changes.
+
+**Lane defaults lowered to `medium`.** `codex-implementer-sol` and `codex-reviewer` previously defaulted to `high`; both now default to `medium`. `terra` stays `medium`, `luna` stays `low`. The sensitivity override is unchanged: auth/credentials, Terraform or CI work still uses `xhigh` regardless of lane default.
+
+**Astra was ported into the fork's idiom, not copied verbatim.** Upstream's `agents/codex-implementer-astra.md` documents exit code **4** for SUPERSEDED and prefixes every command with `cd <sandbox root> && `. This fork uses exit code **5** for SUPERSEDED and the "run from the directory you launched from; `crew-codex` probes sibling state directories on a miss" idiom. Copying upstream's file verbatim would have shipped a wrong exit code.
+
 ## Fork-only features (upstream has none of these)
 
 Do not expect a port to touch them, and do not let one regress them:
 
 - `adversarial-review --effort` and `lib/review-with-effort.mjs`
+- the deterministic sensitivity gate (`lib/review-with-effort.mjs`,
+  `SENSITIVE_PATH_RULES` / `SENSITIVE_CONTENT_RULES` / `resolveEffectiveEffort`):
+  classifies the changed files of an `adversarial-review --effort` dispatch
+  (Terraform, Bicep/ARM, CloudFormation, Kubernetes RBAC/NetworkPolicy, CI/CD,
+  secret material, auth-ish source paths) and RAISES the effort to `xhigh` on a
+  match — never lowers, always announces the match on stderr.
+  `CREW_CODEX_SENSITIVITY_OVERRIDE="<reason>"` opts out for one dispatch and
+  requires a non-empty value (only emptiness is checked — see Known gaps).
+  Upstream has nothing like it.
+  ⚠️ **SCOPE LIMIT**: only `adversarial-review` invoked *with* `--effort` goes
+  through this gate. The `task` path is not covered, and `adversarial-review`
+  with no `--effort` routes to the vendor review path ungated (see Known gaps).
 - dispatch stamping (`<job>.dispatch.json`)
 - the archive sanitizer, the `.sanitized` provenance sentinel, and `sanitize-archive`
 - `reap`'s report-only `--brokers` / `--state` sweeps and its exit-3 "incomplete" contract
@@ -92,3 +114,67 @@ Do not expect a port to touch them, and do not let one regress them:
   run on a machine without the codex plugin installed even though it only
   touches local archive files. Pre-existing; it is why 15 suite cases fail in a
   container with no codex plugin.
+- **FIXED.** `lib/review-with-effort.mjs` used to gate the "`none`/`minimal` are
+  rejected" check behind `GPT_5_6_MODEL_PATTERN` (`/^gpt-5\.6/i`) alone, so
+  `--model gpt-6-astra --effort none` slipped past the local guard and only
+  failed at the API. That pattern is gone; `modelRejectsMinimalEfforts()` now
+  checks a table covering both the GPT-5.6 family and `gpt-6-astra` (verified
+  against `codex-crew/lib/review-with-effort.mjs` and exercised by
+  `codex-crew/tests/run.sh` Case 59, "the none/minimal guard covers the Astra
+  lane").
+- `adversarial-review` invoked with **no `--effort`** bypasses the sensitivity
+  gate and the effort driver entirely — it runs through the vendor review path
+  at whatever `model_reasoning_effort` the codex config carries, even on a
+  Terraform/CI/auth-touching diff. The gate only ever sees a dispatch that
+  already passed `--effort`.
+- `CREW_CODEX_SENSITIVITY_OVERRIDE` enforces only that its value is **non-empty**,
+  not that it is reason-shaped (`lib/review-with-effort.mjs`, the
+  `override !== ""` check). `CREW_CODEX_SENSITIVITY_OVERRIDE=1` therefore
+  satisfies the "written reason" requirement and bypasses the gate, recording
+  `stated reason: 1`. That is exactly the flip-it-once-in-a-shell-profile switch
+  the surrounding comment says the reason string exists to prevent. The
+  override's loud stderr block still fires, so the bypass is never silent — but
+  the reason it prints can be meaningless. Wants a minimum-length or
+  multi-word check.
+- **Classification/review race (TOCTOU).** The gate resolves the review target
+  and classifies it in the parent process, in
+  `resolveEffectiveEffort()` in `lib/review-with-effort.mjs` (the call that
+  forces `{ includeDiff: true }`), but the detached worker's
+  `executeAdversarialReviewRun()` in the same file re-resolves the target and
+  re-collects the diff content independently rather than reusing what the
+  parent already classified. With an `auto` scope, the parent
+  can classify a clean-branch diff at `medium`; if a `main.tf` is created
+  before the detached worker runs, the worker resolves against the working
+  tree instead and ends up reviewing Terraform at `medium`. An explicit branch
+  target can also shift underneath the gate if HEAD moves between dispatch and
+  execution. So the gate does not strictly classify the exact diff that gets
+  reviewed. Deferred deliberately: fixing it needs either worker-side
+  reclassification immediately before the turn, or an immutable snapshot
+  persisted at dispatch time.
+- **Audit sidecar is spoofable through the override reason.** `bin/crew-codex`
+  scrapes the unanchored phrase `sensitivity gate: raising --effort <from> ->
+  <to>` out of the dispatch's stderr (the `CREW_STAMP_EFFORT_GATE` assignment)
+  to stamp
+  `effortEffective`/`effortSource` into the `.dispatch.json` audit record. The
+  gate's override path (`lib/review-with-effort.mjs`) also echoes
+  `CREW_CODEX_SENSITIVITY_OVERRIDE`'s value verbatim onto stderr as
+  `stated reason: <value>`. Setting that env var to a reason string that itself
+  *contains* the scraped phrase makes the grep match inside the echoed reason
+  instead of the gate's own escalation line, so the sidecar stamps
+  `effortEffective: xhigh` / `effortSource: sensitivity-gate` while the turn
+  actually ran at the lower, overridden effort — the job record and the
+  sidecar then disagree. This requires the operator to sabotage their own
+  audit trail, so it is self-inflicted rather than a privilege boundary, but it
+  means the sidecar is not trustworthy evidence on its own. Proper fix: pass
+  the effective effort as machine-readable output, or read it from the
+  driver's job record, instead of scraping human-readable stderr.
+
+## Open questions
+
+- **UNVERIFIED**: upstream claims `gpt-5.4-mini` was retired 2026-08-31.
+  `codex-crew/README.md` and `codex-crew/skills/crew-runtime/SKILL.md` still
+  offer it (the `mini` → `gpt-5.4-mini` alias). This claim has not been checked
+  against the actual model registry or a live dispatch, and the `mini`
+  references are deliberately left in place — removing them on an unverified
+  retirement claim risks breaking a lane that still works. Verify against a
+  live Codex CLI/API call before acting on this.

@@ -1795,17 +1795,52 @@ fs.appendFileSync(process.env.CREW_TEST_INVOKED, process.argv.slice(2).join("|")
 console.log("COMPANION-RAN:" + process.argv.slice(2).join("|"));
 EOF
 
+# The changed-file list and the diff body are parameterised so the sensitivity
+# cases below can hand the driver a Terraform change, a Bicep change or an RBAC
+# manifest without a git repository. Defaults reproduce the original fixture
+# exactly, so every case written before the gate existed is untouched.
 cat > "$TMP/effort/install/scripts/lib/git.mjs" <<'EOF'
 export function resolveReviewTarget(cwd, options = {}) {
   const base = options.base ?? "main";
   return { mode: "branch", label: `branch diff against ${base}`, baseRef: base, explicit: true };
 }
-export function collectReviewContext(cwd, target) {
-  return {
-    cwd, repoRoot: cwd, branch: "stub-branch", target, fileCount: 1, diffBytes: 42,
-    inputMode: "inline-diff", collectionGuidance: "STUB-GUIDANCE",
-    content: "STUB-DIFF", summary: "STUB-SUMMARY", changedFiles: ["stub.txt"]
+export function collectReviewContext(cwd, target, options = {}) {
+  const changedFiles = (process.env.CREW_TEST_CHANGED_FILES ?? "stub.txt")
+    .split(",").map((f) => f.trim()).filter(Boolean);
+  // Overridable independently of the list: a context reporting files it cannot
+  // name is exactly the shape the gate has to fail CLOSED on.
+  const fileCount = process.env.CREW_TEST_FILECOUNT
+    ? Number(process.env.CREW_TEST_FILECOUNT)
+    : changedFiles.length;
+  // The collector THROWS. "gate" throws only for the caller that forces the
+  // diff body, which is what an oversized diff really does (ENOBUFS out of
+  // spawnSync's 1 MiB default), leaving the unforced summary collection to
+  // succeed; "all" throws for everyone.
+  const throwMode = process.env.CREW_TEST_COLLECT_THROW ?? "";
+  if (throwMode === "all" || (throwMode === "gate" && options.includeDiff === true)) {
+    const err = new Error("spawnSync git ENOBUFS");
+    err.code = "ENOBUFS";
+    throw err;
+  }
+  // The vendor's REAL default: above 2 files or 256 KB it withholds the diff
+  // body and returns a summary (lib/git.mjs:332). A classifier handed this has
+  // no diff to match content rules against.
+  const selfCollect = process.env.CREW_TEST_SELF_COLLECT === "1" && options.includeDiff !== true;
+  const context = {
+    cwd, repoRoot: cwd, branch: "stub-branch", target, fileCount, diffBytes: 42,
+    inputMode: selfCollect ? "self-collect" : "inline-diff",
+    collectionGuidance: "STUB-GUIDANCE",
+    content: selfCollect
+      ? ["## Commit Log", "", "abc1234 change things", "", "## Diff Stat", "",
+         " " + changedFiles.join(" | 2 +-\n ") + " | 2 +-", "", "## Changed Files", "",
+         changedFiles.join("\n"), ""].join("\n")
+      : process.env.CREW_TEST_DIFF_CONTENT ?? "STUB-DIFF",
+    summary: "STUB-SUMMARY", changedFiles
   };
+  if (process.env.CREW_TEST_DROP_CHANGED_FILES === "1") {
+    delete context.changedFiles;
+  }
+  return context;
 }
 EOF
 
@@ -2229,6 +2264,368 @@ if [[ -n "$sidecar" ]]; then
     echo "FAIL: sidecar dropped routing metadata: $(cat "$sidecar")"; fail=$((fail + 1))
   fi
 fi
+
+
+# --- Case 58: the sensitivity gate ------------------------------------------
+# The security control this plugin previously only PROMISED in agent prose.
+# codex-reviewer.md pledged xhigh for auth/credential/Terraform/CI diffs while
+# forbidding the forwarding agent from reading the repo, so the escalation fired
+# only when a human happened to describe the change that way. These cases assert
+# the code does it: the classifier reads the same changed-file list the review
+# is built from, and the effort it produces is what reaches runAppServerTurn.
+run_gate() { # $1 = comma-separated changed files, $2 = diff content, rest = argv
+  local files="$1" content="$2"; shift 2
+  : > "$INVOKED_E"
+  rm -f "$TMP/effort/turn.json"
+  CLAUDE_CONFIG_DIR="$TMP/effort" CREW_TEST_INVOKED="$INVOKED_E" \
+  CREW_TEST_TURN_RECORD="$TMP/effort/turn.json" CREW_TEST_STATE_DIR="$STATE_E" \
+  CREW_CODEX_ARCHIVE_DIR="$ARC_E" CODEX_HOME="$TMP/effort/codex-home" \
+  CREW_CODEX_RETRY_DELAYS="0" CREW_TEST_CHANGED_FILES="$files" \
+  CREW_TEST_DIFF_CONTENT="$content" bash "$CREW" "$@" 2>&1
+}
+
+# The effort the TURN ran at, not the one the flag asked for. Every assertion
+# below reads this rather than trusting the stderr line: a gate that announces
+# an escalation it never applied is the failure mode worth catching.
+gate_turn_effort() {
+  python3 -c "import json; print(json.load(open('$TMP/effort/turn.json'))['effort'])" 2>/dev/null || echo MISSING
+}
+
+# 58a: a Terraform-only change raises medium to xhigh.
+out="$(run_gate "infra/edp/main.tf,infra/edp/prod.tfvars" "STUB-DIFF" \
+  adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+check "terraform change runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "terraform escalation is announced" 0 "sensitivity gate: raising --effort medium -> xhigh" "$rc" "$out"
+check "terraform escalation names the triggering path" 0 "infra/edp/main.tf" "$rc" "$out"
+check "terraform escalation names the rule" 0 "terraform:" "$rc" "$out"
+check "terraform escalation still dispatches the review" 0 "RENDERED Adversarial Review" "$rc" "$out"
+check "escalation points at the override" 0 "CREW_CODEX_SENSITIVITY_OVERRIDE" "$rc" "$out"
+
+# The audit trail has to agree with the turn. The .dispatch.json stamper only
+# ever sees argv, so without the gate's stderr contract it would archive this
+# review as having run at `medium` — the one number the record exists to hold.
+if python3 -c "
+import json
+d = json.load(open('$ARC_E/review-stub-default.dispatch.json'))
+assert d['effortRequested'] == 'medium', d
+assert d['effortEffective'] == 'xhigh', d
+assert d['effortSource'] == 'sensitivity-gate', d
+"; then
+  echo "PASS: sidecar records the gate-raised effort, not the flag's"; pass=$((pass + 1))
+else
+  echo "FAIL: sidecar wrong for a gate-raised review ($(cat "$ARC_E/review-stub-default.dispatch.json" 2>/dev/null))"; fail=$((fail + 1))
+fi
+if python3 -c "
+import json
+j = json.load(open('$STATE_E/review-stub-default.json'))
+assert j['effort'] == 'xhigh', j
+assert j['effortRequested'] == 'medium', j
+assert j['effortEffective'] == 'xhigh', j
+"; then
+  echo "PASS: job record keeps both the requested and the effective effort"; pass=$((pass + 1))
+else
+  echo "FAIL: job record lost the requested/effective effort pair"; fail=$((fail + 1))
+fi
+
+# 58b: Bicep — the review that prompted this work called the old prose list too
+# narrow, and Azure's IaC dialect was one of the things it did not mention.
+out="$(run_gate "infra/deploy.bicep" "STUB-DIFF" \
+  adversarial-review --effort low --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+check "bicep change runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "bicep escalation names the path" 0 "infra/deploy.bicep" "$rc" "$out"
+
+# 58c: a Kubernetes RBAC manifest under a name that gives nothing away. Only the
+# CONTENT says ClusterRoleBinding, so this is the case a filename-only
+# classifier fails, and the stderr line must still name the file.
+K8S_DIFF='### deploy/manifest.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ci-admin'
+out="$(run_gate "deploy/manifest.yaml" "$K8S_DIFF" \
+  adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+check "kubernetes RBAC manifest runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "kubernetes RBAC hit is attributed to its file" 0 "kubernetes-rbac: deploy/manifest.yaml" "$rc" "$out"
+
+# 58d: CI/CD — a workflow change runs with the fleet's credentials.
+out="$(run_gate ".github/workflows/deploy.yml" "STUB-DIFF" \
+  adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+check "workflow change runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "workflow escalation names the path" 0 ".github/workflows/deploy.yml" "$rc" "$out"
+
+# 58e: the negative case, and the one that keeps the control usable. A plain
+# source/docs diff must run at EXACTLY the requested effort with no gate output
+# at all — a gate that fires on everything is a gate that gets switched off.
+out="$(run_gate "src/app.ts,docs/notes.md" "STUB-DIFF" \
+  adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+check "plain source change keeps the requested effort" 0 "^medium\$" "$rc" "$(gate_turn_effort)"
+check_absent "plain source change says nothing about the gate" "$out" "sensitivity gate"
+check_absent "plain source change was not escalated" "$out" "xhigh"
+
+# 58f: RAISE ONLY. An explicit xhigh on a sensitive diff is left exactly as it
+# is — the gate reports the match but must not claim to have changed anything.
+out="$(run_gate "infra/edp/main.tf" "STUB-DIFF" \
+  adversarial-review --effort xhigh --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+check "explicit xhigh survives the gate" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "explicit xhigh is reported as already meeting the floor" 0 "already meets the" "$rc" "$out"
+check_absent "explicit xhigh is never described as raised" "$out" "raising --effort"
+
+# 58g: FAIL CLOSED. A context that reports changed files it cannot name leaves
+# the diff unproven, and unproven has to mean sensitive — otherwise a vendor
+# rename turns the whole control off silently, which is the failure mode this
+# file's other guards exist to prevent.
+export CREW_TEST_FILECOUNT=3
+out="$(run_gate "" "STUB-DIFF" adversarial-review --effort low --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+unset CREW_TEST_FILECOUNT
+check "unclassifiable diff runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "unclassifiable diff says why it escalated" 0 "unclassifiable-diff" "$rc" "$out"
+
+# 58h: the escape hatch is loud, states the caller's reason, and does not lower
+# anything by itself — it only declines to raise.
+export CREW_CODEX_SENSITIVITY_OVERRIDE="re-run of an already-reviewed diff"
+out="$(run_gate "infra/edp/main.tf" "STUB-DIFF" \
+  adversarial-review --effort low --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+unset CREW_CODEX_SENSITIVITY_OVERRIDE
+check "override keeps the requested effort" 0 "^low\$" "$rc" "$(gate_turn_effort)"
+check "override warns prominently" 0 "SENSITIVITY GATE OVERRIDDEN" "$rc" "$out"
+check "override states the caller's reason" 0 "re-run of an already-reviewed diff" "$rc" "$out"
+
+# ...but an override with no stated reason is not an override. A bare `=1` in a
+# shell profile would silently disable the control for every later dispatch.
+export CREW_CODEX_SENSITIVITY_OVERRIDE=""
+out="$(run_gate "infra/edp/main.tf" "STUB-DIFF" \
+  adversarial-review --effort low --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+unset CREW_CODEX_SENSITIVITY_OVERRIDE
+check "empty override does not disable the gate" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "empty override says it needs a reason" 0 "needs a written reason" "$rc" "$out"
+
+# 58i: THE BLIND-CLASSIFIER CASE. The vendor withholds the diff body above 2
+# files or 256 KB (lib/git.mjs:332) and returns Commit Log + Diff Stat +
+# Changed Files instead — i.e. on essentially every real PR. Collecting without
+# `{ includeDiff: true }` therefore ran every content rule against a summary
+# with no diff in it, and an RBAC manifest under an innocent filename sailed
+# through at medium. The stub here reproduces that vendor behaviour exactly: it
+# returns the summary UNLESS the caller forces the body. Revert the force and
+# this case fails — the escalation reason stops being the RBAC rule.
+export CREW_TEST_SELF_COLLECT=1
+out="$(run_gate "deploy/manifest.yaml,src/a.ts,src/b.ts" "$K8S_DIFF" \
+  adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+unset CREW_TEST_SELF_COLLECT
+check "self-collect-sized diff still runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "self-collect-sized diff is caught by the CONTENT rule" 0 "kubernetes-rbac: deploy/manifest.yaml" "$rc" "$out"
+check_absent "the forced body means nothing was left unread" "$out" "unreadable-diff-body"
+
+# 58j: the diff body cannot be read at all — the ENOBUFS a diff larger than
+# spawnSync's 1 MiB buffer really produces. Path rules still run off the
+# fallback collection (these paths match none of them), and the review is
+# escalated anyway: an unread body has not been shown to be insensitive.
+export CREW_TEST_COLLECT_THROW=gate
+out="$(run_gate "src/app.ts,docs/notes.md" "STUB-DIFF" \
+  adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+unset CREW_TEST_COLLECT_THROW
+check "unreadable diff body runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "unreadable diff body says why" 0 "unreadable-diff-body" "$rc" "$out"
+check "unreadable diff body still dispatches the review" 0 "RENDERED Adversarial Review" "$rc" "$out"
+
+# 58k: the collector fails outright, both attempts. There is no changed-file
+# list and no body, so the gate has nothing to acquit the diff with. The run
+# itself then fails on the same collector — the assertion is on the gate's
+# stderr, which is emitted before the dispatch.
+export CREW_TEST_COLLECT_THROW=all
+out="$(run_gate "infra/edp/main.tf" "STUB-DIFF" \
+  adversarial-review --effort low --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+unset CREW_TEST_COLLECT_THROW
+# Not `check ... 0 ...`: the run's OWN collection fails on the same collector,
+# so a zero exit here would mean the driver reviewed a diff it could not read.
+if [[ "$rc" != "0" ]] && grep -q "sensitivity gate: raising --effort low -> xhigh" <<<"$out"; then
+  echo "PASS: a failed collection escalates before the run gives up"; pass=$((pass + 1))
+else
+  echo "FAIL: a failed collection did not escalate (exit=$rc; out: $out)"; fail=$((fail + 1))
+fi
+if grep -q "unclassifiable-diff" <<<"$out"; then
+  echo "PASS: a failed collection says the diff is unclassifiable"; pass=$((pass + 1))
+else
+  echo "FAIL: a failed collection did not name the reason (out: $out)"; fail=$((fail + 1))
+fi
+
+# 58l: a context with NO changedFiles key at all — the shape an upstream rename
+# produces, where every import still succeeds. `Array.isArray(undefined)` is
+# false, so this must fail closed exactly like an empty list does.
+export CREW_TEST_DROP_CHANGED_FILES=1
+out="$(run_gate "src/app.ts" "STUB-DIFF" \
+  adversarial-review --effort low --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+unset CREW_TEST_DROP_CHANGED_FILES
+check "a context without changedFiles escalates" 0 "sensitivity gate: raising --effort low -> xhigh" "$rc" "$out"
+check "a context without changedFiles says why" 0 "unclassifiable-diff" "$rc" "$out"
+
+# 58m: NON-ASCII PATHS. core.quotePath is on by default, so `git diff
+# --name-only` hands back the literal `"infra/prod\303\274.tf"` — quotes and
+# octal escapes included. Every path rule is anchored, so the raw string matches
+# nothing and a Terraform-only branch used to run unescalated. The string below
+# is byte-for-byte what git emits for infra/prod<u-umlaut>.tf.
+out="$(run_gate '"infra/prod\303\274.tf"' "STUB-DIFF" \
+  adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+check "C-quoted terraform path runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "C-quoted path is reported decoded, not escaped" 0 "terraform: infra/prod.*\.tf" "$rc" "$out"
+check_absent "the escaped form is not what the operator is shown" "$out" '303\\274'
+
+# 58n: `### ` is the collector's untracked-file heading AND an ordinary YAML
+# comment. Attributing this segment to the "file" RBAC made it fail the k8s
+# rule's .yaml/.json filter, so the ClusterRoleBinding below it went UNCHECKED —
+# misattribution NARROWED the check. A heading that names no changed file is
+# now attributed to nothing, which widens it back.
+COMMENT_DIFF='### RBAC
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ci-admin'
+out="$(run_gate "deploy/manifest.yaml" "$COMMENT_DIFF" \
+  adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+check "a ### YAML comment does not hide an RBAC object" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "the unattributable hit is labelled as such" 0 "unattributed diff content" "$rc" "$out"
+
+# 58o: the strict-model warning is about the effort that will actually be SENT.
+# `--effort none` on a sensitive diff is raised to xhigh, which no model
+# rejects, so predicting an API rejection there was simply wrong.
+out="$(run_gate "infra/edp/main.tf" "STUB-DIFF" \
+  adversarial-review --effort none --model gpt-6-astra "focus")" && rc=0 || rc=$?
+check "a gate-raised none runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check_absent "no stale API-rejection warning once the gate raised the effort" "$out" "rejected by"
+# The other half: an UNRAISED none still warns, or the reorder silenced a real one.
+out="$(run_gate "src/app.ts" "STUB-DIFF" \
+  adversarial-review --effort none --model gpt-6-astra "focus")" && rc=0 || rc=$?
+check "an unraised none still warns about the API" 0 "rejected by gpt-6-astra" "$rc" "$out"
+
+# --- Case 58p: sensitive DIRECTORY segments, not just the final basename -----
+# The secret rule matched secret-SHAPED basenames, so `secrets/prod/config.yaml`
+# — a whole directory of them — was classified by its innocent leaf name and ran
+# unescalated. A `secrets/`, `credentials/` or `creds/` segment ANYWHERE in the
+# path is the thing that carries the hazard; the leaf name is incidental.
+for p in secrets/prod/config.yaml credentials/prod/config.json ops/creds/aws.json; do
+  out="$(run_gate "$p" "STUB-DIFF" \
+    adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+  check "$p runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+  check "$p is named as the trigger" 0 "secret-material: $p" "$rc" "$out"
+done
+
+# 58q: the full words. `auth-source` knew only the abbreviated stems, so a tree
+# named `authentication/` — what real code is actually called — read as ordinary
+# source. `identity` was not in the vocabulary at all.
+for p in internal/authentication/provider.ts services/authorization/policy.go src/Identity/provider.ts; do
+  out="$(run_gate "$p" "STUB-DIFF" \
+    adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+  check "$p runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+  check "$p is named as the trigger" 0 "auth-source: $p" "$rc" "$out"
+done
+
+# 58r: CamelCase source names. Segment anchoring alone requires the term to end
+# at a `/`, `.`, `_` or `-`, so `AuthService.ts` — the ordinary way a TypeScript
+# or C# auth entry point is named — ran at the lane default. The boundary that
+# makes this safe is the UPPERCASE letter after the term; see 58s.
+for p in src/AuthService.ts src/IdentityProvider.ts src/authService.ts lib/TokenStore/index.ts; do
+  out="$(run_gate "$p" "STUB-DIFF" \
+    adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+  check "$p runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+  check "$p is named as the trigger" 0 "auth-source: $p" "$rc" "$out"
+done
+
+# 58s: THE ANTI-FALSE-POSITIVE PROPERTY, and the reason this widening is safe to
+# ship. A control that fires on everything gets switched off, so each of these
+# must still run at EXACTLY the requested effort with no gate output at all.
+#
+#   author.js / authoring/ — `auth` followed by a lowercase letter is a word,
+#     not a term. Both the segment and the CamelCase anchoring require a
+#     separator or a capital after the term.
+#   authority.ts — same shape, and the new `authorization` term must not reach
+#     it either: `authority` is not a prefix-with-separator of anything.
+#   tokenizer.py — the guard the original rule was written around; unchanged.
+#   docs/environment.md — the dotenv rule needs a LEADING dot (`.env`).
+#   AUTHORS — the file at the root of half of GitHub, and the case that decides
+#     how case-insensitive the CamelCase rule may be: a per-letter /i term plus
+#     an uppercase boundary matches `AUTH` + `O`. Only the term's FIRST letter
+#     is case-flexible, so this stays clean.
+#   identityserver-docs/README.md — a judgment call, deliberately NOT matched.
+#     It is documentation named after a product, and the existing segment
+#     anchoring already excludes it; a real `IdentityServer/` implementation
+#     directory still trips the CamelCase rule on its capital S.
+for p in src/author.js authoring/guide.md src/authority.ts tokenizer.py docs/environment.md AUTHORS identityserver-docs/README.md; do
+  out="$(run_gate "$p" "STUB-DIFF" \
+    adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+  check "$p keeps the requested effort" 0 "^medium\$" "$rc" "$(gate_turn_effort)"
+  check_absent "$p says nothing about the gate" "$out" "sensitivity gate"
+done
+
+# 58t: RENAMES. `git diff --name-only` — the vendor's only source for
+# changedFiles (lib/git.mjs:266) — reports a rename as its DESTINATION alone, so
+# renaming `infra/main.tf` to `archive/main.txt` handed the classifier one path
+# matching no rule and a Terraform change went unclassified. Git's rename
+# detection is on by default, so the pre-rename name is in the diff BODY, in the
+# extended header the fixture below reproduces verbatim from real `git diff`
+# output. BOTH sides must be classified.
+RENAME_DIFF='diff --git a/infra/main.tf b/archive/main.txt
+similarity index 100%
+rename from infra/main.tf
+rename to archive/main.txt'
+out="$(run_gate "archive/main.txt" "$RENAME_DIFF" \
+  adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+check "a renamed terraform file runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "the pre-rename path is what is reported" 0 "terraform: infra/main.tf (pre-rename path)" "$rc" "$out"
+
+# ...and the destination is not mislabelled as a pre-rename path. `rename to`
+# names a file that IS in changedFiles, so it must be reported plainly or the
+# operator is told a path that still exists no longer does.
+RENAME_SENSITIVE_DEST='diff --git a/docs/notes.md b/secrets/notes.md
+similarity index 100%
+rename from docs/notes.md
+rename to secrets/notes.md'
+out="$(run_gate "secrets/notes.md" "$RENAME_SENSITIVE_DEST" \
+  adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+check "a rename INTO a secrets tree runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "the destination is reported plainly" 0 "secret-material: secrets/notes.md" "$rc" "$out"
+check_absent "the destination is not called a pre-rename path" "$out" "secrets/notes.md (pre-rename path)"
+
+# ...and a rename that touches nothing sensitive on EITHER side still says
+# nothing. The old-path lookup must not become a second way to fire on
+# everything.
+BENIGN_RENAME='diff --git a/src/a.ts b/src/b.ts
+similarity index 100%
+rename from src/a.ts
+rename to src/b.ts'
+out="$(run_gate "src/b.ts" "$BENIGN_RENAME" \
+  adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+check "a benign rename keeps the requested effort" 0 "^medium\$" "$rc" "$(gate_turn_effort)"
+check_absent "a benign rename says nothing about the gate" "$out" "sensitivity gate"
+
+
+# --- Case 59: the none/minimal guard covers the Astra lane ------------------
+# gpt-6-astra rejects `none` and `minimal` at the API exactly as the 5.6 family
+# does. Before this, the local guard was pinned to /^gpt-5\.6/i, so an Astra
+# dispatch passed local validation and only failed minutes later at the API.
+for e in none minimal; do
+  out="$(run_effort adversarial-review --effort "$e" --model gpt-6-astra "focus")" && rc=0 || rc=$?
+  check "$e on gpt-6-astra warns locally" 0 "rejected by gpt-6-astra" "$rc" "$out"
+  check "$e on gpt-6-astra names the usable ladder" 0 "ladder on gpt-6-astra is low|medium|high|xhigh" "$rc" "$out"
+  # Warn, never block: the wrapper mirrors the RUNTIME's contract, not one
+  # family's, so the dispatch still goes out.
+  check "$e on gpt-6-astra still dispatches" 0 "RENDERED Adversarial Review" "$rc" "$out"
+done
+
+# A usable effort on Astra must warn about nothing. The positive half matters:
+# an absence check alone passes when the dispatch failed and printed nothing.
+out="$(run_effort adversarial-review --effort medium --model gpt-6-astra "focus")" && rc=0 || rc=$?
+if grep -q "RENDERED Adversarial Review" <<<"$out" && ! grep -q "rejected by" <<<"$out"; then
+  echo "PASS: medium on gpt-6-astra dispatches and warns about nothing"; pass=$((pass + 1))
+else
+  echo "FAIL: medium on gpt-6-astra warned spuriously or did not dispatch (out: $out)"; fail=$((fail + 1))
+fi
+
+# Regression guard: widening the predicate must not have moved the 5.6 family's
+# behaviour, including the wording the 5.6 cases above assert.
+out="$(run_effort adversarial-review --effort minimal --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+check "minimal on gpt-5.6-sol still names the 5.6 family" 0 "rejected by the GPT-5.6 family" "$rc" "$out"
+check_absent "the 5.6 warning does not mention astra" "$out" "astra"
+out="$(run_effort adversarial-review --effort high --model gpt-5.6-terra "focus")" && rc=0 || rc=$?
+check_absent "high on gpt-5.6-terra warns about nothing" "$out" "rejected by"
 
 # Case 54z: reap must MERGE into a fresh read of state.json, never write back
 # the snapshot it classified from. This is the difference between "another

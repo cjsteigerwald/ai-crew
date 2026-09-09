@@ -6,7 +6,7 @@ delegate-agent packs:
 | Plugin | Models | What it gives you |
 |---|---|---|
 | **claude-crew** | Haiku / Sonnet / Opus | Tiered Claude delegate agents (scout / reader / implementer lanes) so delegated subagent work stops inheriting the expensive session model |
-| **codex-crew** | GPT-family (luna / terra / sol) | Codex implementer lanes and a read-only reviewer, for cross-model implementation and adversarial review |
+| **codex-crew** | GPT-family (luna / terra / sol / astra) | Codex implementer lanes and a read-only reviewer, for cross-model implementation and adversarial review |
 
 The two crews are complementary: Codex lanes give cross-model implementation
 and adversarial independence; Claude lanes give cheap same-family search,

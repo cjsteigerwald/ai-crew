@@ -48,12 +48,40 @@ const VALID_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xh
 // against the account (devops docs/ai/codex-crew-setup.md): the GPT-5.6 family
 // returns a 400 on reasoning.effort for `none` and `minimal`, so the usable
 // ladder on the models we actually dispatch (sol/terra/luna) starts at `low`.
-// We still ACCEPT all six — another model family may take them, and pinning
-// the wrapper to one family's limits would be wrong — but we warn, because
-// otherwise the failure surfaces as an opaque API 400 minutes into a job
-// rather than as a predictable consequence of the flag.
-const EFFORTS_REJECTED_BY_GPT_5_6 = new Set(["none", "minimal"]);
-const GPT_5_6_MODEL_PATTERN = /^gpt-5\.6/i;
+// gpt-6-astra rejects the same two. We still ACCEPT all six — another model
+// family may take them, and pinning the wrapper to one family's limits would be
+// wrong, which is why VALID_REASONING_EFFORTS above is deliberately NOT narrowed
+// — but we warn, because otherwise the failure surfaces as an opaque API 400
+// minutes into a job rather than as a predictable consequence of the flag.
+const EFFORTS_REJECTED_BY_STRICT_MODELS = new Set(["none", "minimal"]);
+
+// One row per model family known to 400 on `none`/`minimal`. A row carries its
+// own wording so the warning names the family the caller actually asked for
+// rather than a family they never mentioned. Add a row when a new lane is
+// ported; do not bolt a second regex onto the call site.
+const MINIMAL_EFFORT_REJECTING_MODELS = [
+  {
+    pattern: /^gpt-5\.6/i,
+    label: "the GPT-5.6 family",
+    ladder: "The usable ladder on gpt-5.6-sol/terra/luna is low|medium|high|xhigh."
+  },
+  {
+    pattern: /^gpt-6-astra/i,
+    label: "gpt-6-astra",
+    ladder: "The usable ladder on gpt-6-astra is low|medium|high|xhigh."
+  }
+];
+
+// A null/blank model means the codex config picks one, and that default is a
+// 5.6 model here — so an absent model is treated as 5.6 too. A false warning
+// costs a line of stderr; a missed one costs a whole job.
+function modelRejectsMinimalEfforts(model) {
+  const name = String(model ?? "").trim();
+  if (name === "") {
+    return MINIMAL_EFFORT_REJECTING_MODELS[0];
+  }
+  return MINIMAL_EFFORT_REJECTING_MODELS.find((entry) => entry.pattern.test(name)) ?? null;
+}
 
 const REVIEW_NAME = "Adversarial Review";
 const JOB_TITLE = "Codex Adversarial Review";
@@ -333,6 +361,536 @@ function collectSkippedFiles(content, changedFiles) {
   return [...paths];
 }
 
+// ---- the sensitivity gate: a code-enforced FLOOR on review effort ---------
+//
+// ⚠️ THIS IS A SECURITY CONTROL, not a convenience. codex-reviewer.md has
+// always PROMISED `xhigh` when a diff touches auth, credentials, Terraform or
+// CI — but that promise lived in agent prose, and the same file forbids the
+// forwarding agent from inspecting the repository, so nothing ever read the
+// diff to check. The escalation therefore fired only when the human caller
+// happened to DESCRIBE the change that way; an unannotated "adversarially
+// review this branch" ran a real Terraform change at the lane default. This
+// classifier closes that gap: it reads the changed-file list the review is
+// built from, and raises the effort with no way for prose to disagree.
+//
+// ⚠️ WIDENING THESE LISTS IS ALWAYS SAFE. The worst case is a review that costs
+// more than it strictly needed to. NARROWING THEM NEEDS REVIEW: every pattern
+// removed is a class of change that silently drops back to the lane default,
+// which is precisely the failure this exists to remove. Add first, argue later.
+//
+// ⚠️ Every pattern below is NON-GLOBAL on purpose. A `/g` regex carries
+// lastIndex between .test() calls, so the second file matched against it would
+// be tested from an offset and could report "not sensitive" — a stateful
+// security check that fails open on the second hit.
+const SENSITIVITY_FLOOR_EFFORT = "xhigh";
+const SENSITIVITY_OVERRIDE_ENV = "CREW_CODEX_SENSITIVITY_OVERRIDE";
+// Enough to identify the change; a 400-file diff must not bury the reason in
+// its own evidence.
+const SENSITIVITY_PATHS_SHOWN = 8;
+
+// The auth/identity vocabulary, kept as ONE list because it feeds TWO
+// anchorings below, and a security control whose vocabulary lives in two places
+// grows two different vocabularies. The full words sit beside the abbreviated
+// stems deliberately: an abbreviations-only list read `internal/authentication/`
+// and `services/authorization/` — what real trees are actually called — as
+// ordinary source, and `identity` was absent altogether.
+//
+// Order is cosmetic, not load-bearing: JS alternation is leftmost-first but
+// backtracks into the later branches, so `auth` before `authentication` still
+// matches `authentication/`. Longest-first simply reads as the intent.
+const AUTH_SOURCE_TERMS = [
+  "authentication", "authorization", "authn", "authz", "auth",
+  "oauth2?", "oidc", "saml", "sso", "iam", "identity", "rbac",
+  "login", "logout", "session", "jwt", "token", "crypto",
+  "keyvault", "kms", "vault", "permissions?"
+];
+
+// `auth` -> `[Aa]uth`. ONLY the first letter is made case-flexible, and that
+// restraint is the entire false-positive story of the CamelCase anchoring: a
+// per-letter case-insensitive term followed by an uppercase boundary matches
+// `AUTHORS`, a file at the root of a great many repositories. `[Aa]uth[A-Z]`
+// does not, while still covering `AuthService.ts` and `authService.ts`.
+// Accepted consequence: an all-caps acronym run together with a capitalised
+// word (`SSOManager.ts`) is NOT caught by this anchoring — the segment rule
+// still catches `sso/` and `sso-manager.ts`.
+function camelCaseTermPattern(term) {
+  const first = term[0];
+  return `[${first.toUpperCase()}${first}]${term.slice(1)}`;
+}
+
+// Anchoring 1 — whole path SEGMENT, or the start of one up to a `.`/`_`/`-`.
+// Unchanged in shape from the original rule; only the vocabulary widened.
+const AUTH_SOURCE_SEGMENT_PATTERN = new RegExp(
+  `(^|/)(${AUTH_SOURCE_TERMS.join("|")})([._-][^/]*)?(/|$)`,
+  "i"
+);
+
+// Anchoring 2 — a sensitive term as the LEADING CamelCase component of a
+// segment: `AuthService.ts`, `IdentityProvider.ts`, `TokenStore/index.ts`.
+// Deliberately NOT `/i`: the required uppercase letter after the term is the
+// only thing separating `AuthService` from `author`, and a case-insensitive
+// boundary would erase it.
+const AUTH_SOURCE_CAMEL_PATTERN = new RegExp(
+  `(^|/)(${AUTH_SOURCE_TERMS.map(camelCaseTermPattern).join("|")})[A-Z][^/]*(/|$)`
+);
+
+// Matched against each CHANGED PATH, repo-relative and forward-slashed, as the
+// vendor reports it. Case-insensitive throughout: `Jenkinsfile`, `JenkinsFile`
+// and `jenkinsfile` are the same hazard, and case is the cheapest possible
+// bypass of a security control. ONE deliberate exception, documented where it
+// lives: AUTH_SOURCE_CAMEL_PATTERN, whose required uppercase boundary is the
+// only thing telling `AuthService.ts` from `author.js`.
+//
+// A rule's `pattern` may be a single regex or an ARRAY of them, matched with
+// `some` — an alternative exists only because two anchorings cannot share one
+// `i` flag, never to make a rule harder to read.
+const SENSITIVE_PATH_RULES = [
+  {
+    rule: "terraform",
+    why: "Terraform configuration, variables or state",
+    pattern: /(^|\/)[^/]*\.(tf|tfvars|tfstate|tfstate\.backup)$|\.(tf|tfvars)\.json$/i
+  },
+  {
+    rule: "azure-bicep-arm",
+    why: "Azure Bicep or ARM deployment template",
+    pattern: /\.bicep(param)?$|(^|\/)(arm|arm-templates?)\/|(^|\/)(azuredeploy|maintemplate|template)[^/]*\.json$/i
+  },
+  {
+    rule: "cloudformation",
+    why: "CloudFormation / SAM template",
+    pattern: /(^|\/)(cloudformation|cfn)([/._-])|\.(template|cfn)\.(ya?ml|json)$|(^|\/)(template|samconfig)\.ya?ml$/i
+  },
+  {
+    rule: "kubernetes-rbac",
+    why: "Kubernetes RBAC or network-policy manifest (by filename)",
+    pattern: /(^|\/)rbac\/|(^|\/)(rbac|roles?|rolebindings?|clusterroles?|clusterrolebindings?|networkpolic(y|ies)|netpol|podsecuritypolic(y|ies)|psp)([._-][^/]*)?\.(ya?ml|json)$/i
+  },
+  {
+    rule: "ci-cd",
+    why: "CI/CD pipeline definition — it runs with the fleet's credentials",
+    pattern: /(^|\/)\.github\/(workflows|actions)\/|(^|\/)\.gitlab-ci[^/]*\.ya?ml$|(^|\/)azure-pipelines[^/]*\.ya?ml$|(^|\/)Jenkinsfile[^/]*$|(^|\/)\.circleci\/|(^|\/)\.buildkite\/|(^|\/)bitbucket-pipelines\.ya?ml$/i
+  },
+  {
+    rule: "secret-material",
+    why: "key, certificate, dotenv or a path named for a secret",
+    // `.env` matches `.env`, `.env.local`, `.env-prod` — the separator is
+    // required so `.environment.md` does not trip it — plus `.envrc`, which is
+    // where direnv keeps service-principal credentials.
+    //
+    // The `(secret|credential|...)` alternative is anchored at `$`, so it only
+    // ever read the FINAL BASENAME: `secrets/prod/config.yaml` was classified
+    // by its innocent leaf name while a whole directory of key material sat in
+    // the path. The `(secrets?|credentials?|creds)` alternative below is
+    // segment-anchored the same way auth-source is, so it fires on the
+    // DIRECTORY anywhere in the path — and on `creds.json` as a basename.
+    pattern: /\.(pem|key|p12|pfx|jks|keystore|asc|gpg|ppk)$|(^|\/)\.env($|[._-])|(^|\/)\.envrc$|(^|\/)(secrets?|credentials?|creds)([._-][^/]*)?(\/|$)|(^|\/)[^/]*(secret|credential|password|passwd|htpasswd|api[-_]?key)[^/]*$|(^|\/)(id_rsa|id_dsa|id_ecdsa|id_ed25519|authorized_keys|\.netrc|\.npmrc|\.pgpass|kubeconfig)([._-][^/]*)?$/i
+  },
+  {
+    rule: "auth-source",
+    // CONSERVATIVE BY CHOICE, and the choice is the ANCHORING, not the
+    // vocabulary. A term counts only when it is a whole path SEGMENT, the start
+    // of one up to a `.`/`_`/`-`, or the leading CamelCase component of one. So
+    // `auth/`, `auth.ts`, `authz_test.go` and `AuthService.ts` trip it while
+    // `author.js`, `authoring/` and `authority.ts` do not. A substring match on
+    // the same words would escalate every file with "session" or "login"
+    // anywhere in its path, and a control that fires on everything gets turned
+    // off. Known and accepted false positive: docs named `token_*`.
+    //
+    // The VOCABULARY, by contrast, is widened freely — see AUTH_SOURCE_TERMS.
+    // Both patterns are non-global, as every pattern in this list must be.
+    why: "authentication / authorization / identity source path",
+    pattern: [AUTH_SOURCE_SEGMENT_PATTERN, AUTH_SOURCE_CAMEL_PATTERN]
+  }
+];
+
+// Matched against the COLLECTED REVIEW CONTENT, because some hazards are
+// invisible in a filename: `deploy/manifest.yaml` is a ClusterRoleBinding only
+// on the inside. `paths` narrows a rule to the files it can meaningfully apply
+// to; `paths: null` means "anywhere in the diff".
+const SENSITIVE_CONTENT_RULES = [
+  {
+    rule: "kubernetes-rbac",
+    why: "a manifest declaring a Kubernetes RBAC or network-policy object",
+    paths: /\.(ya?ml|json|tpl)$/i,
+    // Leading `+`/`-` allowed: in a unified diff the manifest line is prefixed.
+    pattern: /^[+\-\s]*["']?kind["']?\s*:\s*["']?(Role|ClusterRole|RoleBinding|ClusterRoleBinding|NetworkPolicy|PodSecurityPolicy|ServiceAccount|Secret)["']?,?\s*$/m
+  },
+  {
+    rule: "azure-bicep-arm",
+    why: "an ARM deployment-template schema",
+    paths: /\.json$/i,
+    pattern: /deploymentTemplate\.json#|Microsoft\.Authorization\/roleAssignments/i
+  },
+  {
+    rule: "cloudformation",
+    why: "a CloudFormation / SAM template header",
+    paths: /\.(ya?ml|json)$/i,
+    pattern: /AWSTemplateFormatVersion|AWS::Serverless-2016-10-31|AWS::IAM::/
+  },
+  {
+    rule: "helm-secret-values",
+    why: "a Helm values file carrying a secret-shaped key",
+    paths: /(^|\/)values[^/]*\.ya?ml$/i,
+    pattern: /^[+\-\s]*["']?[A-Za-z0-9_.-]*(secret|password|passwd|token|api[-_]?key|apikey|credential|privatekey|connectionstring)[A-Za-z0-9_.-]*["']?\s*:/im
+  },
+  {
+    rule: "credential-material",
+    why: "credential material inlined in the diff",
+    paths: null,
+    pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}/
+  }
+];
+
+// `git diff --name-only` and `git status --short` C-QUOTE any path that is not
+// plain ASCII when core.quotePath is on, which is the DEFAULT: `infra/prodü.tf`
+// arrives as the literal `"infra/prod\303\274.tf"`, quotes included. Every
+// path rule is `^`/`$`-anchored, so against that string a Terraform change
+// simply does not match and the whole diff runs unescalated. Decode byte-wise
+// and only then to UTF-8 — the octal escapes are UTF-8 BYTES, so decoding them
+// one character at a time produces mojibake that matches nothing either.
+function unquoteGitPath(filePath) {
+  const raw = String(filePath);
+  if (raw.length < 2 || !raw.startsWith('"') || !raw.endsWith('"')) {
+    return raw;
+  }
+  const body = raw.slice(1, -1);
+  const simple = { n: 0x0a, t: 0x09, r: 0x0d, f: 0x0c, b: 0x08, v: 0x0b, a: 0x07, '"': 0x22, "\\": 0x5c };
+  const bytes = [];
+  for (let i = 0; i < body.length; i += 1) {
+    const ch = body[i];
+    if (ch !== "\\") {
+      bytes.push(...Buffer.from(ch, "utf8"));
+      continue;
+    }
+    const octal = /^[0-7]{3}/.exec(body.slice(i + 1, i + 4));
+    if (octal) {
+      bytes.push(parseInt(octal[0], 8));
+      i += 3;
+      continue;
+    }
+    const next = body[i + 1];
+    if (next !== undefined && Object.prototype.hasOwnProperty.call(simple, next)) {
+      bytes.push(simple[next]);
+      i += 1;
+      continue;
+    }
+    // Unknown escape: keep the backslash rather than swallow it. Dropping a
+    // character can only shorten a path towards matching nothing.
+    bytes.push(0x5c);
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
+// The PRE-RENAME paths, recovered from the diff body.
+//
+// `git diff --name-only` — the vendor's only source for `changedFiles`
+// (lib/git.mjs:266) — reports a rename as its DESTINATION ALONE. Renaming
+// `infra/main.tf` to `archive/main.txt` therefore handed this classifier a
+// single path matching no rule at all, and a Terraform change ran at the lane
+// default. Verified against git 2.43 with the vendor's exact diff flags.
+//
+// Git's rename detection is on by default (`diff.renames`, since 2.9), so the
+// old name survives in exactly one place: the extended headers `rename from` /
+// `copy from`, which the gate already has in hand because it forces
+// `includeDiff`. Nothing extra is executed — no second git invocation, no new
+// vendor symbol to depend on. When detection is OFF the rename is emitted as a
+// delete plus an add and BOTH names are already in `changedFiles`, so the two
+// configurations cover each other.
+//
+// Only the extended headers are read, never the `a/` side of `diff --git a/X
+// b/Y`: that split is ambiguous for any path containing " b/" (the hazard
+// segmentReviewContent documents below) and a mis-split would invent a path
+// that never existed. Extended-header lines sit at column 0 while every line of
+// hunk CONTENT carries a `+`, `-` or space prefix, so `^rename from ` cannot
+// match a diff's own text. It CAN match a line of an untracked file the
+// collector inlined raw — accepted, because that direction only ever WIDENS the
+// check, which is the safe direction for this control.
+//
+// When the body could not be read this returns nothing and the old path is
+// genuinely unrecoverable — a hole that is already closed one level up, where
+// `diffBodyMissing` escalates unconditionally rather than trusting path rules.
+function collectRenamedPaths(content) {
+  const paths = new Set();
+  for (const line of String(content ?? "").split(/\r?\n/)) {
+    const header = /^(?:rename|copy) (?:from|to) (.+)$/.exec(line);
+    if (header) {
+      paths.add(unquoteGitPath(header[1]));
+    }
+  }
+  return [...paths];
+}
+
+// Split the collected content into per-path chunks so a content hit can be
+// ATTRIBUTED. Two markers, both the vendor's own: `diff --git a/x b/x` for
+// tracked changes and the `### <path>` heading the collector writes above each
+// inlined untracked file (lib/git.mjs:196).
+//
+// Neither marker is trustworthy on its own. A path containing the literal
+// " b/" splits the diff header at the wrong place, and `### ` is BOTH the
+// collector's untracked-file heading and a perfectly ordinary YAML comment —
+// an untracked `deploy/manifest.yaml` whose first line is `### RBAC` yields the
+// "path" `RBAC`. That is not cosmetic: `paths` filters on the attributed name,
+// so a bogus name makes `RBAC` fail the rule's `\.(ya?ml|json|tpl)$` filter and
+// the ClusterRoleBinding below it goes UNCHECKED. A wrong name therefore
+// narrows the check, which is why a captured path is honoured only when it is
+// a file this diff actually changed; anything else stays `null`. Text before
+// the first marker belongs to no path, and a segment with no path is tested
+// against EVERY content rule, because not knowing which file the bytes came
+// from must widen the check, never narrow it.
+function segmentReviewContent(content, changedFiles = []) {
+  const known = new Set();
+  for (const file of changedFiles ?? []) {
+    known.add(String(file));
+    known.add(unquoteGitPath(file));
+  }
+  const attribute = (captured) => (known.has(captured) ? captured : null);
+
+  const segments = [];
+  let current = { path: null, lines: [] };
+  for (const line of String(content ?? "").split(/\r?\n/)) {
+    const diffHeader = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
+    const heading = diffHeader ? null : /^### (.+)$/.exec(line);
+    if (diffHeader || heading) {
+      if (current.lines.length > 0) {
+        segments.push(current);
+      }
+      current = { path: attribute(diffHeader ? diffHeader[2] : heading[1]), lines: [] };
+      continue;
+    }
+    current.lines.push(line);
+  }
+  if (current.lines.length > 0) {
+    segments.push(current);
+  }
+  return segments.map((segment) => ({ path: segment.path, text: segment.lines.join("\n") }));
+}
+
+// Returns one entry per RULE that matched, each naming the paths that matched
+// it. Never throws: a classifier that can crash is a classifier that can be
+// crashed into silence.
+function classifySensitiveChanges(changedFiles, content) {
+  const hits = new Map();
+  const record = (rule, why, where) => {
+    const entry = hits.get(rule) ?? { rule, why, paths: new Set() };
+    entry.paths.add(where);
+    hits.set(rule, entry);
+  };
+
+  // The DECODED path is the real one, and it is what the rules and the stderr
+  // line both use — a quoted `"infra/prod\303\274.tf"` matches no anchored
+  // pattern and reads as nonsense beside a hit.
+  const candidates = changedFiles.map((file) => {
+    const filePath = unquoteGitPath(file);
+    return { filePath, label: filePath };
+  });
+  // Both sides of a rename get classified. The old name is LABELLED as such:
+  // reporting it bare would send whoever reads the escalation looking for a
+  // path this diff no longer contains. `rename to` names a file that is already
+  // in changedFiles, so it drops out here and is reported plainly above.
+  const known = new Set(candidates.map((candidate) => candidate.filePath));
+  for (const renamed of collectRenamedPaths(content)) {
+    if (known.has(renamed)) {
+      continue;
+    }
+    known.add(renamed);
+    candidates.push({ filePath: renamed, label: `${renamed} (pre-rename path)` });
+  }
+
+  for (const { filePath, label } of candidates) {
+    for (const { rule, why, pattern } of SENSITIVE_PATH_RULES) {
+      const patterns = Array.isArray(pattern) ? pattern : [pattern];
+      if (patterns.some((candidate) => candidate.test(filePath))) {
+        record(rule, why, label);
+      }
+    }
+  }
+
+  for (const segment of segmentReviewContent(content, changedFiles)) {
+    for (const { rule, why, paths, pattern } of SENSITIVE_CONTENT_RULES) {
+      if (segment.path !== null && paths && !paths.test(segment.path)) {
+        continue;
+      }
+      if (pattern.test(segment.text)) {
+        record(rule, why, segment.path ?? "(unattributed diff content)");
+      }
+    }
+  }
+
+  return [...hits.values()].map((entry) => ({
+    rule: entry.rule,
+    why: entry.why,
+    paths: [...entry.paths].sort()
+  }));
+}
+
+function describeHitPaths(paths) {
+  if (paths.length <= SENSITIVITY_PATHS_SHOWN) {
+    return paths.join(", ");
+  }
+  const shown = paths.slice(0, SENSITIVITY_PATHS_SHOWN).join(", ");
+  return `${shown}, +${paths.length - SENSITIVITY_PATHS_SHOWN} more`;
+}
+
+// Decide the effort this review will actually run at.
+//
+// RAISE ONLY. The caller's effort is the floor's floor: if it already meets or
+// exceeds SENSITIVITY_FLOOR_EFFORT the gate changes nothing, and the gate never
+// lowers anything under any condition. When it does raise, it says so on
+// stderr and names the paths — a silent escalation is as bad as a silent
+// non-escalation, because neither leaves the caller able to tell what ran.
+//
+// FAILS CLOSED. If the changed-file list cannot be obtained the diff cannot be
+// proven harmless, so it is treated as sensitive. The collector is called
+// inside a try: an exception here must not change how a collector failure is
+// reported, which is downstream, inside runTrackedJob, where it lands in the
+// job record instead of killing the dispatch before a record exists.
+//
+// ⚠️ This collects the review context a SECOND time (executeAdversarialReviewRun
+// collects its own, in the worker process for a --background dispatch). That is
+// deliberate: the alternative is serializing a whole diff through the job file,
+// which would write reviewed source into records the archive keeps past the
+// vendor's session cleanup. The duplicate cost is a local git read against the
+// SAME resolved target — there is still exactly one base-ref resolution — set
+// against a Codex turn measured in minutes.
+function resolveEffectiveEffort(vendor, { cwd, target, requestedEffort }) {
+  const unchanged = { effort: requestedEffort, escalated: false, hits: [] };
+
+  // ⚠️ `{ includeDiff: true }` IS THE CONTROL. Left off, the vendor decides for
+  // itself (lib/git.mjs:332): it inlines the diff body only when the change is
+  // at most `maxInlineFiles` files AND at most `maxInlineDiffBytes` — which
+  // default to 2 and 256 KB (git.mjs:8-9). Above either, `inputMode` flips to
+  // "self-collect" and `content` is Commit Log + Diff Stat + Changed Files with
+  // NO DIFF IN IT, so every SENSITIVE_CONTENT_RULE — the `kind:` check that is
+  // the only thing catching an RBAC manifest under an innocent filename — tests
+  // an empty haystack and finds nothing. On a 3-file PR. The classifier must
+  // never be handed the summary; it asks for the body explicitly.
+  //
+  // THE BOUND IS THE VENDOR'S AND IT FAILS CLOSED. Forcing the body means a
+  // very large diff is read into memory, but the vendor's git helper inherits
+  // spawnSync's 1 MiB default maxBuffer (process.mjs:10 passes
+  // `options.maxBuffer`, undefined here), so an oversized body raises ENOBUFS,
+  // runCommandChecked rethrows it, and this catch fires. No bound of our own is
+  // added on top: a second, lower ceiling would only mean deciding a second
+  // time what to do when it is hit, and there is exactly one right answer —
+  // a diff whose body could not be read has NOT been shown to be insensitive.
+  // So the retry below re-collects WITHOUT the body purely to recover the
+  // changed-file list (path rules still work, and the operator gets real file
+  // names), and `diffBodyMissing` forces an escalation regardless of what those
+  // path rules say.
+  let context = null;
+  let diffBodyMissing = false;
+  try {
+    context = vendor.collectReviewContext(cwd, target, { includeDiff: true });
+  } catch {
+    context = null;
+  }
+  if (context === null) {
+    diffBodyMissing = true;
+    try {
+      context = vendor.collectReviewContext(cwd, target);
+    } catch {
+      context = null;
+    }
+  }
+  // Belt and braces for the day upstream stops honouring `includeDiff`: a
+  // context that SAYS it carries no diff is treated as one that carries no
+  // diff. Only an explicit non-inline value counts — an absent `inputMode` is
+  // a shape we cannot read, not a summary we can prove.
+  if (typeof context?.inputMode === "string" && context.inputMode !== "inline-diff") {
+    diffBodyMissing = true;
+  }
+
+  const changedFiles = Array.isArray(context?.changedFiles) ? context.changedFiles : null;
+  const fileCount = typeof context?.fileCount === "number" ? context.fileCount : changedFiles?.length ?? null;
+
+  // Nothing to review. executeAdversarialReviewRun refuses this outright a
+  // moment later; escalating first would print an alarming line about a diff
+  // that does not exist.
+  if (fileCount === 0) {
+    return unchanged;
+  }
+
+  let hits;
+  if (changedFiles === null || changedFiles.length === 0) {
+    hits = [
+      {
+        rule: "unclassifiable-diff",
+        why: "the changed-file list could not be read, so the diff cannot be shown to be insensitive",
+        paths: ["(changed-file list unavailable)"]
+      }
+    ];
+  } else {
+    hits = classifySensitiveChanges(changedFiles, diffBodyMissing ? null : context?.content);
+    if (diffBodyMissing) {
+      // Path rules ran and may have found nothing; that is not an acquittal,
+      // because the content rules never got to run at all.
+      hits.push({
+        rule: "unreadable-diff-body",
+        why: "the diff body could not be read, so nothing inside the changed files was classified",
+        paths: ["(diff body unavailable)"]
+      });
+    }
+  }
+
+  if (hits.length === 0) {
+    return unchanged;
+  }
+
+  const requestedRank = VALID_REASONING_EFFORTS.indexOf(requestedEffort);
+  const floorRank = VALID_REASONING_EFFORTS.indexOf(SENSITIVITY_FLOOR_EFFORT);
+  const hitLines = hits.map((hit) => `  ${hit.rule}: ${describeHitPaths(hit.paths)} (${hit.why})`);
+
+  if (requestedRank >= floorRank) {
+    // Already at or above the floor: report, change nothing. Saying nothing
+    // here would leave the caller unable to tell an unclassified review from a
+    // classified one that needed no help.
+    errorLines([
+      `sensitivity gate: this diff is sensitive, and --effort ${requestedEffort} already meets the`,
+      `${SENSITIVITY_FLOOR_EFFORT} floor — leaving it unchanged. Matched:`,
+      ...hitLines
+    ]);
+    return { effort: requestedEffort, escalated: false, hits };
+  }
+
+  // The escape hatch is deliberately EXPENSIVE to use: it demands a written
+  // reason, prints a warning that is impossible to miss, and the reason is
+  // echoed back so it lands in whatever captured this dispatch's stderr. An
+  // env var set to "1" would be a switch someone flips once in a shell profile
+  // and forgets; a reason string is a decision someone has to make each time.
+  const override = String(process.env[SENSITIVITY_OVERRIDE_ENV] ?? "").trim();
+  if (override !== "") {
+    errorLines([
+      `⚠️ SENSITIVITY GATE OVERRIDDEN — this review of a SENSITIVE diff will run at`,
+      `--effort ${requestedEffort}, below the ${SENSITIVITY_FLOOR_EFFORT} floor, because`,
+      `${SENSITIVITY_OVERRIDE_ENV} is set. Matched:`,
+      ...hitLines,
+      `stated reason: ${override}`,
+      `the finding set from this review is NOT what the ${SENSITIVITY_FLOOR_EFFORT} floor promises;`,
+      `do not cite it as an adversarial pass over these paths.`
+    ]);
+    return { effort: requestedEffort, escalated: false, overridden: true, hits };
+  }
+  if (process.env[SENSITIVITY_OVERRIDE_ENV] !== undefined) {
+    errorLines([
+      `${SENSITIVITY_OVERRIDE_ENV} is set but empty — it needs a written reason to take effect.`,
+      `Ignoring it and applying the gate.`
+    ]);
+  }
+
+  // ⚠️ The wording of the first line is a CONTRACT: bin/crew-codex greps
+  // `sensitivity gate: raising --effort <from> -> <to>` out of this dispatch's
+  // stderr to stamp effortEffective into the .dispatch.json audit record, which
+  // otherwise only ever sees argv. Change the phrasing there and here together.
+  errorLines([
+    `sensitivity gate: raising --effort ${requestedEffort} -> ${SENSITIVITY_FLOOR_EFFORT}. Matched:`,
+    ...hitLines,
+    `this is a code-enforced floor on adversarial reviews of sensitive changes; the caller's`,
+    `effort is only ever raised by it, never lowered. To review at ${requestedEffort} anyway, set`,
+    `${SENSITIVITY_OVERRIDE_ENV}="<why>" — it warns loudly and states your reason on stderr.`
+  ]);
+  return { effort: SENSITIVITY_FLOOR_EFFORT, escalated: true, hits };
+}
+
 // Byte-for-byte the composition of executeReviewRun's adversarial branch
 // (codex-companion.mjs:405-460), with ONE addition: `effort` on the
 // runAppServerTurn call. Keep the payload shape identical — renderStoredJobResult
@@ -522,7 +1080,7 @@ async function executeAdversarialReviewRun(vendor, request) {
 
 // Mirrors createCompanionJob (companion:567) for kind == "adversarial-review",
 // so status/result/cancel classify these jobs exactly as vendor ones.
-function buildJobRecord(vendor, { workspaceRoot, targetLabel, effort, model, pluginVersion }) {
+function buildJobRecord(vendor, { workspaceRoot, targetLabel, effort, effortRequested, model, pluginVersion }) {
   return vendor.createJobRecord({
     id: vendor.generateJobId("review"),
     kind: "adversarial-review",
@@ -538,10 +1096,31 @@ function buildJobRecord(vendor, { workspaceRoot, targetLabel, effort, model, plu
     // effort now chosen per dispatch, the record is the only place it can be
     // recovered from later.
     effort,
+    // Both halves, always, even when they agree: a record that carries only the
+    // effective effort cannot answer "was this raised?" after the fact, and the
+    // sensitivity gate is exactly the thing an auditor comes back to check.
+    // Both names are already in the archive sanitizer's request/metadata
+    // allowlists (bin/crew-codex), so they survive archiving verbatim.
+    effortRequested,
+    effortEffective: effort,
     model: model ?? null,
     codexPluginVersion: pluginVersion,
     dispatchedBy: "codex-crew/review-with-effort"
   });
+}
+
+// The stderr line the gate prints is seen by whoever launched the dispatch; the
+// job log is what survives to be read later, and for a --background review it is
+// the only record a human ever gets (the worker's stdio is "ignore").
+function appendSensitivityLogLine(vendor, logFile, request) {
+  if (!request.effortRequested || request.effortRequested === request.effort) {
+    return;
+  }
+  vendor.appendLogLine(
+    logFile,
+    `Sensitivity gate raised the reasoning effort from ${request.effortRequested} to ` +
+      `${request.effort}: the diff matched ${request.sensitivityRules?.join(", ") || "a sensitive path rule"}.`
+  );
 }
 
 function outputResult(value, asJson) {
@@ -558,6 +1137,7 @@ async function runForeground(vendor, job, request, asJson) {
     logFile,
     `Reasoning effort ${request.effort} requested via crew-codex (codex@openai-codex ${request.pluginVersion}).`
   );
+  appendSensitivityLogLine(vendor, logFile, request);
   const progress = vendor.createProgressReporter({
     stderr: !asJson,
     logFile,
@@ -597,6 +1177,7 @@ function enqueueBackground(vendor, job, request) {
     logFile,
     `Reasoning effort ${request.effort} requested via crew-codex (codex@openai-codex ${request.pluginVersion}).`
   );
+  appendSensitivityLogLine(vendor, logFile, request);
 
   // Record BEFORE spawn, unlike the vendor, which spawns first and then writes
   // the record the child immediately reads back. Writing first removes that
@@ -721,21 +1302,7 @@ async function main() {
     );
   }
 
-  // Warn, never block. No --model means the codex config picks the model, and
-  // that default is a 5.6 model here, so an absent model is treated as 5.6 too
-  // — a false warning costs a line of stderr, a missed one costs a whole job.
   const requestedModel = options.model ?? null;
-  if (
-    EFFORTS_REJECTED_BY_GPT_5_6.has(effort) &&
-    (requestedModel === null || GPT_5_6_MODEL_PATTERN.test(requestedModel))
-  ) {
-    errorLines([
-      `warning: --effort ${effort} is rejected by the GPT-5.6 family — the API returns 400 on`,
-      `reasoning.effort for "none" and "minimal". The usable ladder on gpt-5.6-sol/terra/luna is`,
-      `low|medium|high|xhigh. Dispatching anyway${requestedModel === null ? " (no --model given, so the codex config's default model applies)" : ""};`,
-      `expect this job to fail at the API, not here.`
-    ]);
-  }
 
   const cwd = options.cwd ? path.resolve(process.cwd(), options.cwd) : process.cwd();
   const workspaceRoot = vendor.resolveWorkspaceRoot(cwd);
@@ -745,12 +1312,46 @@ async function main() {
   // (:729) — a bad --scope/--base must fail before a job record exists.
   const target = vendor.resolveReviewTarget(cwd, { base: options.base, scope: options.scope });
 
+  // The sensitivity gate, applied HERE rather than inside the run: the effort it
+  // decides has to be the one written into the request the background worker
+  // replays and into the job record's audit fields, and its stderr line has to
+  // reach the process the caller is watching — a detached worker's stdio is
+  // "ignore", so a line printed there is written to nobody. Same `target`, so
+  // the base ref is resolved exactly once.
+  const gate = resolveEffectiveEffort(vendor, { cwd, target, requestedEffort: effort });
+  const effectiveEffort = gate.effort;
+
+  // Warn, never block. No --model means the codex config picks the model, and
+  // that default is a 5.6 model here, so an absent model is treated as 5.6 too
+  // — a false warning costs a line of stderr, a missed one costs a whole job.
+  //
+  // AFTER the gate, and about the EFFECTIVE effort, because the warning ends
+  // "expect this job to fail at the API". Printed before the gate it described
+  // an effort that was about to be replaced: `--effort none` on a sensitive
+  // diff runs at xhigh, which no model rejects, so the prediction was simply
+  // wrong — and a warning that cries wolf is one nobody reads.
+  const strictFamily = EFFORTS_REJECTED_BY_STRICT_MODELS.has(effectiveEffort)
+    ? modelRejectsMinimalEfforts(requestedModel)
+    : null;
+  if (strictFamily) {
+    errorLines([
+      `warning: --effort ${effectiveEffort} is rejected by ${strictFamily.label} — the API returns 400 on`,
+      `reasoning.effort for "none" and "minimal". ${strictFamily.ladder}`,
+      `Dispatching anyway${requestedModel === null ? " (no --model given, so the codex config's default model applies)" : ""};`,
+      `expect this job to fail at the API, not here.`
+    ]);
+  }
+
   const request = {
     cwd,
     base: options.base ?? null,
     scope: options.scope ?? null,
     model: requestedModel,
-    effort,
+    effort: effectiveEffort,
+    // What the caller asked for, kept beside what will run. Allowlisted in the
+    // archive sanitizer (bin/crew-codex), so the pair survives archiving.
+    effortRequested: effort,
+    sensitivityRules: gate.hits.map((hit) => hit.rule),
     focusText,
     pluginRoot,
     pluginVersion
@@ -759,7 +1360,8 @@ async function main() {
   const job = buildJobRecord(vendor, {
     workspaceRoot,
     targetLabel: target.label,
-    effort,
+    effort: effectiveEffort,
+    effortRequested: effort,
     model: requestedModel,
     pluginVersion
   });
@@ -769,7 +1371,7 @@ async function main() {
     outputResult(
       options.json
         ? payload
-        : `${payload.title} started in the background as ${payload.jobId} (effort ${effort}). Check /codex:status ${payload.jobId} for progress.\n`,
+        : `${payload.title} started in the background as ${payload.jobId} (effort ${effectiveEffort}). Check /codex:status ${payload.jobId} for progress.\n`,
       options.json
     );
     return;

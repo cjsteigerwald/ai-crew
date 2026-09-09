@@ -6,8 +6,9 @@ user-invocable: false
 
 # Crew Runtime
 
-Use this skill only inside `codex-crew` agents (`codex-implementer-sol`,
-`codex-implementer-terra`, `codex-implementer-luna`, `codex-reviewer`).
+Use this skill only inside `codex-crew` agents (`codex-implementer-astra`,
+`codex-implementer-sol`, `codex-implementer-terra`, `codex-implementer-luna`,
+`codex-reviewer`).
 
 Primary helper — `crew-codex`, on PATH while the plugin is enabled:
 
@@ -31,6 +32,22 @@ Primary helper — `crew-codex`, on PATH while the plugin is enabled:
   It never silently falls back to the vendor path, because that would run the
   review at an effort you did not ask for while reporting success. Re-run
   without `--effort` to use the vendor path deliberately.
+- **Sensitivity gate.** Whenever `--effort` is present, the driver also
+  classifies the diff's changed files before the turn starts — Terraform,
+  Bicep/ARM, CloudFormation, Kubernetes RBAC/NetworkPolicy manifests, CI/CD
+  pipeline definitions, key/cert/dotenv-shaped secret material, and
+  auth/identity source paths — and **raises** the effort to `xhigh` on a
+  match. It only ever raises, never lowers: an already-`xhigh` request is left
+  alone, and an unmatched diff runs at exactly what was asked. A match is
+  announced loudly on stderr, naming the matched rule(s) and paths.
+  `CREW_CODEX_SENSITIVITY_OVERRIDE="<reason>"` opts out for one dispatch — it
+  requires a non-empty value and echoes it back on stderr. ⚠️ Only emptiness is
+  checked — a bare `=1` satisfies it, so the reason is not an enforced control.
+  ⚠️ **Scope limit**: this gate runs only on `adversarial-review` invoked
+  *with* `--effort`. It does not cover the `task` path, and it does not cover
+  `adversarial-review` invoked with no `--effort` at all — that dispatch stays
+  on the vendor review path, ungated, at whatever `model_reasoning_effort` the
+  codex config carries, however sensitive the diff.
 - `crew-codex review` (the native reviewer) still takes **no `--effort`** and
   rejects it with exit 2: it runs through a different companion code path
   (`runAppServerReview`) that the driver does not model.
@@ -152,7 +169,9 @@ Execution rules:
   one short status line per ~9 minutes.
 - Each agent's model/effort/write pins are defaults; only an explicit
   model or effort named in the request overrides them. `spark` maps to
-  `--model gpt-5.3-codex-spark`.
+  `--model gpt-5.3-codex-spark`; `astra` maps to `--model gpt-6-astra`
+  (effort still comes from the request, or this lane's `medium` default
+  when the request names none).
 - `cancel`, `redirect` and cross-job triage belong to the main thread
   (`/codex:status`, `/codex:cancel`); a crew agent only awaits the one job it
   launched, or the successor a redirect hands it via exit 5.
@@ -262,6 +281,17 @@ sanitizer to what is already on disk, for jobs archived by an earlier version.
 It never deletes an archived job, rewrites only when the sanitized bytes differ,
 and a second pass is byte-for-byte a no-op.
 
+One generation above the 5.6 ladder: **gpt-6-astra** = frontier flagship,
+reserved for the hardest work — cross-cutting changes whose evidence is
+scattered across many files or subsystems, multi-hour jobs that will outlive
+a context window, debugging that Sol already needed a second round on, or
+logic spanning retries, ownership and persisted state. Astra's cross-window
+note-taking (retaining notes instead of compressing them as the window fills)
+is experimental and opt-in per OpenAI's own announcement, requiring a
+`config.toml` setting this fork does not set — **UNVERIFIED** whether it is
+active for any dispatch made here, and not on its own a reason to pick this
+lane.
+
 GPT-5.6 family ladder (per OpenAI's own model registry): **sol** = flagship
 frontier coding tier, **terra** = balanced everyday mid tier, **luna** =
 fast/affordable low tier. Other known models (Codex CLI 0.144.0): gpt-5.5,
@@ -271,9 +301,19 @@ efforts — `xhigh` is the ceiling through this plugin, and `crew-codex`'s effor
 driver keeps that same ceiling rather than widening it.
 
 The practical **floor** is narrower than the validator's: the GPT-5.6 family
-(sol/terra/luna) returns a 400 on `reasoning.effort` for `none` and `minimal`,
-so the usable ladder there is `low|medium|high|xhigh`. Both values are still
-accepted — the validator mirrors the runtime's contract, not one family's — but
-`crew-codex` warns on stderr before dispatching when `none`/`minimal` is paired
-with a `gpt-5.6*` model or with no `--model` at all (the config default is a
-5.6 model). The job then fails at the API, not in the wrapper.
+(sol/terra/luna) *and* gpt-6-astra return a 400 on `reasoning.effort` for
+`none` and `minimal`, so the usable ladder there is `low|medium|high|xhigh`.
+Both values are still accepted by the validator — it mirrors the runtime's
+contract, not one family's — but on the `adversarial-review --effort` driver
+path `crew-codex` warns on stderr before dispatching when `none`/`minimal` is
+paired with a `gpt-5.6*` model, `gpt-6-astra`, or no `--model` at all (the
+config default is a 5.6 model) — see `modelRejectsMinimalEfforts()` in
+`lib/review-with-effort.mjs`. It warns, never blocks: the dispatch still goes
+out and then fails at the API, not in the wrapper. That warning is scoped to
+the driver, so a `task` dispatch with `none`/`minimal` gets no local warning
+at all and fails straight at the API.
+`codex-implementer-astra.md` is the only agent file that pre-empts this: it
+instructs its lane to treat a request for `none` or `minimal` as `low` before
+ever dispatching, so an Astra job launched through that agent never reaches
+the 400. Other lanes forward the caller's requested effort as given and let
+the warning (or the API failure) surface.

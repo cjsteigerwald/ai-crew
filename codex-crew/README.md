@@ -8,17 +8,43 @@ instead of reimplementing it.
 
 ## Agents
 
-Implementation is tiered across the GPT-5.6 ladder — the orchestrator picks
-the tier per task; each agent's description carries the selection criteria:
+Implementation is tiered across the GPT-5.6 ladder, plus one frontier tier
+above it on GPT-6 Astra for the hardest work — the orchestrator picks the tier
+per task; each agent's description carries the selection criteria:
 
 | Agent | Model | Effort | Posture | Choose when |
 |---|---|---|---|---|
-| `codex-implementer-sol` | gpt-5.6-sol (flagship) | caller-chosen, default `high` | write | Novel/intricate logic, cross-cutting multi-file changes, concurrency/money-path correctness, gnarly debugging — anything where mid-tier output would need rework |
+| `codex-implementer-astra` | gpt-6-astra (frontier, one generation above the 5.6 ladder) | caller-chosen, default `medium` | write | Cross-cutting changes whose evidence is scattered across many files or subsystems, multi-hour jobs that will outlive a context window, debugging that Sol already needed a second round on, or logic spanning retries/ownership/persisted state |
+| `codex-implementer-sol` | gpt-5.6-sol (flagship) | caller-chosen, default `medium` | write | Novel/intricate logic, cross-cutting multi-file changes, concurrency/money-path correctness, gnarly debugging — anything where mid-tier output would need rework |
 | `codex-implementer-terra` | gpt-5.6-terra (balanced) | caller-chosen, default `medium` | write | Routine, well-specified implementation with clear spec and existing patterns; the default when a task is real work but not hard |
 | `codex-implementer-luna` | gpt-5.6-luna (affordable) | caller-chosen, default `low` | write | Mechanical, repetitive, parallelizable chores with an exact recipe; fan out freely |
-| `codex-reviewer` | gpt-5.6-sol | caller-chosen, default `high` | read-only | Diff/branch reviews, adversarial reviews, independent diagnosis |
+| `codex-reviewer` | gpt-5.6-sol | caller-chosen, default `medium` | read-only | Diff/branch reviews, adversarial reviews, independent diagnosis |
 
-Rough cost ratio per token: Sol ≈ 2× Terra ≈ 5× Luna. Pins are defaults — a
+All efforts above are caller-chosen; the lane default is used only when a
+dispatch names none — no lane is pinned to a fixed effort.
+
+**Why Astra defaults to `medium`.** Medium is Astra's own registry default and
+lands on the cost/quality sweet spot; raise to `high` or `xhigh` in the
+dispatch only for a hard architectural call or a debugging loop that has
+already resisted medium. GPT-6 Astra's cross-window note-taking — retaining
+notes instead of compressing them as a context window fills — is, per
+OpenAI's own announcement, experimental, opt-in, and only *planned* to become
+default later; it must be enabled in `config.toml`, and this fork neither
+enables nor documents that setting. **UNVERIFIED**: whether the feature is
+active for any dispatch made through this fork has not been checked against
+a live config. Treat multi-hour jobs as belonging on this lane on the
+strength of Astra's own reasoning depth over a long-running detached job, not
+on this unconfirmed persistence feature. Because Astra asks a clarifying
+question instead of guessing when more input would change the result, and a
+detached background job has nobody there to answer it, an Astra brief must be
+self-contained — state the decisions and assumptions up front rather than
+leaving them for Astra to infer.
+
+List pricing per million tokens, input/output (September 2026): Astra
+$10/$50, Sol $4/$20, Terra $2/$12, Luna $0.20/$1.20.
+
+Rough cost ratio per token (input list price): Astra ≈ 2.5× Sol ≈ 5× Terra ≈
+50× Luna; Sol ≈ 2× Terra ≈ 20× Luna; Terra ≈ 10× Luna. Pins are defaults — a
 dispatch brief that explicitly names a model or effort overrides them
 (`spark` → `gpt-5.3-codex-spark`, `mini` → `gpt-5.4-mini`).
 
@@ -64,7 +90,8 @@ unpacked into its own directory and the old ones stay put.
 ├── 0.5.0/
 ├── 0.5.1/
 ├── 0.6.0/
-└── 0.7.0/   <- the update added this; it did not replace anything
+├── 0.7.0/
+└── 0.8.0/   <- the update added this; it did not replace anything
 ```
 
 Each session resolves its plugin `PATH` when it starts, and then keeps calling
@@ -110,7 +137,7 @@ cat "$P/.claude-plugin/plugin.json"
 ```json
 {
   "name": "codex-crew",
-  "version": "0.7.0",
+  "version": "0.8.0",
   ...
 }
 ```
@@ -155,6 +182,8 @@ the agent owns the job for its whole life. "Subagent finished" therefore still
 means the work is done, with no cap on how long the job takes. The waiting
 happens inside a shell poll loop, so hours of supervision cost one short
 status line per ~9 minutes rather than a streamed transcript.
+
+### Exit codes
 
 ```
 crew-codex await <job-id> [--for <seconds>]
@@ -341,15 +370,34 @@ same output schema and same job-record shape, so `status`, `await`, `result` and
   **`xhigh` stays the ceiling** — the registry's `max`/`ultra` tiers are refused,
   because the driver bypasses the vendor validator and nothing has proven the
   app-server accepts them. The practical **floor** is narrower still: the
-  GPT-5.6 family 400s on `reasoning.effort` for `none` and `minimal`, so those
-  two are accepted but warned about on stderr when paired with a `gpt-5.6*`
-  model or no `--model` at all.
+  GPT-5.6 family *and* `gpt-6-astra` 400 on `reasoning.effort` for `none` and
+  `minimal`, so those two are accepted but warned about on stderr when paired
+  with a `gpt-5.6*` model, `gpt-6-astra`, or no `--model` at all — the warning
+  never blocks the dispatch, and the job then fails at the API instead.
 - These imports are internal vendor modules that merely happen to be exported,
   so an upstream rename can break them. If any import or symbol is missing the
   driver **fails loudly** — naming the installed plugin version, the module and
   the symbol — and exits non-zero. It never silently falls back to the vendor
   path: that would run a review at an effort the caller did not ask for while
   reporting success, the exact failure this feature exists to prevent.
+
+**Sensitivity gate.** Whenever `--effort` is passed, the driver classifies the
+changed files of the very diff it is about to review — Terraform, Bicep/ARM,
+CloudFormation, Kubernetes RBAC/NetworkPolicy manifests, CI/CD pipeline
+definitions, key/cert/dotenv-shaped secret material, and auth/identity source
+paths — and **raises** the effort to `xhigh` on a match. It only ever raises:
+an explicit `--effort xhigh` is left unchanged, and a diff that matches
+nothing runs at exactly the effort requested. A match is announced on stderr,
+naming the matched rule(s) and the paths that tripped them.
+`CREW_CODEX_SENSITIVITY_OVERRIDE="<reason>"` opts out for one dispatch — it
+requires a non-empty value and echoes it back on stderr so it lands wherever
+that dispatch's stderr is captured. ⚠️ Only emptiness is checked, so a bare
+`=1` does satisfy it — treat the reason as a courtesy to the next reader, not
+as a control (see UPSTREAM.md § Known gaps).
+⚠️ **Scope limit**: the gate runs only on `adversarial-review` invoked *with*
+`--effort` — it never sees the `task` path, and `adversarial-review` with no
+`--effort` stays on the vendor review path, ungated, at whatever
+`model_reasoning_effort` the codex config carries, however sensitive the diff.
 
 **Dispatch stamping.** Each `task`/`review`/`adversarial-review` dispatch writes
 `<job-id>.dispatch.json` into the crew archive
