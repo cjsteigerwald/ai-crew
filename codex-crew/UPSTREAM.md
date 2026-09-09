@@ -75,7 +75,7 @@ without changing the decision first.
 
 **Caller-chosen effort is retained; upstream's fixed `xhigh` pins are NOT adopted.** Upstream has long defaulted every lane (sol, terra, luna, reviewer) to a hardcoded `xhigh` — at the *previous* sync point (`965b419`), upstream's `codex-implementer-sol.md:3` already read "at xhigh effort", so v0.7.0 did not convert anything; those diff rows are context-only. Caller-chosen per-dispatch effort has only ever existed in this fork — it is fork-only, not a capability upstream removed. Upstream's agents also still let an explicitly requested effort override the `xhigh` pin, so upstream's `xhigh` is a strong *default*, not a fixed effort; "adopting the pins would delete a capability" would therefore have overstated the difference. This fork keeps per-lane defaults that a dispatch can override because the user explicitly asked for effort to stay a per-job decision, and because the fork's `lib/review-with-effort.mjs` driver exists specifically to make effort a per-dispatch decision on the review path.
 
-**Upstream's lane-pin test block was not ported.** Upstream's suite asserts that sol/terra/luna/reviewer dispatch at a fixed `xhigh` regardless of the caller's request. This fork deliberately does not have that behavior (see above), so porting the test block would assert something the fork intentionally does not do; it stays unported until the pin decision itself changes.
+**Upstream's lane-pin test block was not ported.** Upstream's suite (`check_contains ... 'crew-codex task --background --model gpt-5.6-sol --effort xhigh --write'`, and the matching lines for terra/luna/reviewer) asserts that each agent file's *default launch string* is hardcoded to `xhigh` — it greps the static launch line in each agent's markdown; it never dispatches a job or exercises a caller-supplied effort. Upstream's own agents still let an explicit request override that default (see above), so the test only pins what ships when no effort is named, not what happens when one is. This fork deliberately does not pin that default launch string (see above), so porting the test block would assert something the fork intentionally does not do; it stays unported until the pin decision itself changes.
 
 **Lane defaults lowered to `medium`.** `codex-implementer-sol` and `codex-reviewer` previously defaulted to `high`; both now default to `medium`. `terra` stays `medium`, `luna` stays `low`. The sensitivity override is unchanged: auth/credentials, Terraform or CI work still uses `xhigh` regardless of lane default.
 
@@ -136,6 +136,38 @@ Do not expect a port to touch them, and do not let one regress them:
   override's loud stderr block still fires, so the bypass is never silent — but
   the reason it prints can be meaningless. Wants a minimum-length or
   multi-word check.
+- **Classification/review race (TOCTOU).** The gate resolves the review target
+  and classifies it in the parent process, in
+  `resolveEffectiveEffort()` in `lib/review-with-effort.mjs` (the call that
+  forces `{ includeDiff: true }`), but the detached worker's
+  `executeAdversarialReviewRun()` in the same file re-resolves the target and
+  re-collects the diff content independently rather than reusing what the
+  parent already classified. With an `auto` scope, the parent
+  can classify a clean-branch diff at `medium`; if a `main.tf` is created
+  before the detached worker runs, the worker resolves against the working
+  tree instead and ends up reviewing Terraform at `medium`. An explicit branch
+  target can also shift underneath the gate if HEAD moves between dispatch and
+  execution. So the gate does not strictly classify the exact diff that gets
+  reviewed. Deferred deliberately: fixing it needs either worker-side
+  reclassification immediately before the turn, or an immutable snapshot
+  persisted at dispatch time.
+- **Audit sidecar is spoofable through the override reason.** `bin/crew-codex`
+  scrapes the unanchored phrase `sensitivity gate: raising --effort <from> ->
+  <to>` out of the dispatch's stderr (the `CREW_STAMP_EFFORT_GATE` assignment)
+  to stamp
+  `effortEffective`/`effortSource` into the `.dispatch.json` audit record. The
+  gate's override path (`lib/review-with-effort.mjs`) also echoes
+  `CREW_CODEX_SENSITIVITY_OVERRIDE`'s value verbatim onto stderr as
+  `stated reason: <value>`. Setting that env var to a reason string that itself
+  *contains* the scraped phrase makes the grep match inside the echoed reason
+  instead of the gate's own escalation line, so the sidecar stamps
+  `effortEffective: xhigh` / `effortSource: sensitivity-gate` while the turn
+  actually ran at the lower, overridden effort — the job record and the
+  sidecar then disagree. This requires the operator to sabotage their own
+  audit trail, so it is self-inflicted rather than a privilege boundary, but it
+  means the sidecar is not trustworthy evidence on its own. Proper fix: pass
+  the effective effort as machine-readable output, or read it from the
+  driver's job record, instead of scraping human-readable stderr.
 
 ## Open questions
 

@@ -284,9 +284,13 @@ and a second pass is byte-for-byte a no-op.
 One generation above the 5.6 ladder: **gpt-6-astra** = frontier flagship,
 reserved for the hardest work — cross-cutting changes whose evidence is
 scattered across many files or subsystems, multi-hour jobs that will outlive
-a context window (Astra keeps its notes across windows rather than
-compressing them), debugging that Sol already needed a second round on, or
-logic spanning retries, ownership and persisted state.
+a context window, debugging that Sol already needed a second round on, or
+logic spanning retries, ownership and persisted state. Astra's cross-window
+note-taking (retaining notes instead of compressing them as the window fills)
+is experimental and opt-in per OpenAI's own announcement, requiring a
+`config.toml` setting this fork does not set — **UNVERIFIED** whether it is
+active for any dispatch made here, and not on its own a reason to pick this
+lane.
 
 GPT-5.6 family ladder (per OpenAI's own model registry): **sol** = flagship
 frontier coding tier, **terra** = balanced everyday mid tier, **luna** =

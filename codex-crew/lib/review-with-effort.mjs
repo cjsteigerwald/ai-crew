@@ -388,10 +388,62 @@ const SENSITIVITY_OVERRIDE_ENV = "CREW_CODEX_SENSITIVITY_OVERRIDE";
 // its own evidence.
 const SENSITIVITY_PATHS_SHOWN = 8;
 
+// The auth/identity vocabulary, kept as ONE list because it feeds TWO
+// anchorings below, and a security control whose vocabulary lives in two places
+// grows two different vocabularies. The full words sit beside the abbreviated
+// stems deliberately: an abbreviations-only list read `internal/authentication/`
+// and `services/authorization/` — what real trees are actually called — as
+// ordinary source, and `identity` was absent altogether.
+//
+// Order is cosmetic, not load-bearing: JS alternation is leftmost-first but
+// backtracks into the later branches, so `auth` before `authentication` still
+// matches `authentication/`. Longest-first simply reads as the intent.
+const AUTH_SOURCE_TERMS = [
+  "authentication", "authorization", "authn", "authz", "auth",
+  "oauth2?", "oidc", "saml", "sso", "iam", "identity", "rbac",
+  "login", "logout", "session", "jwt", "token", "crypto",
+  "keyvault", "kms", "vault", "permissions?"
+];
+
+// `auth` -> `[Aa]uth`. ONLY the first letter is made case-flexible, and that
+// restraint is the entire false-positive story of the CamelCase anchoring: a
+// per-letter case-insensitive term followed by an uppercase boundary matches
+// `AUTHORS`, a file at the root of a great many repositories. `[Aa]uth[A-Z]`
+// does not, while still covering `AuthService.ts` and `authService.ts`.
+// Accepted consequence: an all-caps acronym run together with a capitalised
+// word (`SSOManager.ts`) is NOT caught by this anchoring — the segment rule
+// still catches `sso/` and `sso-manager.ts`.
+function camelCaseTermPattern(term) {
+  const first = term[0];
+  return `[${first.toUpperCase()}${first}]${term.slice(1)}`;
+}
+
+// Anchoring 1 — whole path SEGMENT, or the start of one up to a `.`/`_`/`-`.
+// Unchanged in shape from the original rule; only the vocabulary widened.
+const AUTH_SOURCE_SEGMENT_PATTERN = new RegExp(
+  `(^|/)(${AUTH_SOURCE_TERMS.join("|")})([._-][^/]*)?(/|$)`,
+  "i"
+);
+
+// Anchoring 2 — a sensitive term as the LEADING CamelCase component of a
+// segment: `AuthService.ts`, `IdentityProvider.ts`, `TokenStore/index.ts`.
+// Deliberately NOT `/i`: the required uppercase letter after the term is the
+// only thing separating `AuthService` from `author`, and a case-insensitive
+// boundary would erase it.
+const AUTH_SOURCE_CAMEL_PATTERN = new RegExp(
+  `(^|/)(${AUTH_SOURCE_TERMS.map(camelCaseTermPattern).join("|")})[A-Z][^/]*(/|$)`
+);
+
 // Matched against each CHANGED PATH, repo-relative and forward-slashed, as the
 // vendor reports it. Case-insensitive throughout: `Jenkinsfile`, `JenkinsFile`
 // and `jenkinsfile` are the same hazard, and case is the cheapest possible
-// bypass of a security control.
+// bypass of a security control. ONE deliberate exception, documented where it
+// lives: AUTH_SOURCE_CAMEL_PATTERN, whose required uppercase boundary is the
+// only thing telling `AuthService.ts` from `author.js`.
+//
+// A rule's `pattern` may be a single regex or an ARRAY of them, matched with
+// `some` — an alternative exists only because two anchorings cannot share one
+// `i` flag, never to make a rule harder to read.
 const SENSITIVE_PATH_RULES = [
   {
     rule: "terraform",
@@ -424,19 +476,30 @@ const SENSITIVE_PATH_RULES = [
     // `.env` matches `.env`, `.env.local`, `.env-prod` — the separator is
     // required so `.environment.md` does not trip it — plus `.envrc`, which is
     // where direnv keeps service-principal credentials.
-    pattern: /\.(pem|key|p12|pfx|jks|keystore|asc|gpg|ppk)$|(^|\/)\.env($|[._-])|(^|\/)\.envrc$|(^|\/)[^/]*(secret|credential|password|passwd|htpasswd|api[-_]?key)[^/]*$|(^|\/)(id_rsa|id_dsa|id_ecdsa|id_ed25519|authorized_keys|\.netrc|\.npmrc|\.pgpass|kubeconfig)([._-][^/]*)?$/i
+    //
+    // The `(secret|credential|...)` alternative is anchored at `$`, so it only
+    // ever read the FINAL BASENAME: `secrets/prod/config.yaml` was classified
+    // by its innocent leaf name while a whole directory of key material sat in
+    // the path. The `(secrets?|credentials?|creds)` alternative below is
+    // segment-anchored the same way auth-source is, so it fires on the
+    // DIRECTORY anywhere in the path — and on `creds.json` as a basename.
+    pattern: /\.(pem|key|p12|pfx|jks|keystore|asc|gpg|ppk)$|(^|\/)\.env($|[._-])|(^|\/)\.envrc$|(^|\/)(secrets?|credentials?|creds)([._-][^/]*)?(\/|$)|(^|\/)[^/]*(secret|credential|password|passwd|htpasswd|api[-_]?key)[^/]*$|(^|\/)(id_rsa|id_dsa|id_ecdsa|id_ed25519|authorized_keys|\.netrc|\.npmrc|\.pgpass|kubeconfig)([._-][^/]*)?$/i
   },
   {
     rule: "auth-source",
-    // CONSERVATIVE BY CHOICE, and the choice is the anchoring, not the
-    // vocabulary: a term counts only when it is a whole path SEGMENT or the
-    // start of one up to a `.`/`_`/`-`. So `auth/`, `auth.ts` and `authz_test.go`
-    // trip it while `author.js` and `authoring/` do not. A substring match on
+    // CONSERVATIVE BY CHOICE, and the choice is the ANCHORING, not the
+    // vocabulary. A term counts only when it is a whole path SEGMENT, the start
+    // of one up to a `.`/`_`/`-`, or the leading CamelCase component of one. So
+    // `auth/`, `auth.ts`, `authz_test.go` and `AuthService.ts` trip it while
+    // `author.js`, `authoring/` and `authority.ts` do not. A substring match on
     // the same words would escalate every file with "session" or "login"
     // anywhere in its path, and a control that fires on everything gets turned
     // off. Known and accepted false positive: docs named `token_*`.
+    //
+    // The VOCABULARY, by contrast, is widened freely — see AUTH_SOURCE_TERMS.
+    // Both patterns are non-global, as every pattern in this list must be.
     why: "authentication / authorization / identity source path",
-    pattern: /(^|\/)(auth|authn|authz|oauth2?|oidc|saml|sso|iam|rbac|login|logout|session|jwt|token|crypto|keyvault|kms|vault|permissions?)([._-][^/]*)?(\/|$)/i
+    pattern: [AUTH_SOURCE_SEGMENT_PATTERN, AUTH_SOURCE_CAMEL_PATTERN]
   }
 ];
 
@@ -478,18 +541,110 @@ const SENSITIVE_CONTENT_RULES = [
   }
 ];
 
+// `git diff --name-only` and `git status --short` C-QUOTE any path that is not
+// plain ASCII when core.quotePath is on, which is the DEFAULT: `infra/prodü.tf`
+// arrives as the literal `"infra/prod\303\274.tf"`, quotes included. Every
+// path rule is `^`/`$`-anchored, so against that string a Terraform change
+// simply does not match and the whole diff runs unescalated. Decode byte-wise
+// and only then to UTF-8 — the octal escapes are UTF-8 BYTES, so decoding them
+// one character at a time produces mojibake that matches nothing either.
+function unquoteGitPath(filePath) {
+  const raw = String(filePath);
+  if (raw.length < 2 || !raw.startsWith('"') || !raw.endsWith('"')) {
+    return raw;
+  }
+  const body = raw.slice(1, -1);
+  const simple = { n: 0x0a, t: 0x09, r: 0x0d, f: 0x0c, b: 0x08, v: 0x0b, a: 0x07, '"': 0x22, "\\": 0x5c };
+  const bytes = [];
+  for (let i = 0; i < body.length; i += 1) {
+    const ch = body[i];
+    if (ch !== "\\") {
+      bytes.push(...Buffer.from(ch, "utf8"));
+      continue;
+    }
+    const octal = /^[0-7]{3}/.exec(body.slice(i + 1, i + 4));
+    if (octal) {
+      bytes.push(parseInt(octal[0], 8));
+      i += 3;
+      continue;
+    }
+    const next = body[i + 1];
+    if (next !== undefined && Object.prototype.hasOwnProperty.call(simple, next)) {
+      bytes.push(simple[next]);
+      i += 1;
+      continue;
+    }
+    // Unknown escape: keep the backslash rather than swallow it. Dropping a
+    // character can only shorten a path towards matching nothing.
+    bytes.push(0x5c);
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
+// The PRE-RENAME paths, recovered from the diff body.
+//
+// `git diff --name-only` — the vendor's only source for `changedFiles`
+// (lib/git.mjs:266) — reports a rename as its DESTINATION ALONE. Renaming
+// `infra/main.tf` to `archive/main.txt` therefore handed this classifier a
+// single path matching no rule at all, and a Terraform change ran at the lane
+// default. Verified against git 2.43 with the vendor's exact diff flags.
+//
+// Git's rename detection is on by default (`diff.renames`, since 2.9), so the
+// old name survives in exactly one place: the extended headers `rename from` /
+// `copy from`, which the gate already has in hand because it forces
+// `includeDiff`. Nothing extra is executed — no second git invocation, no new
+// vendor symbol to depend on. When detection is OFF the rename is emitted as a
+// delete plus an add and BOTH names are already in `changedFiles`, so the two
+// configurations cover each other.
+//
+// Only the extended headers are read, never the `a/` side of `diff --git a/X
+// b/Y`: that split is ambiguous for any path containing " b/" (the hazard
+// segmentReviewContent documents below) and a mis-split would invent a path
+// that never existed. Extended-header lines sit at column 0 while every line of
+// hunk CONTENT carries a `+`, `-` or space prefix, so `^rename from ` cannot
+// match a diff's own text. It CAN match a line of an untracked file the
+// collector inlined raw — accepted, because that direction only ever WIDENS the
+// check, which is the safe direction for this control.
+//
+// When the body could not be read this returns nothing and the old path is
+// genuinely unrecoverable — a hole that is already closed one level up, where
+// `diffBodyMissing` escalates unconditionally rather than trusting path rules.
+function collectRenamedPaths(content) {
+  const paths = new Set();
+  for (const line of String(content ?? "").split(/\r?\n/)) {
+    const header = /^(?:rename|copy) (?:from|to) (.+)$/.exec(line);
+    if (header) {
+      paths.add(unquoteGitPath(header[1]));
+    }
+  }
+  return [...paths];
+}
+
 // Split the collected content into per-path chunks so a content hit can be
 // ATTRIBUTED. Two markers, both the vendor's own: `diff --git a/x b/x` for
 // tracked changes and the `### <path>` heading the collector writes above each
 // inlined untracked file (lib/git.mjs:196).
 //
-// Misattribution is possible — a path containing the literal " b/" splits the
-// header at the wrong place — and it is deliberately harmless: it can only
-// change the NAME printed beside a hit, never whether the hit is counted. Text
-// before the first marker belongs to no path, and a segment with no path is
-// tested against EVERY content rule, because not knowing which file the bytes
-// came from must widen the check, never narrow it.
-function segmentReviewContent(content) {
+// Neither marker is trustworthy on its own. A path containing the literal
+// " b/" splits the diff header at the wrong place, and `### ` is BOTH the
+// collector's untracked-file heading and a perfectly ordinary YAML comment —
+// an untracked `deploy/manifest.yaml` whose first line is `### RBAC` yields the
+// "path" `RBAC`. That is not cosmetic: `paths` filters on the attributed name,
+// so a bogus name makes `RBAC` fail the rule's `\.(ya?ml|json|tpl)$` filter and
+// the ClusterRoleBinding below it goes UNCHECKED. A wrong name therefore
+// narrows the check, which is why a captured path is honoured only when it is
+// a file this diff actually changed; anything else stays `null`. Text before
+// the first marker belongs to no path, and a segment with no path is tested
+// against EVERY content rule, because not knowing which file the bytes came
+// from must widen the check, never narrow it.
+function segmentReviewContent(content, changedFiles = []) {
+  const known = new Set();
+  for (const file of changedFiles ?? []) {
+    known.add(String(file));
+    known.add(unquoteGitPath(file));
+  }
+  const attribute = (captured) => (known.has(captured) ? captured : null);
+
   const segments = [];
   let current = { path: null, lines: [] };
   for (const line of String(content ?? "").split(/\r?\n/)) {
@@ -499,7 +654,7 @@ function segmentReviewContent(content) {
       if (current.lines.length > 0) {
         segments.push(current);
       }
-      current = { path: diffHeader ? diffHeader[2] : heading[1], lines: [] };
+      current = { path: attribute(diffHeader ? diffHeader[2] : heading[1]), lines: [] };
       continue;
     }
     current.lines.push(line);
@@ -521,16 +676,36 @@ function classifySensitiveChanges(changedFiles, content) {
     hits.set(rule, entry);
   };
 
-  for (const file of changedFiles) {
-    const filePath = String(file);
+  // The DECODED path is the real one, and it is what the rules and the stderr
+  // line both use — a quoted `"infra/prod\303\274.tf"` matches no anchored
+  // pattern and reads as nonsense beside a hit.
+  const candidates = changedFiles.map((file) => {
+    const filePath = unquoteGitPath(file);
+    return { filePath, label: filePath };
+  });
+  // Both sides of a rename get classified. The old name is LABELLED as such:
+  // reporting it bare would send whoever reads the escalation looking for a
+  // path this diff no longer contains. `rename to` names a file that is already
+  // in changedFiles, so it drops out here and is reported plainly above.
+  const known = new Set(candidates.map((candidate) => candidate.filePath));
+  for (const renamed of collectRenamedPaths(content)) {
+    if (known.has(renamed)) {
+      continue;
+    }
+    known.add(renamed);
+    candidates.push({ filePath: renamed, label: `${renamed} (pre-rename path)` });
+  }
+
+  for (const { filePath, label } of candidates) {
     for (const { rule, why, pattern } of SENSITIVE_PATH_RULES) {
-      if (pattern.test(filePath)) {
-        record(rule, why, filePath);
+      const patterns = Array.isArray(pattern) ? pattern : [pattern];
+      if (patterns.some((candidate) => candidate.test(filePath))) {
+        record(rule, why, label);
       }
     }
   }
 
-  for (const segment of segmentReviewContent(content)) {
+  for (const segment of segmentReviewContent(content, changedFiles)) {
     for (const { rule, why, paths, pattern } of SENSITIVE_CONTENT_RULES) {
       if (segment.path !== null && paths && !paths.test(segment.path)) {
         continue;
@@ -580,11 +755,49 @@ function describeHitPaths(paths) {
 function resolveEffectiveEffort(vendor, { cwd, target, requestedEffort }) {
   const unchanged = { effort: requestedEffort, escalated: false, hits: [] };
 
+  // ⚠️ `{ includeDiff: true }` IS THE CONTROL. Left off, the vendor decides for
+  // itself (lib/git.mjs:332): it inlines the diff body only when the change is
+  // at most `maxInlineFiles` files AND at most `maxInlineDiffBytes` — which
+  // default to 2 and 256 KB (git.mjs:8-9). Above either, `inputMode` flips to
+  // "self-collect" and `content` is Commit Log + Diff Stat + Changed Files with
+  // NO DIFF IN IT, so every SENSITIVE_CONTENT_RULE — the `kind:` check that is
+  // the only thing catching an RBAC manifest under an innocent filename — tests
+  // an empty haystack and finds nothing. On a 3-file PR. The classifier must
+  // never be handed the summary; it asks for the body explicitly.
+  //
+  // THE BOUND IS THE VENDOR'S AND IT FAILS CLOSED. Forcing the body means a
+  // very large diff is read into memory, but the vendor's git helper inherits
+  // spawnSync's 1 MiB default maxBuffer (process.mjs:10 passes
+  // `options.maxBuffer`, undefined here), so an oversized body raises ENOBUFS,
+  // runCommandChecked rethrows it, and this catch fires. No bound of our own is
+  // added on top: a second, lower ceiling would only mean deciding a second
+  // time what to do when it is hit, and there is exactly one right answer —
+  // a diff whose body could not be read has NOT been shown to be insensitive.
+  // So the retry below re-collects WITHOUT the body purely to recover the
+  // changed-file list (path rules still work, and the operator gets real file
+  // names), and `diffBodyMissing` forces an escalation regardless of what those
+  // path rules say.
   let context = null;
+  let diffBodyMissing = false;
   try {
-    context = vendor.collectReviewContext(cwd, target);
+    context = vendor.collectReviewContext(cwd, target, { includeDiff: true });
   } catch {
     context = null;
+  }
+  if (context === null) {
+    diffBodyMissing = true;
+    try {
+      context = vendor.collectReviewContext(cwd, target);
+    } catch {
+      context = null;
+    }
+  }
+  // Belt and braces for the day upstream stops honouring `includeDiff`: a
+  // context that SAYS it carries no diff is treated as one that carries no
+  // diff. Only an explicit non-inline value counts — an absent `inputMode` is
+  // a shape we cannot read, not a summary we can prove.
+  if (typeof context?.inputMode === "string" && context.inputMode !== "inline-diff") {
+    diffBodyMissing = true;
   }
 
   const changedFiles = Array.isArray(context?.changedFiles) ? context.changedFiles : null;
@@ -607,7 +820,16 @@ function resolveEffectiveEffort(vendor, { cwd, target, requestedEffort }) {
       }
     ];
   } else {
-    hits = classifySensitiveChanges(changedFiles, context?.content);
+    hits = classifySensitiveChanges(changedFiles, diffBodyMissing ? null : context?.content);
+    if (diffBodyMissing) {
+      // Path rules ran and may have found nothing; that is not an acquittal,
+      // because the content rules never got to run at all.
+      hits.push({
+        rule: "unreadable-diff-body",
+        why: "the diff body could not be read, so nothing inside the changed files was classified",
+        paths: ["(diff body unavailable)"]
+      });
+    }
   }
 
   if (hits.length === 0) {
@@ -1080,21 +1302,7 @@ async function main() {
     );
   }
 
-  // Warn, never block. No --model means the codex config picks the model, and
-  // that default is a 5.6 model here, so an absent model is treated as 5.6 too
-  // — a false warning costs a line of stderr, a missed one costs a whole job.
   const requestedModel = options.model ?? null;
-  const strictFamily = EFFORTS_REJECTED_BY_STRICT_MODELS.has(effort)
-    ? modelRejectsMinimalEfforts(requestedModel)
-    : null;
-  if (strictFamily) {
-    errorLines([
-      `warning: --effort ${effort} is rejected by ${strictFamily.label} — the API returns 400 on`,
-      `reasoning.effort for "none" and "minimal". ${strictFamily.ladder}`,
-      `Dispatching anyway${requestedModel === null ? " (no --model given, so the codex config's default model applies)" : ""};`,
-      `expect this job to fail at the API, not here.`
-    ]);
-  }
 
   const cwd = options.cwd ? path.resolve(process.cwd(), options.cwd) : process.cwd();
   const workspaceRoot = vendor.resolveWorkspaceRoot(cwd);
@@ -1112,6 +1320,27 @@ async function main() {
   // the base ref is resolved exactly once.
   const gate = resolveEffectiveEffort(vendor, { cwd, target, requestedEffort: effort });
   const effectiveEffort = gate.effort;
+
+  // Warn, never block. No --model means the codex config picks the model, and
+  // that default is a 5.6 model here, so an absent model is treated as 5.6 too
+  // — a false warning costs a line of stderr, a missed one costs a whole job.
+  //
+  // AFTER the gate, and about the EFFECTIVE effort, because the warning ends
+  // "expect this job to fail at the API". Printed before the gate it described
+  // an effort that was about to be replaced: `--effort none` on a sensitive
+  // diff runs at xhigh, which no model rejects, so the prediction was simply
+  // wrong — and a warning that cries wolf is one nobody reads.
+  const strictFamily = EFFORTS_REJECTED_BY_STRICT_MODELS.has(effectiveEffort)
+    ? modelRejectsMinimalEfforts(requestedModel)
+    : null;
+  if (strictFamily) {
+    errorLines([
+      `warning: --effort ${effectiveEffort} is rejected by ${strictFamily.label} — the API returns 400 on`,
+      `reasoning.effort for "none" and "minimal". ${strictFamily.ladder}`,
+      `Dispatching anyway${requestedModel === null ? " (no --model given, so the codex config's default model applies)" : ""};`,
+      `expect this job to fail at the API, not here.`
+    ]);
+  }
 
   const request = {
     cwd,

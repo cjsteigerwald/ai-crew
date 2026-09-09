@@ -26,13 +26,19 @@ dispatch names none — no lane is pinned to a fixed effort.
 **Why Astra defaults to `medium`.** Medium is Astra's own registry default and
 lands on the cost/quality sweet spot; raise to `high` or `xhigh` in the
 dispatch only for a hard architectural call or a debugging loop that has
-already resisted medium. Astra also keeps its notes across context windows
-instead of compressing them, which is what makes it the right tier for
-multi-hour jobs that would otherwise outlive a single context window. Because
-Astra asks a clarifying question instead of guessing when more input would
-change the result, and a detached background job has nobody there to answer
-it, an Astra brief must be self-contained — state the decisions and
-assumptions up front rather than leaving them for Astra to infer.
+already resisted medium. GPT-6 Astra's cross-window note-taking — retaining
+notes instead of compressing them as a context window fills — is, per
+OpenAI's own announcement, experimental, opt-in, and only *planned* to become
+default later; it must be enabled in `config.toml`, and this fork neither
+enables nor documents that setting. **UNVERIFIED**: whether the feature is
+active for any dispatch made through this fork has not been checked against
+a live config. Treat multi-hour jobs as belonging on this lane on the
+strength of Astra's own reasoning depth over a long-running detached job, not
+on this unconfirmed persistence feature. Because Astra asks a clarifying
+question instead of guessing when more input would change the result, and a
+detached background job has nobody there to answer it, an Astra brief must be
+self-contained — state the decisions and assumptions up front rather than
+leaving them for Astra to infer.
 
 List pricing per million tokens, input/output (September 2026): Astra
 $10/$50, Sol $4/$20, Terra $2/$12, Luna $0.20/$1.20.
