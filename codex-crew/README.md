@@ -355,8 +355,11 @@ touched. Same target resolution, same context collection, same prompt template,
 same output schema and same job-record shape, so `status`, `await`, `result` and
 `cancel` treat these jobs exactly like companion-created ones.
 
-- **Without `--effort` nothing changes**: the dispatch is a verbatim companion
-  passthrough, so the default path carries no blast radius.
+- **Without `--effort` the review runs at `medium`**, sent explicitly. Since
+  2026-09-10 every `adversarial-review` goes through the driver, `--effort` or
+  not: the vendor path can only run at the codex config's
+  `model_reasoning_effort`, an effort nobody chose for the dispatch (user
+  decision: "If NO effort is passed in then default to medium").
 - `crew-codex review` (the native reviewer) still rejects `--effort` with
   exit 2 — it runs through `runAppServerReview`, a different code path the
   driver does not model.
@@ -381,23 +384,21 @@ same output schema and same job-record shape, so `status`, `await`, `result` and
   path: that would run a review at an effort the caller did not ask for while
   reporting success, the exact failure this feature exists to prevent.
 
-**Sensitivity gate.** Whenever `--effort` is passed, the driver classifies the
-changed files of the very diff it is about to review — Terraform, Bicep/ARM,
+**Effort is the caller's; sensitivity is a label.** The review runs at exactly
+the `--effort` passed, or `medium` when none is — nothing raises or lowers it.
+`high` and `xhigh` are levels the orchestrator may request per dispatch (an
+auth change, extremely complex code); a choice, never a rule or a floor (user
+decision 2026-09-10: "the orchestrator should have ability to call effort
+required"). Before the turn starts, the driver still classifies the changed
+files of the very diff it is about to review — Terraform, Bicep/ARM,
 CloudFormation, Kubernetes RBAC/NetworkPolicy manifests, CI/CD pipeline
 definitions, key/cert/dotenv-shaped secret material, and auth/identity source
-paths — and **raises** the effort to `xhigh` on a match. It only ever raises:
-an explicit `--effort xhigh` is left unchanged, and a diff that matches
-nothing runs at exactly the effort requested. A match is announced on stderr,
-naming the matched rule(s) and the paths that tripped them.
-`CREW_CODEX_SENSITIVITY_OVERRIDE="<reason>"` opts out for one dispatch — it
-requires a non-empty value and echoes it back on stderr so it lands wherever
-that dispatch's stderr is captured. ⚠️ Only emptiness is checked, so a bare
-`=1` does satisfy it — treat the reason as a courtesy to the next reader, not
-as a control (see UPSTREAM.md § Known gaps).
-⚠️ **Scope limit**: the gate runs only on `adversarial-review` invoked *with*
-`--effort` — it never sees the `task` path, and `adversarial-review` with no
-`--effort` stays on the vendor review path, ungated, at whatever
-`model_reasoning_effort` the codex config carries, however sensitive the diff.
+paths — and names any matched rule(s) and paths on stderr and in the job
+record, as information for the reader. Until 2026-09-10 a match RAISED the
+effort to `xhigh`; that floor and its `CREW_CODEX_SENSITIVITY_OVERRIDE` escape
+hatch are gone, and a still-set override variable is reported as ignored.
+⚠️ **Scope limit**: labels are produced only on `adversarial-review`; the
+`task` path is not classified.
 
 **Dispatch stamping.** Each `task`/`review`/`adversarial-review` dispatch writes
 `<job-id>.dispatch.json` into the crew archive
@@ -412,11 +413,12 @@ best-effort: it can never change a dispatch's exit code, stdout or stderr.
 
 ⚠️ **Coverage is not universal, and the gap runs the wrong way.** The stamp is
 written after the dispatch returns, by scraping a job id out of its output. The
-vendor review path (`review`, and `adversarial-review` **without** `--effort`)
-runs foreground and prints **no job id**, so those dispatches get **no
-sidecar** — exactly the reviews with no other audit trail. Driver dispatches
-(`adversarial-review --effort ...`) and `task` dispatches do print an id and are
-stamped. Closing the vendor-path gap needs an id minted before dispatch rather
+vendor review path (the native `review`) runs foreground and prints **no job
+id**, so those dispatches get **no sidecar** — exactly the reviews with no
+other audit trail. Driver dispatches (every `adversarial-review`, with or
+without `--effort`; the sidecar records a no-flag one as `effortSource:
+default`, `effortEffective: medium`) and `task` dispatches do print an id and
+are stamped. Closing the vendor-path gap needs an id minted before dispatch rather
 than scraped after it: tracked, not done.
 
 ⚠️ The sidecar stores **routing metadata only**. Positionals — review focus text

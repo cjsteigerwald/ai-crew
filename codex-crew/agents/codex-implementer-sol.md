@@ -21,12 +21,12 @@ Forwarding rules:
   1. Launch:
      `crew-codex task --background --model gpt-5.6-sol --effort <level> --write [flags] "<task text>"`
      ⚠️ **Take `<level>` from the dispatch; never hardcode one.** If the dispatch
-     names no effort, use **`medium`** for this lane. Intricate work still benefits from headroom; raise to `high` or `xhigh` when the dispatch says correctness-critical.
+     names no effort, use **`medium`** for this lane. Use `high` or `xhigh` only when the dispatch names that level.
      Ladder: `low | medium | high | xhigh` (`minimal`/`none` return a 400 on the
-     5.6 family). Use your own judgment on sensitivity: if the task touches
-     auth/credentials, Terraform, or CI, raise to `xhigh` yourself regardless
-     of the lane default — the `task` path has no automatic enforcement of
-     this, so it is on you to notice and act on it.
+     5.6 family). Never raise the level on your own judgment — not for auth,
+     credentials, Terraform or CI either. The orchestrator chooses the effort
+     per dispatch and may ask for `high` or `xhigh` (an auth change, extremely
+     complex code); pass through exactly what it names.
      Capture the job id from its output (`task-...`).
   2. Watch, looping until it is no longer running — each call with Bash
      `timeout: 600000` (the await deadline sits under that ceiling):

@@ -1342,8 +1342,11 @@ check_no_dispatch "review help did not dispatch" "$INVOKED"
 out="$(run_guard review --base main help)" && rc=0 || rc=$?
 check "bare 'help' in a later position still forwards" 0 "COMPANION-RAN:review|--base|main|help" "$rc" "$out"
 
-out="$(run_guard adversarial-review improve the help wording)" && rc=0 || rc=$?
-check "unquoted focus prose containing 'help' still dispatches" 0 "COMPANION-RAN:adversarial-review|improve|the|help|wording" "$rc" "$out"
+# On `review`: since 0.9.0 every adversarial-review runs on the effort driver,
+# which this companion-only fixture cannot host. The guard logic is shared by
+# both subcommands; the driver side is asserted in the effort cases (Case 53b).
+out="$(run_guard review improve the help wording)" && rc=0 || rc=$?
+check "unquoted focus prose containing 'help' still dispatches" 0 "COMPANION-RAN:review|improve|the|help|wording" "$rc" "$out"
 
 out="$(run_guard adversarial-review -h)" && rc=0 || rc=$?
 check "-h as the FIRST arg exits 0" 0 "crew-codex adversarial-review \\[flags\\]" "$rc" "$out"
@@ -1365,12 +1368,13 @@ check "review --effort=<v> refused" 2 "does not accept --effort" "$rc" "$out"
 check_no_dispatch "review --effort=<v> did not dispatch" "$INVOKED"
 
 # Case 26: interception is EXACT — legitimate focus text still forwards
-out="$(run_guard adversarial-review --base main "does the help text render")" && rc=0 || rc=$?
-check "focus text containing 'help' forwards" 0 "COMPANION-RAN:adversarial-review" "$rc" "$out"
+# On `review` for the same reason as above; Case 53b covers adversarial-review.
+out="$(run_guard review --base main "does the help text render")" && rc=0 || rc=$?
+check "focus text containing 'help' forwards" 0 "COMPANION-RAN:review" "$rc" "$out"
 check "focus text reaches the companion intact" 0 "does the help text render" "$rc" "$out"
 
-out="$(run_guard adversarial-review --effortless --helpful "focus")" && rc=0 || rc=$?
-check "non-intercepted --flags forward untouched" 0 "COMPANION-RAN:adversarial-review|--effortless|--helpful|focus" "$rc" "$out"
+out="$(run_guard review --effortless --helpful "focus")" && rc=0 || rc=$?
+check "non-intercepted --flags forward untouched" 0 "COMPANION-RAN:review|--effortless|--helpful|focus" "$rc" "$out"
 
 # Case 27: task --help is intercepted too — the companion has no help handler
 # for `task` either, so forwarding it dispatches a real job whose PROMPT is the
@@ -1421,21 +1425,23 @@ run_stamp() {
   CREW_CODEX_RETRY_DELAYS="0" bash "$CREW" "$@" 2>&1
 }
 
-# Case 29: a review dispatch stamps effort from the codex config
+# Case 29: a NATIVE review dispatch stamps effort from the codex config. (An
+# adversarial-review no longer can: it runs on the driver, at --effort or medium
+# — Case 48 asserts that stamp.)
 arc="$TMP/stamp/arc29"
-out="$(run_stamp "$arc" "Adversarial Review started in the background as review-msi4zm8e-cpisj8. Check /codex:status" \
-  adversarial-review --model gpt-5.6-sol --base main "focus")" && rc=0 || rc=$?
+out="$(run_stamp "$arc" "Review started in the background as review-msi4zm8e-cpisj8. Check /codex:status" \
+  review --model gpt-5.6-sol --base main "focus")" && rc=0 || rc=$?
 check "stamped dispatch passes output through" 0 "started in the background" "$rc" "$out"
 if python3 -c "
 import json
 d = json.load(open('$arc/review-msi4zm8e-cpisj8.dispatch.json'))
 assert d['jobId'] == 'review-msi4zm8e-cpisj8', d
-assert d['subcommand'] == 'adversarial-review', d
+assert d['subcommand'] == 'review', d
 assert d['model'] == 'gpt-5.6-sol', d
 assert d['effortRequested'] is None, d
 assert d['effortEffective'] == 'xhigh', d
 assert d['effortSource'] == 'config', d
-assert d['argv'][:3] == ['adversarial-review', '--model', 'gpt-5.6-sol'], d
+assert d['argv'][:3] == ['review', '--model', 'gpt-5.6-sol'], d
 "; then
   echo "PASS: review dispatch stamped model + config effort"; pass=$((pass + 1))
 else
@@ -1462,7 +1468,7 @@ fi
 
 # Case 31: no job id in the output -> nothing written, nothing broken
 arc="$TMP/stamp/arc31"
-out="$(run_stamp "$arc" "Review finished inline; no job was created." adversarial-review "focus")" && rc=0 || rc=$?
+out="$(run_stamp "$arc" "Review finished inline; no job was created." review "focus")" && rc=0 || rc=$?
 if [[ "$rc" == 0 ]] && [[ -z "$(ls -A "$arc" 2>/dev/null || true)" ]]; then
   echo "PASS: no job id stamps nothing and still exits 0"; pass=$((pass + 1))
 else
@@ -1475,7 +1481,7 @@ blocked="$TMP/stamp/not-a-dir"; : > "$blocked"
 out="$(CLAUDE_CONFIG_DIR="$TMP/stamp" CREW_CODEX_ARCHIVE_DIR="$blocked" \
   CODEX_HOME="$TMP/stamp/codex-home" CREW_CODEX_RETRY_DELAYS="0" \
   CREW_TEST_LAUNCH_LINE="started in the background as review-aaa1-bbb2." \
-  bash "$CREW" adversarial-review "focus" 2>&1)" && rc=0 || rc=$?
+  bash "$CREW" review "focus" 2>&1)" && rc=0 || rc=$?
 if [[ "$rc" == 0 && "$out" == "started in the background as review-aaa1-bbb2." ]]; then
   echo "PASS: unwritable archive left exit code and stdout untouched"; pass=$((pass + 1))
 else
@@ -2092,14 +2098,36 @@ else
   echo "FAIL: low on a 5.6 model warned spuriously or did not dispatch (out: $out)"; fail=$((fail + 1))
 fi
 
-# Case 48: WITHOUT --effort the dispatch is an unchanged vendor passthrough.
-# This is the blast-radius assertion: the default path must not move at all.
-out="$(run_effort adversarial-review --base main "focus words")" && rc=0 || rc=$?
-check "no --effort still goes to the companion" 0 "COMPANION-RAN:adversarial-review|--base|main|focus words" "$rc" "$out"
-if [[ ! -f "$TMP/effort/turn.json" ]]; then
-  echo "PASS: no --effort never touched the driver"; pass=$((pass + 1))
+# Case 48: WITHOUT --effort an adversarial review still runs on the driver, at
+# MEDIUM sent explicitly — never at the codex config's model_reasoning_effort.
+# User decision 2026-09-10: "If NO effort is passed in then default to medium."
+# The config here says xhigh, so inheriting it cannot pass for the default.
+mkdir -p "$TMP/effort/codex-home-xhigh"
+printf 'model_reasoning_effort = "xhigh"\n' > "$TMP/effort/codex-home-xhigh/config.toml"
+: > "$INVOKED_E"; rm -f "$TMP/effort/turn.json" "$ARC_E/review-stub-default.dispatch.json"
+out="$(CLAUDE_CONFIG_DIR="$TMP/effort" CREW_TEST_INVOKED="$INVOKED_E" \
+  CREW_TEST_TURN_RECORD="$TMP/effort/turn.json" CREW_TEST_STATE_DIR="$STATE_E" \
+  CREW_CODEX_ARCHIVE_DIR="$ARC_E" CODEX_HOME="$TMP/effort/codex-home-xhigh" \
+  CREW_CODEX_RETRY_DELAYS="0" bash "$CREW" adversarial-review --base main "focus words" 2>&1)" && rc=0 || rc=$?
+check "no --effort still runs the review, on the driver" 0 "RENDERED Adversarial Review" "$rc" "$out"
+check_no_dispatch "no --effort never reached the vendor companion" "$INVOKED_E"
+check "no --effort runs the turn at medium, not the config's xhigh" 0 "^medium\$" "$rc" \
+  "$(python3 -c "import json; print(json.load(open('$TMP/effort/turn.json'))['effort'])" 2>/dev/null || echo MISSING)"
+if python3 -c "
+import json
+d = json.load(open('$ARC_E/review-stub-default.dispatch.json'))
+assert d['effortRequested'] is None, d
+assert d['effortEffective'] == 'medium', d
+assert d['effortConfig'] == 'xhigh', d
+assert d['effortSource'] == 'default', d
+j = json.load(open('$STATE_E/review-stub-default.json'))
+assert j['effort'] == 'medium', j
+assert j['effortRequested'] is None, j
+assert j['effortEffective'] == 'medium', j
+"; then
+  echo "PASS: no --effort is stamped and recorded as the medium default"; pass=$((pass + 1))
 else
-  echo "FAIL: no --effort was routed to the driver"; fail=$((fail + 1))
+  echo "FAIL: no --effort stamp/record wrong ($(cat "$ARC_E/review-stub-default.dispatch.json" 2>/dev/null))"; fail=$((fail + 1))
 fi
 
 # Case 49: a vendor rename is LOUD and never falls through to the vendor path.
@@ -2120,7 +2148,7 @@ out="$(CLAUDE_CONFIG_DIR="$TMP/broken" CREW_TEST_INVOKED="$INVOKED_E" \
 check "missing export fails nonzero" 3 "does not export .renderReviewResult." "$rc" "$out"
 check "missing export names the plugin version" 3 "codex@openai-codex 9.9.9-stub" "$rc" "$out"
 check "missing export names the module" 3 "scripts/lib/render.mjs" "$rc" "$out"
-check "missing export tells the caller how to proceed" 3 "re-run WITHOUT --effort" "$rc" "$out"
+check "missing export tells the caller how to proceed" 3 "Update codex-crew" "$rc" "$out"
 check "missing export refuses to fall back" 3 "refusing to fall back automatically" "$rc" "$out"
 check_no_dispatch "missing export did not fall through to the vendor" "$INVOKED_E"
 if [[ ! -f "$TMP/effort/turn.json" ]]; then
@@ -2217,21 +2245,37 @@ else
   echo "FAIL: zero-diff context still started a turn"; fail=$((fail + 1))
 fi
 
-# Case 53: the `--` sentinel. The vendor treats everything after it as focus
-# text, so `-- --effort high` is a NO-EFFORT vendor dispatch whose literal focus
-# is "--effort high". Diverting it to the driver would break the
-# byte-identical-passthrough guarantee and then fail for lack of a parsed effort.
+# Case 53: the `--` sentinel. Everything after it is focus text, so
+# `-- --effort high` is a NO-effort dispatch — the driver's medium default —
+# whose literal focus is "--effort high". Reading the token as an effort would
+# both run the wrong effort and eat part of the caller's focus.
 : > "$INVOKED_E"; rm -f "$TMP/effort/turn.json"
 out="$(CLAUDE_CONFIG_DIR="$TMP/effort" CREW_TEST_INVOKED="$INVOKED_E" \
   CREW_TEST_TURN_RECORD="$TMP/effort/turn.json" CREW_TEST_STATE_DIR="$STATE_E" \
   CREW_CODEX_ARCHIVE_DIR="$ARC_E" CODEX_HOME="$TMP/effort/codex-home" \
   CREW_CODEX_RETRY_DELAYS="0" bash "$CREW" adversarial-review -- --effort high 2>&1)" && rc=0 || rc=$?
-check "post-sentinel --effort stays a vendor dispatch" 0 "COMPANION-RAN:adversarial-review|--|--effort|high" "$rc" "$out"
-if [[ ! -f "$TMP/effort/turn.json" ]]; then
-  echo "PASS: post-sentinel --effort never reached the driver"; pass=$((pass + 1))
+check "post-sentinel --effort still runs the review" 0 "RENDERED Adversarial Review" "$rc" "$out"
+check_no_dispatch "post-sentinel --effort never reached the vendor companion" "$INVOKED_E"
+if python3 -c "
+import json
+t = json.load(open('$TMP/effort/turn.json'))
+assert t['effort'] == 'medium', t
+assert 'FOCUS=--effort high' in t['prompt'], t['prompt']
+"; then
+  echo "PASS: post-sentinel --effort is focus text and the turn runs at medium"; pass=$((pass + 1))
 else
-  echo "FAIL: post-sentinel --effort routed to the driver"; fail=$((fail + 1))
+  echo "FAIL: post-sentinel --effort was read as an effort ($(cat "$TMP/effort/turn.json" 2>/dev/null))"; fail=$((fail + 1))
 fi
+
+# Case 53b: the guard's focus-text rules hold on the driver path too — the
+# half of Cases 24/26 that moved here when adversarial-review left the vendor.
+out="$(run_effort adversarial-review improve the help wording)" && rc=0 || rc=$?
+check "focus prose containing 'help' runs a review on the driver" 0 "RENDERED Adversarial Review" "$rc" "$out"
+check "focus prose containing 'help' reaches the prompt intact" 0 "FOCUS=improve the help wording" "$rc" \
+  "$(python3 -c "import json; print(json.load(open('$TMP/effort/turn.json'))['prompt'])" 2>/dev/null || echo MISSING)"
+out="$(run_effort adversarial-review --effortless --helpful "focus")" && rc=0 || rc=$?
+check "unrecognized --flags become focus text on the driver" 0 "FOCUS=--effortless --helpful focus" "$rc" \
+  "$(python3 -c "import json; print(json.load(open('$TMP/effort/turn.json'))['prompt'])" 2>/dev/null || echo MISSING)"
 
 # Case 54: the audit sidecar must not archive prompt/focus content. Focus text
 # carries pasted incident logs, hostnames and secret-bearing commands, and this
@@ -2266,13 +2310,13 @@ if [[ -n "$sidecar" ]]; then
 fi
 
 
-# --- Case 58: the sensitivity gate ------------------------------------------
-# The security control this plugin previously only PROMISED in agent prose.
-# codex-reviewer.md pledged xhigh for auth/credential/Terraform/CI diffs while
-# forbidding the forwarding agent from reading the repo, so the escalation fired
-# only when a human happened to describe the change that way. These cases assert
-# the code does it: the classifier reads the same changed-file list the review
-# is built from, and the effort it produces is what reaches runAppServerTurn.
+# --- Case 58: the sensitivity classifier -------------------------------------
+# User decision 2026-09-10: "the orchestrator should have ability to call effort
+# required. If NO effort is passed in then default to medium." The classifier
+# used to RAISE a sensitive diff to xhigh; it is now an informational label.
+# These cases assert both halves on the same fixtures: every rule still FIRES
+# (named on stderr), and the effort that reaches runAppServerTurn is exactly the
+# one requested — no floor, no raise, no override.
 run_gate() { # $1 = comma-separated changed files, $2 = diff content, rest = argv
   local files="$1" content="$2"; shift 2
   : > "$INVOKED_E"
@@ -2291,47 +2335,50 @@ gate_turn_effort() {
   python3 -c "import json; print(json.load(open('$TMP/effort/turn.json'))['effort'])" 2>/dev/null || echo MISSING
 }
 
-# 58a: a Terraform-only change raises medium to xhigh.
+# 58a: a Terraform-only change is labelled and runs at exactly the requested medium.
 out="$(run_gate "infra/edp/main.tf,infra/edp/prod.tfvars" "STUB-DIFF" \
   adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
-check "terraform change runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
-check "terraform escalation is announced" 0 "sensitivity gate: raising --effort medium -> xhigh" "$rc" "$out"
-check "terraform escalation names the triggering path" 0 "infra/edp/main.tf" "$rc" "$out"
-check "terraform escalation names the rule" 0 "terraform:" "$rc" "$out"
-check "terraform escalation still dispatches the review" 0 "RENDERED Adversarial Review" "$rc" "$out"
-check "escalation points at the override" 0 "CREW_CODEX_SENSITIVITY_OVERRIDE" "$rc" "$out"
+check "terraform change keeps --effort medium" 0 "^medium\$" "$rc" "$(gate_turn_effort)"
+check "terraform label is announced" 0 "sensitivity classifier: this diff matches sensitive rules" "$rc" "$out"
+check_absent "terraform label raises nothing" "$out" "raising --effort"
+check "terraform label names the triggering path" 0 "infra/edp/main.tf" "$rc" "$out"
+check "terraform label names the rule" 0 "terraform:" "$rc" "$out"
+check "terraform label still dispatches the review" 0 "RENDERED Adversarial Review" "$rc" "$out"
+check "label says it is informational" 0 "Informational only" "$rc" "$out"
+check_absent "label no longer advertises the retired override" "$out" "CREW_CODEX_SENSITIVITY_OVERRIDE"
 
-# The audit trail has to agree with the turn. The .dispatch.json stamper only
-# ever sees argv, so without the gate's stderr contract it would archive this
-# review as having run at `medium` — the one number the record exists to hold.
+# The audit trail has to agree with the turn: a sensitive diff is stamped as
+# flag-sourced at exactly the requested effort, and the job record carries the
+# classifier's label.
 if python3 -c "
 import json
 d = json.load(open('$ARC_E/review-stub-default.dispatch.json'))
 assert d['effortRequested'] == 'medium', d
-assert d['effortEffective'] == 'xhigh', d
-assert d['effortSource'] == 'sensitivity-gate', d
+assert d['effortEffective'] == 'medium', d
+assert d['effortSource'] == 'flag', d
 "; then
-  echo "PASS: sidecar records the gate-raised effort, not the flag's"; pass=$((pass + 1))
+  echo "PASS: sidecar records the requested effort for a sensitive diff"; pass=$((pass + 1))
 else
-  echo "FAIL: sidecar wrong for a gate-raised review ($(cat "$ARC_E/review-stub-default.dispatch.json" 2>/dev/null))"; fail=$((fail + 1))
+  echo "FAIL: sidecar wrong for a sensitive review ($(cat "$ARC_E/review-stub-default.dispatch.json" 2>/dev/null))"; fail=$((fail + 1))
 fi
 if python3 -c "
 import json
 j = json.load(open('$STATE_E/review-stub-default.json'))
-assert j['effort'] == 'xhigh', j
+assert j['effort'] == 'medium', j
 assert j['effortRequested'] == 'medium', j
-assert j['effortEffective'] == 'xhigh', j
+assert j['effortEffective'] == 'medium', j
+assert j['sensitivityRules'] == ['terraform'], j
 "; then
-  echo "PASS: job record keeps both the requested and the effective effort"; pass=$((pass + 1))
+  echo "PASS: job record keeps the requested effort and the sensitivity label"; pass=$((pass + 1))
 else
-  echo "FAIL: job record lost the requested/effective effort pair"; fail=$((fail + 1))
+  echo "FAIL: job record lost the effort pair or the label ($(cat "$STATE_E/review-stub-default.json" 2>/dev/null))"; fail=$((fail + 1))
 fi
 
 # 58b: Bicep — the review that prompted this work called the old prose list too
 # narrow, and Azure's IaC dialect was one of the things it did not mention.
 out="$(run_gate "infra/deploy.bicep" "STUB-DIFF" \
   adversarial-review --effort low --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
-check "bicep change runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "bicep change keeps --effort low" 0 "^low\$" "$rc" "$(gate_turn_effort)"
 check "bicep escalation names the path" 0 "infra/deploy.bicep" "$rc" "$out"
 
 # 58c: a Kubernetes RBAC manifest under a name that gives nothing away. Only the
@@ -2344,13 +2391,13 @@ metadata:
   name: ci-admin'
 out="$(run_gate "deploy/manifest.yaml" "$K8S_DIFF" \
   adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
-check "kubernetes RBAC manifest runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "kubernetes RBAC manifest keeps --effort medium" 0 "^medium\$" "$rc" "$(gate_turn_effort)"
 check "kubernetes RBAC hit is attributed to its file" 0 "kubernetes-rbac: deploy/manifest.yaml" "$rc" "$out"
 
 # 58d: CI/CD — a workflow change runs with the fleet's credentials.
 out="$(run_gate ".github/workflows/deploy.yml" "STUB-DIFF" \
   adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
-check "workflow change runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "workflow change keeps --effort medium" 0 "^medium\$" "$rc" "$(gate_turn_effort)"
 check "workflow escalation names the path" 0 ".github/workflows/deploy.yml" "$rc" "$out"
 
 # 58e: the negative case, and the one that keeps the control usable. A plain
@@ -2362,42 +2409,33 @@ check "plain source change keeps the requested effort" 0 "^medium\$" "$rc" "$(ga
 check_absent "plain source change says nothing about the gate" "$out" "sensitivity gate"
 check_absent "plain source change was not escalated" "$out" "xhigh"
 
-# 58f: RAISE ONLY. An explicit xhigh on a sensitive diff is left exactly as it
-# is — the gate reports the match but must not claim to have changed anything.
+# 58f: an explicit xhigh on a sensitive diff runs at xhigh — the orchestrator's
+# choice — and is labelled, never described as changed.
 out="$(run_gate "infra/edp/main.tf" "STUB-DIFF" \
   adversarial-review --effort xhigh --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
 check "explicit xhigh survives the gate" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
-check "explicit xhigh is reported as already meeting the floor" 0 "already meets the" "$rc" "$out"
+check "explicit xhigh on a sensitive diff is still labelled" 0 "terraform: infra/edp/main.tf" "$rc" "$out"
 check_absent "explicit xhigh is never described as raised" "$out" "raising --effort"
 
 # 58g: FAIL CLOSED. A context that reports changed files it cannot name leaves
-# the diff unproven, and unproven has to mean sensitive — otherwise a vendor
-# rename turns the whole control off silently, which is the failure mode this
-# file's other guards exist to prevent.
+# the diff unclassified, and that has to be SAID — otherwise a vendor rename
+# turns the labels off silently while the diff reads as clean.
 export CREW_TEST_FILECOUNT=3
 out="$(run_gate "" "STUB-DIFF" adversarial-review --effort low --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
 unset CREW_TEST_FILECOUNT
-check "unclassifiable diff runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "unclassifiable diff keeps --effort low" 0 "^low\$" "$rc" "$(gate_turn_effort)"
 check "unclassifiable diff says why it escalated" 0 "unclassifiable-diff" "$rc" "$out"
 
-# 58h: the escape hatch is loud, states the caller's reason, and does not lower
-# anything by itself — it only declines to raise.
+# 58h: the retired override. CREW_CODEX_SENSITIVITY_OVERRIDE overrode a floor
+# that no longer exists; a value left in a shell profile is reported as dead
+# and changes nothing — the review runs at the requested effort either way.
 export CREW_CODEX_SENSITIVITY_OVERRIDE="re-run of an already-reviewed diff"
 out="$(run_gate "infra/edp/main.tf" "STUB-DIFF" \
   adversarial-review --effort low --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
 unset CREW_CODEX_SENSITIVITY_OVERRIDE
-check "override keeps the requested effort" 0 "^low\$" "$rc" "$(gate_turn_effort)"
-check "override warns prominently" 0 "SENSITIVITY GATE OVERRIDDEN" "$rc" "$out"
-check "override states the caller's reason" 0 "re-run of an already-reviewed diff" "$rc" "$out"
-
-# ...but an override with no stated reason is not an override. A bare `=1` in a
-# shell profile would silently disable the control for every later dispatch.
-export CREW_CODEX_SENSITIVITY_OVERRIDE=""
-out="$(run_gate "infra/edp/main.tf" "STUB-DIFF" \
-  adversarial-review --effort low --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
-unset CREW_CODEX_SENSITIVITY_OVERRIDE
-check "empty override does not disable the gate" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
-check "empty override says it needs a reason" 0 "needs a written reason" "$rc" "$out"
+check "retired override keeps the requested effort" 0 "^low\$" "$rc" "$(gate_turn_effort)"
+check "retired override is reported as ignored" 0 "no longer does anything" "$rc" "$out"
+check_absent "retired override prints no override banner" "$out" "SENSITIVITY GATE OVERRIDDEN"
 
 # 58i: THE BLIND-CLASSIFIER CASE. The vendor withholds the diff body above 2
 # files or 256 KB (lib/git.mjs:332) and returns Commit Log + Diff Stat +
@@ -2411,19 +2449,19 @@ export CREW_TEST_SELF_COLLECT=1
 out="$(run_gate "deploy/manifest.yaml,src/a.ts,src/b.ts" "$K8S_DIFF" \
   adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
 unset CREW_TEST_SELF_COLLECT
-check "self-collect-sized diff still runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "self-collect-sized diff still keeps --effort medium" 0 "^medium\$" "$rc" "$(gate_turn_effort)"
 check "self-collect-sized diff is caught by the CONTENT rule" 0 "kubernetes-rbac: deploy/manifest.yaml" "$rc" "$out"
 check_absent "the forced body means nothing was left unread" "$out" "unreadable-diff-body"
 
 # 58j: the diff body cannot be read at all — the ENOBUFS a diff larger than
 # spawnSync's 1 MiB buffer really produces. Path rules still run off the
-# fallback collection (these paths match none of them), and the review is
-# escalated anyway: an unread body has not been shown to be insensitive.
+# fallback collection (these paths match none of them), and the diff is
+# labelled anyway: an unread body has not been shown to be insensitive.
 export CREW_TEST_COLLECT_THROW=gate
 out="$(run_gate "src/app.ts,docs/notes.md" "STUB-DIFF" \
   adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
 unset CREW_TEST_COLLECT_THROW
-check "unreadable diff body runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "unreadable diff body keeps --effort medium" 0 "^medium\$" "$rc" "$(gate_turn_effort)"
 check "unreadable diff body says why" 0 "unreadable-diff-body" "$rc" "$out"
 check "unreadable diff body still dispatches the review" 0 "RENDERED Adversarial Review" "$rc" "$out"
 
@@ -2437,10 +2475,10 @@ out="$(run_gate "infra/edp/main.tf" "STUB-DIFF" \
 unset CREW_TEST_COLLECT_THROW
 # Not `check ... 0 ...`: the run's OWN collection fails on the same collector,
 # so a zero exit here would mean the driver reviewed a diff it could not read.
-if [[ "$rc" != "0" ]] && grep -q "sensitivity gate: raising --effort low -> xhigh" <<<"$out"; then
-  echo "PASS: a failed collection escalates before the run gives up"; pass=$((pass + 1))
+if [[ "$rc" != "0" ]] && grep -q "sensitivity classifier: this diff matches" <<<"$out"; then
+  echo "PASS: a failed collection is labelled before the run gives up"; pass=$((pass + 1))
 else
-  echo "FAIL: a failed collection did not escalate (exit=$rc; out: $out)"; fail=$((fail + 1))
+  echo "FAIL: a failed collection was not labelled (exit=$rc; out: $out)"; fail=$((fail + 1))
 fi
 if grep -q "unclassifiable-diff" <<<"$out"; then
   echo "PASS: a failed collection says the diff is unclassifiable"; pass=$((pass + 1))
@@ -2455,7 +2493,7 @@ export CREW_TEST_DROP_CHANGED_FILES=1
 out="$(run_gate "src/app.ts" "STUB-DIFF" \
   adversarial-review --effort low --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
 unset CREW_TEST_DROP_CHANGED_FILES
-check "a context without changedFiles escalates" 0 "sensitivity gate: raising --effort low -> xhigh" "$rc" "$out"
+check "a context without changedFiles is labelled" 0 "sensitivity classifier: this diff matches" "$rc" "$out"
 check "a context without changedFiles says why" 0 "unclassifiable-diff" "$rc" "$out"
 
 # 58m: NON-ASCII PATHS. core.quotePath is on by default, so `git diff
@@ -2465,7 +2503,7 @@ check "a context without changedFiles says why" 0 "unclassifiable-diff" "$rc" "$
 # is byte-for-byte what git emits for infra/prod<u-umlaut>.tf.
 out="$(run_gate '"infra/prod\303\274.tf"' "STUB-DIFF" \
   adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
-check "C-quoted terraform path runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "C-quoted terraform path keeps --effort medium" 0 "^medium\$" "$rc" "$(gate_turn_effort)"
 check "C-quoted path is reported decoded, not escaped" 0 "terraform: infra/prod.*\.tf" "$rc" "$out"
 check_absent "the escaped form is not what the operator is shown" "$out" '303\\274'
 
@@ -2481,20 +2519,18 @@ metadata:
   name: ci-admin'
 out="$(run_gate "deploy/manifest.yaml" "$COMMENT_DIFF" \
   adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
-check "a ### YAML comment does not hide an RBAC object" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "a ### YAML comment does not hide an RBAC object" 0 "^medium\$" "$rc" "$(gate_turn_effort)"
 check "the unattributable hit is labelled as such" 0 "unattributed diff content" "$rc" "$out"
 
-# 58o: the strict-model warning is about the effort that will actually be SENT.
-# `--effort none` on a sensitive diff is raised to xhigh, which no model
-# rejects, so predicting an API rejection there was simply wrong.
+# 58o: `--effort none` on a sensitive diff is NOT raised any more, so the
+# strict-model warning about the effort actually sent must still fire.
 out="$(run_gate "infra/edp/main.tf" "STUB-DIFF" \
   adversarial-review --effort none --model gpt-6-astra "focus")" && rc=0 || rc=$?
-check "a gate-raised none runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
-check_absent "no stale API-rejection warning once the gate raised the effort" "$out" "rejected by"
-# The other half: an UNRAISED none still warns, or the reorder silenced a real one.
+check "none on a sensitive diff runs at none" 0 "^none\$" "$rc" "$(gate_turn_effort)"
+check "none on a sensitive diff still warns about the API" 0 "rejected by gpt-6-astra" "$rc" "$out"
 out="$(run_gate "src/app.ts" "STUB-DIFF" \
   adversarial-review --effort none --model gpt-6-astra "focus")" && rc=0 || rc=$?
-check "an unraised none still warns about the API" 0 "rejected by gpt-6-astra" "$rc" "$out"
+check "an unlabelled none still warns about the API" 0 "rejected by gpt-6-astra" "$rc" "$out"
 
 # --- Case 58p: sensitive DIRECTORY segments, not just the final basename -----
 # The secret rule matched secret-SHAPED basenames, so `secrets/prod/config.yaml`
@@ -2504,7 +2540,7 @@ check "an unraised none still warns about the API" 0 "rejected by gpt-6-astra" "
 for p in secrets/prod/config.yaml credentials/prod/config.json ops/creds/aws.json; do
   out="$(run_gate "$p" "STUB-DIFF" \
     adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
-  check "$p runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+  check "$p keeps --effort medium" 0 "^medium\$" "$rc" "$(gate_turn_effort)"
   check "$p is named as the trigger" 0 "secret-material: $p" "$rc" "$out"
 done
 
@@ -2514,7 +2550,7 @@ done
 for p in internal/authentication/provider.ts services/authorization/policy.go src/Identity/provider.ts; do
   out="$(run_gate "$p" "STUB-DIFF" \
     adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
-  check "$p runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+  check "$p keeps --effort medium" 0 "^medium\$" "$rc" "$(gate_turn_effort)"
   check "$p is named as the trigger" 0 "auth-source: $p" "$rc" "$out"
 done
 
@@ -2525,7 +2561,7 @@ done
 for p in src/AuthService.ts src/IdentityProvider.ts src/authService.ts lib/TokenStore/index.ts; do
   out="$(run_gate "$p" "STUB-DIFF" \
     adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
-  check "$p runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+  check "$p keeps --effort medium" 0 "^medium\$" "$rc" "$(gate_turn_effort)"
   check "$p is named as the trigger" 0 "auth-source: $p" "$rc" "$out"
 done
 
@@ -2568,7 +2604,7 @@ rename from infra/main.tf
 rename to archive/main.txt'
 out="$(run_gate "archive/main.txt" "$RENAME_DIFF" \
   adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
-check "a renamed terraform file runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "a renamed terraform file keeps --effort medium" 0 "^medium\$" "$rc" "$(gate_turn_effort)"
 check "the pre-rename path is what is reported" 0 "terraform: infra/main.tf (pre-rename path)" "$rc" "$out"
 
 # ...and the destination is not mislabelled as a pre-rename path. `rename to`
@@ -2580,7 +2616,7 @@ rename from docs/notes.md
 rename to secrets/notes.md'
 out="$(run_gate "secrets/notes.md" "$RENAME_SENSITIVE_DEST" \
   adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
-check "a rename INTO a secrets tree runs at xhigh" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
+check "a rename INTO a secrets tree keeps --effort medium" 0 "^medium\$" "$rc" "$(gate_turn_effort)"
 check "the destination is reported plainly" 0 "secret-material: secrets/notes.md" "$rc" "$out"
 check_absent "the destination is not called a pre-rename path" "$out" "secrets/notes.md (pre-rename path)"
 
@@ -2596,6 +2632,109 @@ out="$(run_gate "src/b.ts" "$BENIGN_RENAME" \
 check "a benign rename keeps the requested effort" 0 "^medium\$" "$rc" "$(gate_turn_effort)"
 check_absent "a benign rename says nothing about the gate" "$out" "sensitivity gate"
 
+
+# --- Case 58u: effort is the caller's, on every sensitive fixture ------------
+# The user's decision, verbatim (2026-09-10): "the orchestrator should have
+# ability to call effort required. If NO effort is passed in then default to
+# medium." Over every sensitive fixture in this file — Terraform, IaC, CI, RBAC,
+# secrets, auth, mixed, unreadable — at every explicit effort, the turn runs at
+# EXACTLY the requested effort and the label still fires; with no --effort it
+# runs at medium. A fixture is "files|content-var|env" (env: one CREW_TEST_*
+# assignment, or empty). The collector-throws-for-everyone shape is absent: its
+# run fails before a turn exists (58k asserts its label instead).
+CRED_DIFF='### config/app.txt
+-----BEGIN RSA PRIVATE KEY-----'
+HELM_DIFF='### charts/app/values.yaml
++  dbPassword: hunter2'
+CFN_DIFF='### deploy/stack.yaml
+AWSTemplateFormatVersion: "2010-09-09"'
+effort_fixtures=(
+  "infra/edp/main.tf,infra/edp/prod.tfvars|STUB|"
+  "infra/deploy.bicep|STUB|"
+  "deploy/manifest.yaml|K8S_DIFF|"
+  ".github/workflows/deploy.yml|STUB|"
+  "|STUB|CREW_TEST_FILECOUNT=3"
+  "deploy/manifest.yaml,src/a.ts,src/b.ts|K8S_DIFF|CREW_TEST_SELF_COLLECT=1"
+  "src/app.ts,docs/notes.md|STUB|CREW_TEST_COLLECT_THROW=gate"
+  "src/app.ts|STUB|CREW_TEST_DROP_CHANGED_FILES=1"
+  '"infra/prod\303\274.tf"|STUB|'
+  "deploy/manifest.yaml|COMMENT_DIFF|"
+  "secrets/prod/config.yaml|STUB|"
+  "ops/creds/aws.json|STUB|"
+  "internal/authentication/provider.ts|STUB|"
+  "src/AuthService.ts|STUB|"
+  "src/auth/session.ts|STUB|"
+  "archive/main.txt|RENAME_DIFF|"
+  "secrets/notes.md|RENAME_SENSITIVE_DEST|"
+  "config/app.txt|CRED_DIFF|"
+  "charts/app/values.yaml|HELM_DIFF|"
+  "deploy/stack.yaml|CFN_DIFF|"
+  "infra/edp/main.tf,src/auth/session.ts|STUB|"
+)
+effort_bad=""
+effort_runs=0
+for fx in "${effort_fixtures[@]}"; do
+  IFS='|' read -r fx_files fx_var fx_env <<<"$fx"
+  if [[ "$fx_var" == "STUB" ]]; then fx_content="STUB-DIFF"; else fx_content="${!fx_var}"; fi
+  for e in low medium high xhigh omitted; do
+    if [[ -n "$fx_env" ]]; then export "${fx_env?}"; fi
+    if [[ "$e" == "omitted" ]]; then
+      want=medium
+      out="$(run_gate "$fx_files" "$fx_content" \
+        adversarial-review --model gpt-5.4-legacy "focus")" && rc=0 || rc=$?
+    else
+      want="$e"
+      out="$(run_gate "$fx_files" "$fx_content" \
+        adversarial-review --effort "$e" --model gpt-5.4-legacy "focus")" && rc=0 || rc=$?
+    fi
+    if [[ -n "$fx_env" ]]; then unset "${fx_env%%=*}"; fi
+    got="$(gate_turn_effort)"
+    effort_runs=$((effort_runs + 1))
+    if [[ "$got" != "$want" ]]; then
+      effort_bad+=" [$fx_files@$e ran at $got, want $want]"
+    fi
+    # Positive half: without it this loop passes on a classifier that stopped
+    # firing altogether.
+    if ! grep -q "sensitivity classifier: this diff matches sensitive rules" <<<"$out"; then
+      effort_bad+=" [$fx_files@$e not labelled]"
+    fi
+    if grep -q -- "raising --effort" <<<"$out"; then
+      effort_bad+=" [$fx_files@$e announced a raise]"
+    fi
+  done
+done
+if [[ -z "$effort_bad" && "$effort_runs" -eq $(( ${#effort_fixtures[@]} * 5 )) ]]; then
+  echo "PASS: effort == request (medium when omitted) and labelled, across $effort_runs sensitive dispatches"; pass=$((pass + 1))
+else
+  echo "FAIL: a sensitive dispatch ran at an unrequested effort or went unlabelled:$effort_bad"; fail=$((fail + 1))
+fi
+
+# The omitted-effort label says the default applied; a plain diff with no
+# --effort runs at medium and is not labelled at all.
+out="$(run_gate "src/auth/session.ts" "STUB-DIFF" \
+  adversarial-review --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+check "omitted effort on an auth diff runs at medium" 0 "^medium\$" "$rc" "$(gate_turn_effort)"
+check "omitted effort is named as the default in the label" 0 "the default; no --effort was given" "$rc" "$out"
+out="$(run_gate "src/app.ts" "STUB-DIFF" \
+  adversarial-review --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+check "omitted effort on a plain diff runs at medium" 0 "^medium\$" "$rc" "$(gate_turn_effort)"
+check_absent "a plain diff is not labelled" "$out" "sensitivity classifier"
+
+# A mixed Terraform + auth diff at low stays low, and the job record and job log
+# carry BOTH labels.
+out="$(run_gate "infra/edp/main.tf,src/auth/session.ts" "STUB-DIFF" \
+  adversarial-review --effort low --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
+check "mixed terraform+auth diff at low stays low" 0 "^low\$" "$rc" "$(gate_turn_effort)"
+if python3 -c "
+import json
+j = json.load(open('$STATE_E/review-stub-default.json'))
+assert sorted(j['sensitivityRules']) == ['auth-source', 'terraform'], j
+assert j['effort'] == 'low', j
+" && grep -q "Sensitivity labels (informational; the review runs at effort low as chosen): the diff matched terraform, auth-source" "$STATE_E/review-stub-default.log"; then
+  echo "PASS: mixed diff's labels reach the job record and the job log"; pass=$((pass + 1))
+else
+  echo "FAIL: mixed diff's labels missing from the record/log ($(cat "$STATE_E/review-stub-default.log" 2>/dev/null))"; fail=$((fail + 1))
+fi
 
 # --- Case 59: the none/minimal guard covers the Astra lane ------------------
 # gpt-6-astra rejects `none` and `minimal` at the API exactly as the 5.6 family
@@ -3482,8 +3621,8 @@ fi
 # ...and the boundary holds in the other direction: --prompt-file is a task
 # flag, so on a review it is unrecognized text and must be redacted.
 arc="$TMP/stamp/arc58c"
-out="$(run_stamp "$arc" "Adversarial Review started in the background as review-sec33-sec44." \
-  adversarial-review --prompt-file /internal/INC-999 --base main)" && rc=0 || rc=$?
+out="$(run_stamp "$arc" "Review started in the background as review-sec33-sec44." \
+  review --prompt-file /internal/INC-999 --base main)" && rc=0 || rc=$?
 sc="$arc/review-sec33-sec44.dispatch.json"
 if [[ -f "$sc" ]] && ! grep -q "INC-999" "$sc" && grep -q -- "--base" "$sc"; then
   echo "PASS: review sidecar redacts a task-only flag but keeps --base"; pass=$((pass + 1))

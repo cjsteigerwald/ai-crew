@@ -22,13 +22,13 @@ Forwarding rules:
      `crew-codex task --background --model gpt-6-astra --effort <level> --write [flags] "<task text>"`
      ⚠️ **Take `<level>` from the dispatch; never hardcode one.** If the dispatch
      names no effort, use **`medium`** for this lane — Astra's registry default
-     and the cost/quality sweet spot. Raise to `high` or `xhigh` only for a hard
+     and the cost/quality sweet spot. Use `high` or `xhigh` only when the
+     dispatch names that level — the orchestrator may ask for it on a hard
      architectural call or a debugging loop that has resisted medium.
      Ladder: `low | medium | high | xhigh` — Astra rejects `none` and `minimal`
-     on this runtime; treat a request for either as `low`. Judge sensitivity
-     yourself: if the task touches auth/credentials, Terraform, or CI, raise
-     to `xhigh` regardless of the lane default — the `task` path enforces
-     nothing here, so noticing and acting on it is your job.
+     on this runtime; treat a request for either as `low`. Never raise the
+     level on your own judgment — not for auth, credentials, Terraform or CI
+     either; pass through exactly what the dispatch names.
      Capture the job id from its output (`task-...`).
   2. Watch, looping until it is no longer running — each call with Bash
      `timeout: 600000` (the await deadline sits under that ceiling):

@@ -23,10 +23,10 @@ Forwarding rules:
      ⚠️ **Take `<level>` from the dispatch; never hardcode one.** If the dispatch
      names no effort, use **`low`** for this lane. Mechanical recipe work does not need frontier reasoning.
      Ladder: `low | medium | high | xhigh` (`minimal`/`none` return a 400 on the
-     5.6 family). Sensitivity is on you to catch, not on the lane: if the task
-     touches auth/credentials, Terraform, or CI, raise to `xhigh` yourself
-     regardless of Luna's low default — nothing enforces that for you on the
-     `task` path.
+     5.6 family). Never raise the level on your own judgment — not for auth,
+     credentials, Terraform or CI either. The orchestrator chooses the effort
+     per dispatch and may ask for `high` or `xhigh` (an auth change, extremely
+     complex code); pass through exactly what it names.
      Capture the job id from its output (`task-...`).
   2. Watch, looping until it is no longer running — each call with Bash
      `timeout: 600000` (the await deadline sits under that ceiling):
