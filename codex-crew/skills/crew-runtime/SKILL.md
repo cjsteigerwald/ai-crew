@@ -16,13 +16,12 @@ Primary helper — `crew-codex`, on PATH while the plugin is enabled:
 - `crew-codex review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <m>]`
 - `crew-codex adversarial-review [--wait|--background] [--base <ref>] [--scope <...>] [--model <m>] [--effort <none|minimal|low|medium|high|xhigh>] [focus text]`
   **`--effort` is honored on `adversarial-review` only.** codex-companion still
-  cannot set reasoning effort on any review path, so when (and only when)
-  `--effort` is present `crew-codex` runs the dispatch through its own driver,
-  `lib/review-with-effort.mjs`, which composes the codex plugin's *exported*
-  modules — no vendor file is patched — and threads the effort into the turn the
-  companion leaves `null`. Without `--effort` the dispatch is a verbatim
-  companion passthrough that runs at `model_reasoning_effort` from
-  `${CODEX_HOME:-~/.codex}/config.toml`, exactly as before.
+  cannot set reasoning effort on any review path, so `crew-codex` runs EVERY
+  `adversarial-review` through its own driver, `lib/review-with-effort.mjs`,
+  which composes the codex plugin's *exported* modules — no vendor file is
+  patched — and threads the effort into the turn the companion leaves `null`.
+  Without `--effort` the driver sends `medium` explicitly; it never inherits
+  `model_reasoning_effort` from `${CODEX_HOME:-~/.codex}/config.toml`.
   The driver also detaches properly under `--background` (the vendor's
   adversarial review is foreground-only, so a plain Bash call to it dies at the
   120s tool timeout and orphans the job), and stamps the effort and model into
@@ -30,24 +29,24 @@ Primary helper — `crew-codex`, on PATH while the plugin is enabled:
   If a codex plugin upgrade renames one of the modules it imports, the driver
   fails **loudly** — naming the version, module and symbol — and exits non-zero.
   It never silently falls back to the vendor path, because that would run the
-  review at an effort you did not ask for while reporting success. Re-run
-  without `--effort` to use the vendor path deliberately.
-- **Sensitivity gate.** Whenever `--effort` is present, the driver also
-  classifies the diff's changed files before the turn starts — Terraform,
-  Bicep/ARM, CloudFormation, Kubernetes RBAC/NetworkPolicy manifests, CI/CD
-  pipeline definitions, key/cert/dotenv-shaped secret material, and
-  auth/identity source paths — and **raises** the effort to `xhigh` on a
-  match. It only ever raises, never lowers: an already-`xhigh` request is left
-  alone, and an unmatched diff runs at exactly what was asked. A match is
-  announced loudly on stderr, naming the matched rule(s) and paths.
-  `CREW_CODEX_SENSITIVITY_OVERRIDE="<reason>"` opts out for one dispatch — it
-  requires a non-empty value and echoes it back on stderr. ⚠️ Only emptiness is
-  checked — a bare `=1` satisfies it, so the reason is not an enforced control.
-  ⚠️ **Scope limit**: this gate runs only on `adversarial-review` invoked
-  *with* `--effort`. It does not cover the `task` path, and it does not cover
-  `adversarial-review` invoked with no `--effort` at all — that dispatch stays
-  on the vendor review path, ungated, at whatever `model_reasoning_effort` the
-  codex config carries, however sensitive the diff.
+  review at an effort you did not ask for while reporting success. Update
+  codex-crew, or pin the codex plugin to a version the driver supports.
+- **Effort is the caller's.** The turn runs at exactly the `--effort` given.
+  With no `--effort` at all, `adversarial-review` still goes through the
+  driver and runs at `medium`, sent explicitly — never at the codex config's
+  `model_reasoning_effort`. Nothing raises or lowers it. `high` and `xhigh`
+  are levels the orchestrator may request per dispatch (an auth change,
+  extremely complex code) — a choice, never a rule or a floor.
+- **Sensitivity labels.** Before the turn starts, the driver classifies the
+  diff's changed files — Terraform, Bicep/ARM, CloudFormation, Kubernetes
+  RBAC/NetworkPolicy manifests, CI/CD pipeline definitions,
+  key/cert/dotenv-shaped secret material, and auth/identity source paths —
+  and names any matched rule(s) and paths on stderr and in the job record.
+  Informational only: it changes nothing. (It used to raise a match to
+  `xhigh`; that floor and `CREW_CODEX_SENSITIVITY_OVERRIDE` were removed on
+  2026-09-10, and a still-set override variable is reported as ignored.)
+  ⚠️ **Scope limit**: labels are produced only on `adversarial-review`; the
+  `task` path is not classified.
 - `crew-codex review` (the native reviewer) still takes **no `--effort`** and
   rejects it with exit 2: it runs through a different companion code path
   (`runAppServerReview`) that the driver does not model.
@@ -228,11 +227,10 @@ Execution rules:
 
 ⚠️ **Coverage is not universal, and the gap runs the wrong way.** The stamp is
 written after the dispatch returns, by scraping a job id out of its output. The
-vendor review path (`review`, and `adversarial-review` **without** `--effort`)
-runs foreground and prints **no job id**, so those dispatches get **no
-sidecar** — exactly the reviews with no other audit trail. Driver dispatches
-(`adversarial-review --effort ...`) and `task` dispatches do print an id and are
-stamped. Closing the vendor-path gap needs an id minted before dispatch rather
+vendor review path (the native `review`) runs foreground and prints **no job
+id**, so those dispatches get **no sidecar** — exactly the reviews with no
+other audit trail. Driver dispatches (every `adversarial-review`, with or
+without `--effort`) and `task` dispatches do print an id and are stamped. Closing the vendor-path gap needs an id minted before dispatch rather
 than scraped after it: tracked, not done.
 
 ⚠️ The sidecar stores **routing metadata only**. Positionals — review focus text

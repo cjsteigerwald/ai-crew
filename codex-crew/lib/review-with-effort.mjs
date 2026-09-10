@@ -219,15 +219,15 @@ function vendorContractFailure({ pluginRoot, pluginVersion, modulePath, symbol, 
     ? `does not export \`${symbol}\``
     : "could not be imported";
   errorLines([
-    `cannot run an adversarial review at an explicit --effort.`,
+    `cannot run the adversarial review.`,
     `codex@openai-codex ${pluginVersion} ${what} from ${modulePath}.`,
     cause ? `underlying error: ${cause}` : null,
-    `this driver composes the codex plugin's internal modules to add --effort, which`,
-    `the vendor review path does not support; an upstream rename breaks it.`,
-    `re-run WITHOUT --effort to use the vendor review path — it still works, and runs`,
-    `at model_reasoning_effort from ${process.env.CODEX_HOME ?? "~/.codex"}/config.toml.`,
-    `refusing to fall back automatically: that would run this review at an effort you`,
-    `did not ask for while reporting success.`,
+    `this driver composes the codex plugin's internal modules to set the review's`,
+    `effort, which the vendor review path cannot; an upstream rename breaks it.`,
+    `refusing to fall back automatically: the vendor path would run this review at`,
+    `model_reasoning_effort from ${process.env.CODEX_HOME ?? "~/.codex"}/config.toml — not the effort`,
+    `requested (or the medium default) — while reporting success. Update codex-crew,`,
+    `or pin the codex plugin to a version this driver supports.`,
     `plugin root: ${pluginRoot}`
   ].filter(Boolean));
   process.exit(EXIT_VENDOR_CONTRACT);
@@ -361,29 +361,43 @@ function collectSkippedFiles(content, changedFiles) {
   return [...paths];
 }
 
-// ---- the sensitivity gate: a code-enforced FLOOR on review effort ---------
+// ---- the sensitivity classifier: an informational LABEL, never an effort ---
 //
-// ⚠️ THIS IS A SECURITY CONTROL, not a convenience. codex-reviewer.md has
-// always PROMISED `xhigh` when a diff touches auth, credentials, Terraform or
-// CI — but that promise lived in agent prose, and the same file forbids the
-// forwarding agent from inspecting the repository, so nothing ever read the
-// diff to check. The escalation therefore fired only when the human caller
-// happened to DESCRIBE the change that way; an unannotated "adversarially
-// review this branch" ran a real Terraform change at the lane default. This
-// classifier closes that gap: it reads the changed-file list the review is
-// built from, and raises the effort with no way for prose to disagree.
+// EFFORT IS THE CALLER'S (user decision, 2026-09-10): "the orchestrator should
+// have ability to call effort required. If NO effort is passed in then default
+// to medium." So an explicit `--effort <level>` runs exactly as given, an
+// omitted one runs at DEFAULT_REVIEW_EFFORT (`medium`) — passed to the turn
+// explicitly, never inherited from ~/.codex/config.toml — and nothing in this
+// file raises, lowers or floors it. This classifier used to RAISE a sensitive
+// diff to a hardcoded floor (`xhigh`), with CREW_CODEX_SENSITIVITY_OVERRIDE as
+// the escape hatch; both are gone. What remains is the classification itself:
+// which sensitive rules the diff matched, printed on stderr and written into
+// the job record, so whoever reads the review — and the orchestrator choosing
+// the effort for the next dispatch — can see it. Asking for `high` or `xhigh`
+// on an auth change or on extremely complex code is the orchestrator's call.
 //
-// ⚠️ WIDENING THESE LISTS IS ALWAYS SAFE. The worst case is a review that costs
-// more than it strictly needed to. NARROWING THEM NEEDS REVIEW: every pattern
-// removed is a class of change that silently drops back to the lane default,
-// which is precisely the failure this exists to remove. Add first, argue later.
+// The per-pattern commentary below predates that decision. It still describes
+// accurately what each rule MATCHES; where it speaks of escalating, read
+// "labelling".
+//
+// ⚠️ WIDENING THESE LISTS IS ALWAYS SAFE. The worst case is a label on a diff
+// that did not strictly need one. NARROWING THEM NEEDS REVIEW: every pattern
+// removed is a class of change that silently goes unlabelled, and the label is
+// the only signal the orchestrator gets that the diff touched it.
 //
 // ⚠️ Every pattern below is NON-GLOBAL on purpose. A `/g` regex carries
 // lastIndex between .test() calls, so the second file matched against it would
 // be tested from an offset and could report "not sensitive" — a stateful
-// security check that fails open on the second hit.
-const SENSITIVITY_FLOOR_EFFORT = "xhigh";
-const SENSITIVITY_OVERRIDE_ENV = "CREW_CODEX_SENSITIVITY_OVERRIDE";
+// check that fails open on the second hit.
+//
+// ⚠️ Changing DEFAULT_REVIEW_EFFORT changes bin/crew-codex's audit stamp too:
+// its dispatch stamper records `medium` for an adversarial review with no
+// --effort, because argv is all it sees. Change both together.
+const DEFAULT_REVIEW_EFFORT = "medium";
+// Retired 2026-09-10 with the floor it overrode. Still recognised, only so that
+// a value left in someone's shell profile is reported as dead instead of being
+// silently believed to do something.
+const RETIRED_SENSITIVITY_OVERRIDE_ENV = "CREW_CODEX_SENSITIVITY_OVERRIDE";
 // Enough to identify the change; a 400-file diff must not bury the reason in
 // its own evidence.
 const SENSITIVITY_PATHS_SHOWN = 8;
@@ -607,8 +621,9 @@ function unquoteGitPath(filePath) {
 // check, which is the safe direction for this control.
 //
 // When the body could not be read this returns nothing and the old path is
-// genuinely unrecoverable — a hole that is already closed one level up, where
-// `diffBodyMissing` escalates unconditionally rather than trusting path rules.
+// genuinely unrecoverable — a hole that is surfaced one level up, where
+// `diffBodyMissing` adds an explicit `unreadable-diff-body` label rather than
+// letting the path rules' silence read as a clean diff.
 function collectRenamedPaths(content) {
   const paths = new Set();
   for (const line of String(content ?? "").split(/\r?\n/)) {
@@ -731,19 +746,21 @@ function describeHitPaths(paths) {
   return `${shown}, +${paths.length - SENSITIVITY_PATHS_SHOWN} more`;
 }
 
-// Decide the effort this review will actually run at.
+// Classify the diff this review is about to run on — for the LABEL only.
 //
-// RAISE ONLY. The caller's effort is the floor's floor: if it already meets or
-// exceeds SENSITIVITY_FLOOR_EFFORT the gate changes nothing, and the gate never
-// lowers anything under any condition. When it does raise, it says so on
-// stderr and names the paths — a silent escalation is as bad as a silent
-// non-escalation, because neither leaves the caller able to tell what ran.
+// Returns `{ hits }`, one entry per matched rule, and prints them on stderr.
+// It never reads, compares or changes the effort: that is the caller's (see
+// the section header above). Printing is not optional — a label nobody can see
+// is no label — and a clean diff prints nothing, so "no line" means "looked,
+// matched nothing".
 //
-// FAILS CLOSED. If the changed-file list cannot be obtained the diff cannot be
-// proven harmless, so it is treated as sensitive. The collector is called
-// inside a try: an exception here must not change how a collector failure is
-// reported, which is downstream, inside runTrackedJob, where it lands in the
-// job record instead of killing the dispatch before a record exists.
+// A diff whose changed-file list or body cannot be read is LABELLED as such
+// (`unclassifiable-diff` / `unreadable-diff-body`) rather than reported clean:
+// "no sensitive rules matched" must only ever mean the classifier looked. The
+// collector is called inside a try: an exception here must not change how a
+// collector failure is reported, which is downstream, inside runTrackedJob,
+// where it lands in the job record instead of killing the dispatch before a
+// record exists.
 //
 // ⚠️ This collects the review context a SECOND time (executeAdversarialReviewRun
 // collects its own, in the worker process for a --background dispatch). That is
@@ -752,10 +769,10 @@ function describeHitPaths(paths) {
 // vendor's session cleanup. The duplicate cost is a local git read against the
 // SAME resolved target — there is still exactly one base-ref resolution — set
 // against a Codex turn measured in minutes.
-function resolveEffectiveEffort(vendor, { cwd, target, requestedEffort }) {
-  const unchanged = { effort: requestedEffort, escalated: false, hits: [] };
+function classifyReviewSensitivity(vendor, { cwd, target, effort, effortGiven }) {
+  const none = { hits: [] };
 
-  // ⚠️ `{ includeDiff: true }` IS THE CONTROL. Left off, the vendor decides for
+  // ⚠️ `{ includeDiff: true }` IS LOAD-BEARING. Left off, the vendor decides for
   // itself (lib/git.mjs:332): it inlines the diff body only when the change is
   // at most `maxInlineFiles` files AND at most `maxInlineDiffBytes` — which
   // default to 2 and 256 KB (git.mjs:8-9). Above either, `inputMode` flips to
@@ -765,7 +782,7 @@ function resolveEffectiveEffort(vendor, { cwd, target, requestedEffort }) {
   // an empty haystack and finds nothing. On a 3-file PR. The classifier must
   // never be handed the summary; it asks for the body explicitly.
   //
-  // THE BOUND IS THE VENDOR'S AND IT FAILS CLOSED. Forcing the body means a
+  // THE BOUND IS THE VENDOR'S, AND AN UNREAD BODY IS LABELLED. Forcing the body means a
   // very large diff is read into memory, but the vendor's git helper inherits
   // spawnSync's 1 MiB default maxBuffer (process.mjs:10 passes
   // `options.maxBuffer`, undefined here), so an oversized body raises ENOBUFS,
@@ -775,8 +792,8 @@ function resolveEffectiveEffort(vendor, { cwd, target, requestedEffort }) {
   // a diff whose body could not be read has NOT been shown to be insensitive.
   // So the retry below re-collects WITHOUT the body purely to recover the
   // changed-file list (path rules still work, and the operator gets real file
-  // names), and `diffBodyMissing` forces an escalation regardless of what those
-  // path rules say.
+  // names), and `diffBodyMissing` adds an `unreadable-diff-body` label so the
+  // reader knows the content rules never ran, whatever the path rules said.
   let context = null;
   let diffBodyMissing = false;
   try {
@@ -804,10 +821,10 @@ function resolveEffectiveEffort(vendor, { cwd, target, requestedEffort }) {
   const fileCount = typeof context?.fileCount === "number" ? context.fileCount : changedFiles?.length ?? null;
 
   // Nothing to review. executeAdversarialReviewRun refuses this outright a
-  // moment later; escalating first would print an alarming line about a diff
+  // moment later; labelling first would print an alarming line about a diff
   // that does not exist.
   if (fileCount === 0) {
-    return unchanged;
+    return none;
   }
 
   let hits;
@@ -822,7 +839,7 @@ function resolveEffectiveEffort(vendor, { cwd, target, requestedEffort }) {
   } else {
     hits = classifySensitiveChanges(changedFiles, diffBodyMissing ? null : context?.content);
     if (diffBodyMissing) {
-      // Path rules ran and may have found nothing; that is not an acquittal,
+      // Path rules ran and may have found nothing; that is not a clean bill,
       // because the content rules never got to run at all.
       hits.push({
         rule: "unreadable-diff-body",
@@ -833,62 +850,18 @@ function resolveEffectiveEffort(vendor, { cwd, target, requestedEffort }) {
   }
 
   if (hits.length === 0) {
-    return unchanged;
+    return none;
   }
 
-  const requestedRank = VALID_REASONING_EFFORTS.indexOf(requestedEffort);
-  const floorRank = VALID_REASONING_EFFORTS.indexOf(SENSITIVITY_FLOOR_EFFORT);
-  const hitLines = hits.map((hit) => `  ${hit.rule}: ${describeHitPaths(hit.paths)} (${hit.why})`);
-
-  if (requestedRank >= floorRank) {
-    // Already at or above the floor: report, change nothing. Saying nothing
-    // here would leave the caller unable to tell an unclassified review from a
-    // classified one that needed no help.
-    errorLines([
-      `sensitivity gate: this diff is sensitive, and --effort ${requestedEffort} already meets the`,
-      `${SENSITIVITY_FLOOR_EFFORT} floor — leaving it unchanged. Matched:`,
-      ...hitLines
-    ]);
-    return { effort: requestedEffort, escalated: false, hits };
-  }
-
-  // The escape hatch is deliberately EXPENSIVE to use: it demands a written
-  // reason, prints a warning that is impossible to miss, and the reason is
-  // echoed back so it lands in whatever captured this dispatch's stderr. An
-  // env var set to "1" would be a switch someone flips once in a shell profile
-  // and forgets; a reason string is a decision someone has to make each time.
-  const override = String(process.env[SENSITIVITY_OVERRIDE_ENV] ?? "").trim();
-  if (override !== "") {
-    errorLines([
-      `⚠️ SENSITIVITY GATE OVERRIDDEN — this review of a SENSITIVE diff will run at`,
-      `--effort ${requestedEffort}, below the ${SENSITIVITY_FLOOR_EFFORT} floor, because`,
-      `${SENSITIVITY_OVERRIDE_ENV} is set. Matched:`,
-      ...hitLines,
-      `stated reason: ${override}`,
-      `the finding set from this review is NOT what the ${SENSITIVITY_FLOOR_EFFORT} floor promises;`,
-      `do not cite it as an adversarial pass over these paths.`
-    ]);
-    return { effort: requestedEffort, escalated: false, overridden: true, hits };
-  }
-  if (process.env[SENSITIVITY_OVERRIDE_ENV] !== undefined) {
-    errorLines([
-      `${SENSITIVITY_OVERRIDE_ENV} is set but empty — it needs a written reason to take effect.`,
-      `Ignoring it and applying the gate.`
-    ]);
-  }
-
-  // ⚠️ The wording of the first line is a CONTRACT: bin/crew-codex greps
-  // `sensitivity gate: raising --effort <from> -> <to>` out of this dispatch's
-  // stderr to stamp effortEffective into the .dispatch.json audit record, which
-  // otherwise only ever sees argv. Change the phrasing there and here together.
+  // ⚠️ INFORMATIONAL. Keep the phrase "raising --effort" out of this block:
+  // bin/crew-codex once scraped it off stderr into the audit sidecar, and an
+  // out-of-date wrapper must find nothing here to misread as an escalation.
   errorLines([
-    `sensitivity gate: raising --effort ${requestedEffort} -> ${SENSITIVITY_FLOOR_EFFORT}. Matched:`,
-    ...hitLines,
-    `this is a code-enforced floor on adversarial reviews of sensitive changes; the caller's`,
-    `effort is only ever raised by it, never lowered. To review at ${requestedEffort} anyway, set`,
-    `${SENSITIVITY_OVERRIDE_ENV}="<why>" — it warns loudly and states your reason on stderr.`
+    `sensitivity classifier: this diff matches sensitive rules. Informational only — the review`,
+    `runs at --effort ${effort}${effortGiven ? "" : " (the default; no --effort was given)"}, exactly as chosen; nothing is raised. Matched:`,
+    ...hits.map((hit) => `  ${hit.rule}: ${describeHitPaths(hit.paths)} (${hit.why})`)
   ]);
-  return { effort: SENSITIVITY_FLOOR_EFFORT, escalated: true, hits };
+  return { hits };
 }
 
 // Byte-for-byte the composition of executeReviewRun's adversarial branch
@@ -966,7 +939,7 @@ async function executeAdversarialReviewRun(vendor, request) {
       `every changed file in ${context.target.label} was skipped by the collector ` +
         `(${skipped.length} of ${fileCount}: ${skipped.join(", ")}). There is no reviewable ` +
         `content, so a review would return "no findings" indistinguishably from a clean ` +
-        `review. Re-run without --effort to use the vendor path, or narrow the target.`
+        `review. Narrow the target, or review those files another way.`
     );
   }
   if (skipped.length > 0) {
@@ -992,7 +965,7 @@ async function executeAdversarialReviewRun(vendor, request) {
           `Either this target has no changes to review, or codex@openai-codex ${request.pluginVersion} ` +
           `renamed that field. Refusing to dispatch: a review prompt with an empty REVIEW_INPUT ` +
           `returns "no findings", which is indistinguishable from a clean review. ` +
-          `Check the diff is non-empty, then re-run without --effort to compare against the vendor path.`
+          `Check the diff is non-empty; if it is, compare against \`crew-codex review\` (the native reviewer, which does not use this driver).`
       );
     }
   }
@@ -1080,7 +1053,7 @@ async function executeAdversarialReviewRun(vendor, request) {
 
 // Mirrors createCompanionJob (companion:567) for kind == "adversarial-review",
 // so status/result/cancel classify these jobs exactly as vendor ones.
-function buildJobRecord(vendor, { workspaceRoot, targetLabel, effort, effortRequested, model, pluginVersion }) {
+function buildJobRecord(vendor, { workspaceRoot, targetLabel, effort, effortRequested, sensitivityRules, model, pluginVersion }) {
   return vendor.createJobRecord({
     id: vendor.generateJobId("review"),
     kind: "adversarial-review",
@@ -1096,30 +1069,35 @@ function buildJobRecord(vendor, { workspaceRoot, targetLabel, effort, effortRequ
     // effort now chosen per dispatch, the record is the only place it can be
     // recovered from later.
     effort,
-    // Both halves, always, even when they agree: a record that carries only the
-    // effective effort cannot answer "was this raised?" after the fact, and the
-    // sensitivity gate is exactly the thing an auditor comes back to check.
-    // Both names are already in the archive sanitizer's request/metadata
-    // allowlists (bin/crew-codex), so they survive archiving verbatim.
+    // Both halves, always: `effortRequested` is null when --effort was omitted
+    // and the default applied — the one fact `effort` alone cannot answer after
+    // the fact. Both names are already in the archive sanitizer's
+    // request/metadata allowlists (bin/crew-codex), so they survive archiving.
     effortRequested,
     effortEffective: effort,
+    // The classifier's labels — informational since 2026-09-10, they drive
+    // nothing. NOT in the archive sanitizer's allowlists (it keeps scalars
+    // only), so the archived copy drops them; the live record and the job log
+    // keep them.
+    sensitivityRules: sensitivityRules ?? [],
     model: model ?? null,
     codexPluginVersion: pluginVersion,
     dispatchedBy: "codex-crew/review-with-effort"
   });
 }
 
-// The stderr line the gate prints is seen by whoever launched the dispatch; the
-// job log is what survives to be read later, and for a --background review it is
-// the only record a human ever gets (the worker's stdio is "ignore").
+// The stderr line the classifier prints is seen by whoever launched the
+// dispatch; the job log is what survives to be read later, and for a
+// --background review it is the only record a human ever gets (the worker's
+// stdio is "ignore").
 function appendSensitivityLogLine(vendor, logFile, request) {
-  if (!request.effortRequested || request.effortRequested === request.effort) {
+  if (!Array.isArray(request.sensitivityRules) || request.sensitivityRules.length === 0) {
     return;
   }
   vendor.appendLogLine(
     logFile,
-    `Sensitivity gate raised the reasoning effort from ${request.effortRequested} to ` +
-      `${request.effort}: the diff matched ${request.sensitivityRules?.join(", ") || "a sensitive path rule"}.`
+    `Sensitivity labels (informational; the review runs at effort ${request.effort} as chosen): ` +
+      `the diff matched ${request.sensitivityRules.join(", ")}.`
   );
 }
 
@@ -1292,9 +1270,13 @@ async function main() {
     return;
   }
 
-  const effort = String(options.effort ?? "").trim().toLowerCase();
+  // No --effort means DEFAULT_REVIEW_EFFORT, sent to the turn EXPLICITLY. The
+  // vendor path it replaced sent `effort: null`, which the app-server resolves
+  // from ~/.codex/config.toml — an effort nobody chose for this dispatch.
+  const effortGiven = options.effort !== undefined;
+  const effort = effortGiven ? String(options.effort).trim().toLowerCase() : DEFAULT_REVIEW_EFFORT;
   if (!effort) {
-    usageFailure("--effort is required; without it crew-codex uses the vendor review path.");
+    usageFailure("--effort was given an empty value.");
   }
   if (!VALID_REASONING_EFFORTS.includes(effort)) {
     usageFailure(
@@ -1312,24 +1294,28 @@ async function main() {
   // (:729) — a bad --scope/--base must fail before a job record exists.
   const target = vendor.resolveReviewTarget(cwd, { base: options.base, scope: options.scope });
 
-  // The sensitivity gate, applied HERE rather than inside the run: the effort it
-  // decides has to be the one written into the request the background worker
-  // replays and into the job record's audit fields, and its stderr line has to
-  // reach the process the caller is watching — a detached worker's stdio is
-  // "ignore", so a line printed there is written to nobody. Same `target`, so
-  // the base ref is resolved exactly once.
-  const gate = resolveEffectiveEffort(vendor, { cwd, target, requestedEffort: effort });
-  const effectiveEffort = gate.effort;
+  if (process.env[RETIRED_SENSITIVITY_OVERRIDE_ENV] !== undefined) {
+    errorLines([
+      `${RETIRED_SENSITIVITY_OVERRIDE_ENV} is set but no longer does anything: there is no`,
+      `sensitivity floor to override since 2026-09-10 — effort is whatever --effort says. Ignoring it.`
+    ]);
+  }
+
+  // The classifier, run HERE rather than inside the run: its labels have to be
+  // written into the request the background worker replays and into the job
+  // record, and its stderr line has to reach the process the caller is
+  // watching — a detached worker's stdio is "ignore", so a line printed there
+  // is written to nobody. Same `target`, so the base ref is resolved exactly
+  // once. It returns labels only; `effort` passes through untouched.
+  const sensitivity = classifyReviewSensitivity(vendor, { cwd, target, effort, effortGiven });
+  const effectiveEffort = effort;
 
   // Warn, never block. No --model means the codex config picks the model, and
   // that default is a 5.6 model here, so an absent model is treated as 5.6 too
   // — a false warning costs a line of stderr, a missed one costs a whole job.
   //
-  // AFTER the gate, and about the EFFECTIVE effort, because the warning ends
-  // "expect this job to fail at the API". Printed before the gate it described
-  // an effort that was about to be replaced: `--effort none` on a sensitive
-  // diff runs at xhigh, which no model rejects, so the prediction was simply
-  // wrong — and a warning that cries wolf is one nobody reads.
+  // About the effort that will actually be SENT, because the warning ends
+  // "expect this job to fail at the API" — a prediction about the turn.
   const strictFamily = EFFORTS_REJECTED_BY_STRICT_MODELS.has(effectiveEffort)
     ? modelRejectsMinimalEfforts(requestedModel)
     : null;
@@ -1348,10 +1334,11 @@ async function main() {
     scope: options.scope ?? null,
     model: requestedModel,
     effort: effectiveEffort,
-    // What the caller asked for, kept beside what will run. Allowlisted in the
-    // archive sanitizer (bin/crew-codex), so the pair survives archiving.
-    effortRequested: effort,
-    sensitivityRules: gate.hits.map((hit) => hit.rule),
+    // What the caller asked for (null when --effort was omitted and the
+    // default applied), kept beside what will run. Allowlisted in the archive
+    // sanitizer (bin/crew-codex), so the pair survives archiving.
+    effortRequested: effortGiven ? effort : null,
+    sensitivityRules: sensitivity.hits.map((hit) => hit.rule),
     focusText,
     pluginRoot,
     pluginVersion
@@ -1361,7 +1348,8 @@ async function main() {
     workspaceRoot,
     targetLabel: target.label,
     effort: effectiveEffort,
-    effortRequested: effort,
+    effortRequested: effortGiven ? effort : null,
+    sensitivityRules: sensitivity.hits.map((hit) => hit.rule),
     model: requestedModel,
     pluginVersion
   });

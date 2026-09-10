@@ -77,7 +77,7 @@ without changing the decision first.
 
 **Upstream's lane-pin test block was not ported.** Upstream's suite (`check_contains ... 'crew-codex task --background --model gpt-5.6-sol --effort xhigh --write'`, and the matching lines for terra/luna/reviewer) asserts that each agent file's *default launch string* is hardcoded to `xhigh` — it greps the static launch line in each agent's markdown; it never dispatches a job or exercises a caller-supplied effort. Upstream's own agents still let an explicit request override that default (see above), so the test only pins what ships when no effort is named, not what happens when one is. This fork deliberately does not pin that default launch string (see above), so porting the test block would assert something the fork intentionally does not do; it stays unported until the pin decision itself changes.
 
-**Lane defaults lowered to `medium`.** `codex-implementer-sol` and `codex-reviewer` previously defaulted to `high`; both now default to `medium`. `terra` stays `medium`, `luna` stays `low`. The sensitivity override is unchanged: auth/credentials, Terraform or CI work still uses `xhigh` regardless of lane default.
+**Lane defaults lowered to `medium`.** `codex-implementer-sol` and `codex-reviewer` previously defaulted to `high`; both now default to `medium`. `terra` stays `medium`, `luna` stays `low`. Superseded 2026-09-10: nothing raises the effort for auth/credentials, Terraform or CI any more — the orchestrator picks the effort per dispatch, and an adversarial review given none runs at `medium`.
 
 **Astra was ported into the fork's idiom, not copied verbatim.** Upstream's `agents/codex-implementer-astra.md` documents exit code **4** for SUPERSEDED and prefixes every command with `cd <sandbox root> && `. This fork uses exit code **5** for SUPERSEDED and the "run from the directory you launched from; `crew-codex` probes sibling state directories on a miss" idiom. Copying upstream's file verbatim would have shipped a wrong exit code.
 
@@ -86,18 +86,18 @@ without changing the decision first.
 Do not expect a port to touch them, and do not let one regress them:
 
 - `adversarial-review --effort` and `lib/review-with-effort.mjs`
-- the deterministic sensitivity gate (`lib/review-with-effort.mjs`,
-  `SENSITIVE_PATH_RULES` / `SENSITIVE_CONTENT_RULES` / `resolveEffectiveEffort`):
-  classifies the changed files of an `adversarial-review --effort` dispatch
-  (Terraform, Bicep/ARM, CloudFormation, Kubernetes RBAC/NetworkPolicy, CI/CD,
-  secret material, auth-ish source paths) and RAISES the effort to `xhigh` on a
-  match — never lowers, always announces the match on stderr.
-  `CREW_CODEX_SENSITIVITY_OVERRIDE="<reason>"` opts out for one dispatch and
-  requires a non-empty value (only emptiness is checked — see Known gaps).
-  Upstream has nothing like it.
-  ⚠️ **SCOPE LIMIT**: only `adversarial-review` invoked *with* `--effort` goes
-  through this gate. The `task` path is not covered, and `adversarial-review`
-  with no `--effort` routes to the vendor review path ungated (see Known gaps).
+- the deterministic sensitivity classifier (`lib/review-with-effort.mjs`,
+  `SENSITIVE_PATH_RULES` / `SENSITIVE_CONTENT_RULES` /
+  `classifyReviewSensitivity`): labels the changed files of every
+  `adversarial-review` dispatch (Terraform, Bicep/ARM, CloudFormation,
+  Kubernetes RBAC/NetworkPolicy, CI/CD, secret material, auth-ish source
+  paths) on stderr and in the job record. Informational only since
+  2026-09-10 — it used to RAISE a match to `xhigh`; that floor and
+  `CREW_CODEX_SENSITIVITY_OVERRIDE` are gone. Upstream has nothing like it.
+- caller-chosen review effort with a `medium` default: every
+  `adversarial-review` routes to the driver, `--effort` or not, so a review
+  never inherits the codex config's `model_reasoning_effort`. The `task` path
+  is unchanged (the companion parses `--effort` there itself).
 - dispatch stamping (`<job>.dispatch.json`)
 - the archive sanitizer, the `.sanitized` provenance sentinel, and `sanitize-archive`
 - `reap`'s report-only `--brokers` / `--state` sweeps and its exit-3 "incomplete" contract
@@ -122,52 +122,23 @@ Do not expect a port to touch them, and do not let one regress them:
   against `codex-crew/lib/review-with-effort.mjs` and exercised by
   `codex-crew/tests/run.sh` Case 59, "the none/minimal guard covers the Astra
   lane").
-- `adversarial-review` invoked with **no `--effort`** bypasses the sensitivity
-  gate and the effort driver entirely — it runs through the vendor review path
-  at whatever `model_reasoning_effort` the codex config carries, even on a
-  Terraform/CI/auth-touching diff. The gate only ever sees a dispatch that
-  already passed `--effort`.
-- `CREW_CODEX_SENSITIVITY_OVERRIDE` enforces only that its value is **non-empty**,
-  not that it is reason-shaped (`lib/review-with-effort.mjs`, the
-  `override !== ""` check). `CREW_CODEX_SENSITIVITY_OVERRIDE=1` therefore
-  satisfies the "written reason" requirement and bypasses the gate, recording
-  `stated reason: 1`. That is exactly the flip-it-once-in-a-shell-profile switch
-  the surrounding comment says the reason string exists to prevent. The
-  override's loud stderr block still fires, so the bypass is never silent — but
-  the reason it prints can be meaningless. Wants a minimum-length or
-  multi-word check.
-- **Classification/review race (TOCTOU).** The gate resolves the review target
-  and classifies it in the parent process, in
-  `resolveEffectiveEffort()` in `lib/review-with-effort.mjs` (the call that
+- **RESOLVED 2026-09-10** — three gaps closed by removing the sensitivity
+  floor: `adversarial-review` with no `--effort` no longer bypasses the driver
+  (it runs there at `medium`); `CREW_CODEX_SENSITIVITY_OVERRIDE`, whose
+  "reason" was only ever checked for emptiness, no longer exists; and the
+  audit sidecar no longer scrapes `sensitivity gate: raising --effort` off
+  stderr, so an override reason can no longer spoof `effortEffective`.
+- **Classification/review race (TOCTOU), now labels only.** The classifier
+  resolves the review target and classifies it in the parent process, in
+  `classifyReviewSensitivity()` in `lib/review-with-effort.mjs` (the call that
   forces `{ includeDiff: true }`), but the detached worker's
   `executeAdversarialReviewRun()` in the same file re-resolves the target and
-  re-collects the diff content independently rather than reusing what the
-  parent already classified. With an `auto` scope, the parent
-  can classify a clean-branch diff at `medium`; if a `main.tf` is created
-  before the detached worker runs, the worker resolves against the working
-  tree instead and ends up reviewing Terraform at `medium`. An explicit branch
-  target can also shift underneath the gate if HEAD moves between dispatch and
-  execution. So the gate does not strictly classify the exact diff that gets
-  reviewed. Deferred deliberately: fixing it needs either worker-side
-  reclassification immediately before the turn, or an immutable snapshot
-  persisted at dispatch time.
-- **Audit sidecar is spoofable through the override reason.** `bin/crew-codex`
-  scrapes the unanchored phrase `sensitivity gate: raising --effort <from> ->
-  <to>` out of the dispatch's stderr (the `CREW_STAMP_EFFORT_GATE` assignment)
-  to stamp
-  `effortEffective`/`effortSource` into the `.dispatch.json` audit record. The
-  gate's override path (`lib/review-with-effort.mjs`) also echoes
-  `CREW_CODEX_SENSITIVITY_OVERRIDE`'s value verbatim onto stderr as
-  `stated reason: <value>`. Setting that env var to a reason string that itself
-  *contains* the scraped phrase makes the grep match inside the echoed reason
-  instead of the gate's own escalation line, so the sidecar stamps
-  `effortEffective: xhigh` / `effortSource: sensitivity-gate` while the turn
-  actually ran at the lower, overridden effort — the job record and the
-  sidecar then disagree. This requires the operator to sabotage their own
-  audit trail, so it is self-inflicted rather than a privilege boundary, but it
-  means the sidecar is not trustworthy evidence on its own. Proper fix: pass
-  the effective effort as machine-readable output, or read it from the
-  driver's job record, instead of scraping human-readable stderr.
+  re-collects the diff content independently. With an `auto` scope, or a HEAD
+  that moves between dispatch and execution, the labels can describe a
+  slightly different diff than the one reviewed. Since labels no longer drive
+  the effort, the cost is a misleading label, not an under-reviewed change.
+  Deferred: fixing it needs worker-side reclassification or an immutable
+  snapshot persisted at dispatch time.
 
 ## Open questions
 

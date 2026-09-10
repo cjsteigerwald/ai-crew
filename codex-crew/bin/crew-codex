@@ -112,9 +112,10 @@ USAGE
 
 Flag crew-codex adds on top of the companion:
   --effort <none|minimal|low|medium|high|xhigh>
-                                per-dispatch reasoning effort. codex-companion
-                                still does not parse this — crew-codex routes
-                                the dispatch to its own driver
+                                per-dispatch reasoning effort; medium when
+                                omitted. codex-companion cannot set it, so
+                                crew-codex routes EVERY adversarial review to
+                                its own driver
                                 (lib/review-with-effort.mjs), which composes the
                                 codex plugin's exported modules and threads the
                                 effort into the turn the companion leaves null.
@@ -128,17 +129,17 @@ low: those models return a 400 on reasoning.effort for 'none' and 'minimal',
 so those two are accepted (other model families may take them) but warned
 about, and the job fails at the API rather than in the wrapper.
 
-SENSITIVITY GATE. Before the turn starts, the driver classifies the changed
+EFFORT IS THE CALLER'S. The turn runs at exactly the --effort you pass; WITHOUT
+--effort it runs at medium, sent explicitly — never at model_reasoning_effort
+from ${CODEX_HOME:-$HOME/.codex}/config.toml. Nothing raises or lowers it. Ask
+for high or xhigh yourself when the change warrants it (an auth change,
+extremely complex code); that is a per-dispatch choice, not a rule.
+
+SENSITIVITY LABELS. Before the turn starts, the driver classifies the changed
 files of the very diff it is about to review — Terraform, Bicep/ARM,
 CloudFormation, Kubernetes RBAC and network policy, CI/CD pipelines, keys and
-dotenvs, auth/identity source paths — and RAISES the effort to xhigh when any
-of them match, naming the paths on stderr. It only ever raises: an explicit
---effort xhigh is left alone, and an unmatched diff runs at exactly what you
-asked for. CREW_CODEX_SENSITIVITY_OVERRIDE="<why>" opts out for one dispatch
-and says so, loudly, with your reason.
-
-WITHOUT --effort this is a verbatim codex-companion passthrough and the turn
-runs at model_reasoning_effort from ${CODEX_HOME:-$HOME/.codex}/config.toml.
+dotenvs, auth/identity source paths — and names any matched rules and paths on
+stderr and in the job record. Informational only: it changes nothing.
 USAGE
   else
     cat <<USAGE
@@ -222,10 +223,10 @@ if [[ "$1" == "review" || "$1" == "adversarial-review" ]]; then
   effort_pending=0
   for arg in "$@"; do
     # Same sentinel rule as the help scan: after `--` everything is focus text,
-    # so `adversarial-review -- --effort high` must stay a no-effort vendor
-    # dispatch whose focus is the literal string "--effort high". Routing it to
-    # the driver would both break the byte-identical-passthrough guarantee and
-    # fail, since the driver would find no parsed effort either.
+    # so `adversarial-review -- --effort high` is a NO-effort dispatch (the
+    # driver's medium default) whose focus is the literal string
+    # "--effort high". Validating that token as an effort would refuse a valid
+    # review.
     [[ "$arg" == "--" ]] && break
     if [[ $effort_pending -eq 1 ]]; then
       REVIEW_EFFORT="$arg"
@@ -3280,23 +3281,26 @@ PY
   exit "$REAP_EXIT"
 fi
 
-# ---- effort routing: adversarial-review --effort runs on our own driver ----
-# Default is unchanged: RUN_CMD is the verbatim companion passthrough, so a
-# dispatch WITHOUT --effort behaves exactly as it always has. Only
-# `adversarial-review --effort <e>` diverges, and it diverges to a driver that
-# re-composes the companion's own exported modules — no vendor file is patched.
-# Everything downstream (capacity retry, dispatch stamping, output passthrough)
-# is shared, so the driver inherits it for free.
+# ---- effort routing: EVERY adversarial-review runs on our own driver -------
+# User decision 2026-09-10: "the orchestrator should have ability to call
+# effort required. If NO effort is passed in then default to medium." The
+# vendor's adversarial review cannot carry an effort at all (it starts the turn
+# with `effort: null`, which resolves from the codex config), so a dispatch
+# WITHOUT --effort is no longer a companion passthrough: it goes to the driver
+# too, which sends `medium` explicitly. Every other subcommand is still the
+# verbatim companion passthrough. The driver re-composes the companion's own
+# exported modules — no vendor file is patched. Everything downstream (capacity
+# retry, dispatch stamping, output passthrough) is shared.
 RUN_CMD=(node "$COMPANION" "$@")
-if [[ $REVIEW_EFFORT_SEEN -eq 1 && "${1:-}" == "adversarial-review" ]]; then
+if [[ "${1:-}" == "adversarial-review" ]]; then
   DRIVER="$CREW_LIB_DIR/review-with-effort.mjs"
   if [[ ! -f "$DRIVER" ]]; then
-    echo "crew-codex: effort driver missing at $DRIVER — codex-crew is installed incompletely. Re-run without --effort to use the vendor review path (it runs at the config's model_reasoning_effort)." >&2
+    echo "crew-codex: review driver missing at $DRIVER — codex-crew is installed incompletely; reinstall it. There is deliberately no vendor fallback: the vendor adversarial review cannot set effort and would run at the codex config's model_reasoning_effort instead of the one requested (or medium)." >&2
     exit 1
   fi
   # $1 is dropped: the driver only ever runs adversarial reviews. Everything
   # else forwards verbatim, --effort included — the driver parses it the same
-  # way the companion's parser would.
+  # way the companion's parser would, `--` sentinel and all.
   RUN_CMD=(node "$DRIVER" --plugin-root "$COMPANION_ROOT" "${@:2}")
 fi
 
@@ -3403,18 +3407,12 @@ case "${1:-}" in
       JOB_ID="$(grep -ohE '(review|task)-[A-Za-z0-9]+-[A-Za-z0-9]+' "$TMP_OUT" "$TMP_ERR" 2>/dev/null | head -n 1 || true)"
       if [[ -n "$JOB_ID" ]]; then
         mkdir -p "$CREW_ARCHIVE_DIR"
-        # The effort driver's sensitivity gate can RAISE the effort above the
-        # flag (lib/review-with-effort.mjs), and the stamper below only ever sees
-        # argv — so an escalated review would be archived as having run at the
-        # effort the caller asked for, which is the one number the audit record
-        # exists to get right. The gate's stderr line is the only place the
-        # effective value exists, and its wording is a contract on both sides.
-        CREW_STAMP_EFFORT_GATE="$(grep -oE 'sensitivity gate: raising --effort [a-z]+ -> [a-z]+' "$TMP_ERR" 2>/dev/null \
-          | tail -n 1 | awk '{ print $NF }')" || CREW_STAMP_EFFORT_GATE=""
+        # No stderr scraping: since 2026-09-10 the review driver never changes
+        # the effort, so argv (plus the documented no-flag default below) is
+        # the whole truth about what a review ran at.
         CREW_STAMP_JOB_ID="$JOB_ID" \
         CREW_STAMP_OUT="$CREW_ARCHIVE_DIR/$JOB_ID.dispatch.json" \
         CREW_STAMP_CONFIG="${CODEX_HOME:-$HOME/.codex}/config.toml" \
-        CREW_STAMP_EFFORT_GATE="$CREW_STAMP_EFFORT_GATE" \
         python3 - "$@" <<'PY'
 import json, os, re, sys, time
 
@@ -3545,13 +3543,12 @@ effort_config = config_effort(os.environ["CREW_STAMP_CONFIG"])
 from_flag = subcommand in ("task", "adversarial-review") and effort_requested is not None
 effort_effective = effort_requested if from_flag else effort_config
 effort_source = "flag" if from_flag else "config"
-# The sensitivity gate outranks both: when it fires, the turn ran at ITS value,
-# not the flag's and not the config's. Scraped from the driver's own stderr by
-# the caller of this script; absent means the gate did not raise anything.
-effort_gate = os.environ.get("CREW_STAMP_EFFORT_GATE") or None
-if effort_gate:
-    effort_effective = effort_gate
-    effort_source = "sensitivity-gate"
+# An adversarial review with NO --effort runs on the driver at its default,
+# sent explicitly — never at the config's value. Must match
+# DEFAULT_REVIEW_EFFORT in lib/review-with-effort.mjs.
+if subcommand == "adversarial-review" and effort_requested is None:
+    effort_effective = "medium"
+    effort_source = "default"
 record = {
     "jobId": os.environ["CREW_STAMP_JOB_ID"],
     "subcommand": subcommand,

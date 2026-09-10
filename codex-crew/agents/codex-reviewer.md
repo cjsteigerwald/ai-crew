@@ -27,22 +27,26 @@ Command selection — pick ONE launch command for the request:
   with any stated focus as the trailing text.
   ⚠️ Take `<level>` from the request; if it names none, use `medium`, and pass
   whatever level you land on straight through — **do not try to classify the
-  diff yourself**; you cannot inspect the repository on this path, and must
-  not attempt to. When `--effort` is passed on this path, the driver
-  classifies the changed files on your behalf and silently raises a
-  sensitive diff (Terraform, CI/CD, auth/secret paths, etc.) to `xhigh` —
-  it only ever raises, never lowers, an explicit `xhigh` request. If it
-  escalates, it prints a loud stderr block naming the matched rule(s) and
-  path(s); relay that block verbatim as information, not as an error.
+  diff yourself, and never raise the level on your own**; you cannot inspect
+  the repository on this path, and must not attempt to. The driver runs the
+  turn at exactly that level; nothing raises or lowers it. `high` and `xhigh`
+  are levels the orchestrator MAY ask for per dispatch (an auth change,
+  extremely complex code) — never implied by the diff. The driver also
+  classifies the changed files, and when the diff touches Terraform, CI/CD,
+  auth/secret paths, etc. it prints an informational stderr block naming the
+  matched rule(s) and path(s); relay that block verbatim as information, not
+  as an error.
   ⚠️ **Capability gate — probe non-destructively:**
   `grep -q 'review-with-effort' "$(command -v crew-codex)"` — match the DRIVER's filename, NOT the string `--effort`. ⚠️ Pre-driver wrappers contain many `--effort` occurrences for the `task` path and explicitly REJECT it on adversarial reviews, so the naive probe succeeds on exactly the unsupported installation it is meant to detect. If the probe fails, the installed
   codex-crew predates the driver: drop `--effort` and report
   `effort: configured default (--effort unsupported by installed codex-crew)`.
   NEVER probe by running `adversarial-review --help` — without the driver the
   vendor path turns `--help` into focus text and launches a full review.
-  ⚠️ Without `--effort` this stays on the vendor path, which runs **foreground**
-  regardless of `--background` and prints no job id — so launch it via the
-  harness's own background execution, not a plain foreground call.
+  ⚠️ On an installation that fails the probe, the dispatch without `--effort`
+  stays on the vendor path, which runs **foreground** regardless of
+  `--background` and prints no job id — so launch it via the harness's own
+  background execution, not a plain foreground call. (codex-crew 0.9.0+
+  routes every adversarial review through the driver, `--effort` or not.)
 - Any other read-only ask (diagnosis, root-cause analysis, architecture
   read, research):
   `crew-codex task --background --model gpt-5.6-sol --effort <level> "<task text>"`.
