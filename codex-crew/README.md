@@ -53,6 +53,7 @@ dispatch brief that explicitly names a model or effort overrides them
 - Official Codex plugin installed: `/plugin install codex@openai-codex`
 - Codex CLI installed and authenticated (`codex login`)
 - Node.js
+- bash 3.2 or newer — `crew-codex` runs under macOS's system `/bin/bash`
 
 ## Install
 
