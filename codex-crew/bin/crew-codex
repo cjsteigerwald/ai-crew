@@ -3499,8 +3499,11 @@ case "${1:-}" in
     fi
     ;;
   status|result|cancel)
+    # bash 3.2's [[ =~ ]] parser rejects an unquoted parenthesised group
+    # written inline; hoist into a variable (unquoted on the RHS below).
+    job_id_re='^(task|review|adversarial-review)-[A-Za-z0-9]+-[A-Za-z0-9]+$'
     for arg in "$@"; do
-      if [[ "$arg" =~ ^(task|review|adversarial-review)-[A-Za-z0-9]+-[A-Za-z0-9]+$ ]]; then
+      if [[ "$arg" =~ $job_id_re ]]; then
         ep="$(crew_job_endpoint "$arg")"
         [[ -n "$ep" ]] && export CODEX_COMPANION_APP_SERVER_ENDPOINT="$ep"
         break
@@ -3761,8 +3764,11 @@ fi
 # cancel that FAILED (wrong cwd, transient RPC error) leaves the worker running,
 # and tearing its broker down would disconnect a live job for good.
 if [[ "${1:-}" == "cancel" && $rc -eq 0 ]]; then
+  # bash 3.2's [[ =~ ]] parser rejects an unquoted parenthesised group
+  # written inline; hoist into a variable (unquoted on the RHS below).
+  job_id_re='^(task|review|adversarial-review)-[A-Za-z0-9]+-[A-Za-z0-9]+$'
   for arg in "$@"; do
-    if [[ "$arg" =~ ^(task|review|adversarial-review)-[A-Za-z0-9]+-[A-Za-z0-9]+$ ]]; then
+    if [[ "$arg" =~ $job_id_re ]]; then
       side="$(crew_sidecar "$arg")"
       if [[ -f "$side" ]]; then
         IFS=$'\t' read -r _ep bpid bdir _bcwd bstart _brest <"$side" || true
@@ -3778,8 +3784,11 @@ fi
 # "not found" when the call comes from a directory other than the launch one.
 # Name the directory to re-run from rather than letting a live job read as gone.
 if [[ $rc -ne 0 ]] && grep -qi "not found" "$TMP_OUT" "$TMP_ERR"; then
+  # bash 3.2's [[ =~ ]] parser rejects an unquoted parenthesised group
+  # written inline; hoist into a variable (unquoted on the RHS below).
+  job_id_re='^(task|review|adversarial-review)-[A-Za-z0-9]+-[A-Za-z0-9]+$'
   for arg in "$@"; do
-    if [[ "$arg" =~ ^(task|review|adversarial-review)-[A-Za-z0-9]+-[A-Za-z0-9]+$ ]]; then
+    if [[ "$arg" =~ $job_id_re ]]; then
       hint="$(crew_cwd_hint "$arg")"
       if [[ -n "$hint" ]]; then
         echo "crew-codex: job $arg${hint}" >&2

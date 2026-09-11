@@ -1,0 +1,87 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ubuntu:
+    runs-on: ubuntu-latest
+    # HAS_DENYLIST at JOB level so the step below can test the secret's presence
+    # in an `if:` — the `secrets` context does not resolve in a step-level
+    # condition, but the `env` context does. The actual secret value is kept
+    # in the step's own env block to prevent exposure to repository-controlled code.
+    env:
+      HAS_DENYLIST: ${{ secrets.SCRUB_DENYLIST_B64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Run tests
+        run: |
+          set -euo pipefail
+          # GENERIC denylist classes only (home paths, RDP shares, UUIDs,
+          # credential shapes). The identity classes — organisation names,
+          # internal hostnames, ticket prefixes, personal handles — come
+          # from a PRIVATE denylist that is not in this repository, so this
+          # step alone is NOT identity enforcement. See the guarded step
+          # below, and run
+          #   scripts/scrub-check.sh --require-private --check-allowlist \
+          #     --allow scripts/scrub-allow.txt .
+          # locally before pushing (plus scripts/scrub-history.sh
+          # --require-private before a release).
+          #
+          # --check-overbroad runs unconditionally here, private denylist or
+          # not, because this is the only scrub step that ALSO runs on fork
+          # PRs — the guarded step below is skipped there, secrets being
+          # unavailable — and a fork PR is exactly the untrusted path an
+          # over-broad allow entry needs to be caught on, not waved through
+          # to fail later on the post-merge push to main.
+          bash scripts/scrub-check.sh --check-overbroad --allow scripts/scrub-allow.txt .
+          bash scripts/check-vendored-libs.sh
+          bash lib/tests/test-crew-config.sh
+          bash scripts/tests/test-scrub-check.sh
+          bash scripts/tests/test-scrub-history.sh
+          for t in */tests/run.sh; do echo "== $t"; bash "$t"; done
+
+      # Identity-class enforcement from the private denylist, shipped as the
+      # base64 repository secret SCRUB_DENYLIST_B64. The plaintext is never
+      # echoed: it is decoded straight into a 0600 temp file, used, and
+      # trap-deleted.
+      #
+      # GitHub structurally withholds secrets from pull requests opened from
+      # a FORK, so there the secret cannot be present and the step is SKIPPED
+      # — visibly, in the checks list, rather than passing green on an empty
+      # variable. Everywhere else an absent secret is a FAILURE: a step that
+      # succeeds while enforcing nothing is worse than no step at all,
+      # because the checks list then says identity classes were verified.
+      # (Verified 2026-09-12: this repository has zero secrets configured,
+      # so the old `exit 0` branch was the live behaviour, not a hypothetical.)
+      - name: Scrub check with the private denylist
+        if: ${{ !(github.event.pull_request.head.repo.fork && env.HAS_DENYLIST == 'false') }}
+        env:
+          SCRUB_DENYLIST_B64: ${{ secrets.SCRUB_DENYLIST_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SCRUB_DENYLIST_B64:-}" ]; then
+            echo "SCRUB_DENYLIST_B64 not configured" >&2
+            exit 1
+          fi
+          denylist="$(mktemp)"
+          trap 'rm -f "$denylist"' EXIT
+          chmod 0600 "$denylist"
+          printf '%s' "$SCRUB_DENYLIST_B64" | base64 -d > "$denylist"
+          # --check-allowlist belongs HERE and only here: unused-allow is
+          # only sound on a full-repo scan with the private denylist loaded,
+          # and this is the one place both hold.
+          SCRUB_DENYLIST="$denylist" bash scripts/scrub-check.sh \
+            --require-private --check-allowlist --allow scripts/scrub-allow.txt .
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: |
+          set -euo pipefail
+          for t in */tests/run.sh; do /bin/bash "$t"; done
