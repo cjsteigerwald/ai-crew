@@ -374,6 +374,34 @@ crew_pid_starttime() {
   printf '%s' "$st"
 }
 
+# Block until $1 exits or $2 seconds pass, whichever is first.
+# ⚠️ `timeout N tail --pid=` is GNU-only twice over. On darwin neither exists,
+# the command failed instantly, and await busy-polled the companion instead of
+# blocking. GNU tools stay the primary path (a kernel wait, wakes the instant
+# the pid exits); otherwise a kill -0 loop at a 0.2s cadence — bounded, never
+# a spin, and it still wakes within a fraction of a second of the exit.
+crew_wait_pid() {
+  local pid="$1" secs="$2" to="" end
+  if command -v timeout >/dev/null 2>&1; then to=timeout
+  elif command -v gtimeout >/dev/null 2>&1; then to=gtimeout; fi
+  if [[ -n "$to" ]] && tail --version 2>/dev/null | grep -q GNU; then
+    "$to" "$secs" tail --pid="$pid" -f /dev/null 2>/dev/null || true
+    return 0
+  fi
+  end=$(( $(date +%s) + secs ))
+  while kill -0 "$pid" 2>/dev/null && [[ $(date +%s) -lt $end ]]; do
+    sleep 0.2
+  done
+  return 0
+}
+
+# File mtime in epoch seconds. GNU stat takes -c, BSD stat takes -f; BSD stat
+# rejects -c outright, which made every log look brand new on darwin and the
+# hung-turn check could never fire. Unreadable -> now (age 0, never HUNG).
+crew_mtime() {
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || date +%s
+}
+
 # Stop one broker and remove everything it left behind. Refuses to signal a pid
 # whose start time no longer matches the one recorded at spawn.
 crew_kill_broker() {
@@ -697,11 +725,24 @@ crew_successor() {
 # under the patch fails loudly instead of half-applying.
 CREW_PATCH_FILE="${CREW_CODEX_PATCH_FILE:-$CREW_ROOT/patches/codex-plugin-queue-passthrough.patch}"
 
+# ⚠️ -N ON EVERY patch CALL, AND BOTH DRY-RUNS MUST DISAGREE. Apple's patch
+# (macOS /usr/bin/patch, 2.0-12u11) meets `-R` against an UNPATCHED tree with
+# "Unreversed (or previously applied) patch detected! Ignore -R? [y]" and, with
+# no tty, answers yes itself — so the reverse dry-run exits 0 on an unpatched
+# install and the old first-match test said "applied". The SessionStart
+# `patch --apply` then printed "already patched; nothing to do" and the patch
+# was silently never applied. -N (POSIX --forward) makes both Apple and GNU
+# patch refuse a reversed-looking patch instead of guessing, and requiring the
+# forward and reverse dry-runs to disagree means any other tool that still
+# guesses reads as stale (refuse) rather than as a false PATCHED.
 crew_patch_state() {
   # applied | appliable | stale
-  if patch -p1 -R --dry-run -s -F3 -d "$COMPANION_ROOT" <"$CREW_PATCH_FILE" >/dev/null 2>&1; then
+  local rev=1 fwd=1
+  patch -N -p1 -R --dry-run -s -F3 -d "$COMPANION_ROOT" -i "$CREW_PATCH_FILE" </dev/null >/dev/null 2>&1 && rev=0
+  patch -N -p1 --dry-run -s -F3 -d "$COMPANION_ROOT" -i "$CREW_PATCH_FILE" </dev/null >/dev/null 2>&1 && fwd=0
+  if [[ $rev -eq 0 && $fwd -ne 0 ]]; then
     echo applied
-  elif patch -p1 --dry-run -s -F3 -d "$COMPANION_ROOT" <"$CREW_PATCH_FILE" >/dev/null 2>&1; then
+  elif [[ $fwd -eq 0 && $rev -ne 0 ]]; then
     echo appliable
   else
     echo stale
@@ -1140,7 +1181,7 @@ if [[ "${1:-}" == "patch" ]]; then
   done
 
   if ! command -v patch >/dev/null 2>&1; then
-    echo "crew-codex: GNU patch is required to manage the codex plugin patch" >&2
+    echo "crew-codex: patch(1) is required to manage the codex plugin patch" >&2
     exit 1
   fi
   if [[ ! -f "$CREW_PATCH_FILE" ]]; then
@@ -1168,7 +1209,11 @@ if [[ "${1:-}" == "patch" ]]; then
         echo "crew-codex: patch does not apply to codex plugin $PLUGIN_VERSION at $COMPANION_ROOT — refusing to half-apply; re-cut the patch against this version" >&2
         exit 1
       fi
-      if ! patch -p1 -s -F3 -b --suffix=.crew-orig -d "$COMPANION_ROOT" <"$CREW_PATCH_FILE"; then
+      # ⚠️ -i FILE, never stdin, plus </dev/null. The </dev/null guard keeps
+      # any patch(1) prompt from waiting on a tty, and bash keeps only the LAST
+      # stdin redirect — so the patch goes in with -i, where the guard cannot
+      # displace it (`<FILE </dev/null` would feed patch an empty stdin).
+      if ! patch -N -p1 -s -F3 -b --suffix=.crew-orig -d "$COMPANION_ROOT" -i "$CREW_PATCH_FILE" </dev/null; then
         echo "crew-codex: applying the patch failed partway; restore from the .crew-orig backups in $COMPANION_ROOT" >&2
         exit 1
       fi
@@ -1180,11 +1225,19 @@ if [[ "${1:-}" == "patch" ]]; then
       exit 0
       ;;
     revert)
-      if [[ "$state" != "applied" ]]; then
+      # ⚠️ Only a CLEANLY unpatched tree is "nothing to revert". A half-applied
+      # install (one target patched, one not) reads as stale; reporting it
+      # UNPATCHED with exit 0 told the operator the tree was clean while the
+      # patched hunks stayed in place.
+      if [[ "$state" == "appliable" ]]; then
         echo "UNPATCHED | codex plugin $PLUGIN_VERSION is not patched; nothing to revert"
         exit 0
       fi
-      if ! patch -p1 -R -s -F3 -d "$COMPANION_ROOT" <"$CREW_PATCH_FILE"; then
+      if [[ "$state" != "applied" ]]; then
+        echo "crew-codex: codex plugin $PLUGIN_VERSION at $COMPANION_ROOT is in state '$state' (neither cleanly patched nor cleanly unpatched — possibly half-applied); nothing was changed. Restore from the *.crew-orig backups in $COMPANION_ROOT" >&2
+        exit 1
+      fi
+      if ! patch -N -p1 -R -s -F3 -d "$COMPANION_ROOT" -i "$CREW_PATCH_FILE" </dev/null; then
         echo "crew-codex: reverting the patch failed; restore from the .crew-orig backups in $COMPANION_ROOT" >&2
         exit 1
       fi
@@ -1594,7 +1647,9 @@ print("\t".join([
             # before the queued turn has run. Wait for the replies we know were
             # queued rather than racing them, but stay bounded: a queued turn
             # can be lost if the worker tears down first.
-            expected=$(wc -l <"$CREW_ARCHIVE_DIR/$JOB_ID.queued.txt")
+            # Arithmetic, not a bare $(wc -l): BSD wc left-pads the count, which
+            # printed "QUEUED-REPLIES 1/       1" on darwin.
+            expected=$(( $(wc -l <"$CREW_ARCHIVE_DIR/$JOB_ID.queued.txt") ))
             grace_deadline=$(( $(date +%s) + ${CREW_CODEX_QUEUE_GRACE_SECS:-180} ))
             followups=""
             while :; do
@@ -1732,9 +1787,9 @@ print("\t".join([
     if [[ "$jpid" =~ ^[0-9]+$ ]] && kill -0 "$jpid" 2>/dev/null; then
       stale_streak=0
       slice=$(( remaining < HUNG_POLL_SECS ? remaining : HUNG_POLL_SECS ))
-      timeout "$slice" tail --pid="$jpid" -f /dev/null 2>/dev/null || true
+      crew_wait_pid "$jpid" "$slice"
       if [[ -n "$jlog" && "$jlog" != "-" && -f "$jlog" ]]; then
-        log_age=$(( $(date +%s) - $(stat -c %Y "$jlog" 2>/dev/null || date +%s) ))
+        log_age=$(( $(date +%s) - $(crew_mtime "$jlog") ))
         if [[ $log_age -ge $HUNG_SECS ]]; then
           echo "HUNG $JOB_ID | ${jelapsed} | pid $jpid alive but log frozen ${log_age}s (>=${HUNG_SECS}s) — likely a lost model turn; cancel the job, kill leftover app-server/broker processes, then re-dispatch on a fresh runtime" >&2
           exit 4
@@ -1908,16 +1963,24 @@ if [[ "${1:-}" == "sanitize-archive" ]]; then
   # such file into two phantom ids — neither of which exists, so both "failed"
   # while the real prompt-bearing file was never inspected and never reported.
   # No command substitution here either: it would strip trailing newlines and
-  # reintroduce exactly that. An associative array does the dedupe.
+  # reintroduce exactly that.
+  # ⚠️ No associative array: macOS system bash is 3.2, which has no
+  # `declare -A` and aborted the whole sweep. Every meta id is unique by
+  # construction (one glob, one suffix), so only a result id needs checking,
+  # and only against the ids already collected — an exact quoted string
+  # comparison, so spaces, glob characters and newlines stay one id.
   sa_ids=()
-  declare -A sa_seen=()
   for sa_f in "$SA_DIR"/*.meta.json; do
     sa_id="${sa_f##*/}"; sa_id="${sa_id%.meta.json}"
-    [[ -n "${sa_seen[$sa_id]+set}" ]] || { sa_seen["$sa_id"]=1; sa_ids+=("$sa_id"); }
+    sa_ids+=("$sa_id")
   done
   for sa_f in "$SA_DIR"/*.result.txt; do
     sa_id="${sa_f##*/}"; sa_id="${sa_id%.result.txt}"
-    [[ -n "${sa_seen[$sa_id]+set}" ]] || { sa_seen["$sa_id"]=1; sa_ids+=("$sa_id"); }
+    sa_dup=0
+    for sa_have in ${sa_ids[@]+"${sa_ids[@]}"}; do
+      [[ "$sa_have" == "$sa_id" ]] && { sa_dup=1; break; }
+    done
+    [[ "$sa_dup" -eq 1 ]] || sa_ids+=("$sa_id")
   done
 
   for sa_id in ${sa_ids[@]+"${sa_ids[@]}"}; do
@@ -2773,7 +2836,10 @@ PY
     # broker serving it). It is printed because a human deciding whether to
     # kill a pid deserves to know that some registry could not be read — an
     # unreadable workspace is NOT an empty one, and it may be another session's.
-    SURVEY="$(python3 - "$CLAUDE_PLUGIN_DATA/state" <<'PY'
+    # The Python is loaded by a TOP-LEVEL here-document, never one inside
+    # $(…): bash 3.2 (macOS /bin/bash) mis-parses a here-document inside a
+    # substitution whose body holds parens or quotes, and `bash -n` misses it.
+    IFS= read -r -d '' SURVEY_PY <<'PY' || true
 import json, os, sys
 root = sys.argv[1]
 TERMINAL = {"completed", "failed", "cancelled", "gone"}
@@ -2839,7 +2905,9 @@ for name in names:
             live.append(f"{name}/{e.get('id', '?')}({e.get('status')})")
 print(" ".join(sorted(set(live))))
 PY
-)"
+    # An empty program would run as a silent no-op and print the CLEAN message.
+    [[ -n "$SURVEY_PY" ]] || { echo "crew-codex: internal error: registry survey program failed to load" >&2; exit 1; }
+    SURVEY="$(python3 -c "$SURVEY_PY" "$CLAUDE_PLUGIN_DATA/state")"
     if [[ -n "$SURVEY" ]]; then
       echo "registry survey: non-terminal or unreadable record(s): $SURVEY"
       echo "  (advisory only — an unreadable record is NOT an empty workspace, and any of these may belong to another Claude Code session)"
@@ -2863,36 +2931,31 @@ PY
     brokers_unknown=0
     brokers_skipped=0
     if [[ "${#broker_pids[@]}" -gt 0 ]]; then
-      while IFS=$'\t' read -r verdict bpid bnote; do
-        case "$verdict" in
-          LIVE)
-            echo "broker live: pid $bpid (cwd $bnote exists — not a candidate)"
-            brokers_kept=$((brokers_kept + 1))
-            ;;
-          UNKNOWN)
-            echo "broker unknown: pid $bpid ($bnote) — cwd could NOT be proven absent, so this is not a candidate"
-            brokers_unknown=$((brokers_unknown + 1))
-            ;;
-          SKIP)
-            echo "broker skipped: pid $bpid ($bnote)"
-            brokers_skipped=$((brokers_skipped + 1))
-            ;;
-          REAP)
-            echo "broker candidate: pid $bpid (cwd $bnote is gone — nothing can dispatch into that workspace any more)"
-            echo "  ⚠️ this pid may belong to ANOTHER Claude Code session. Confirm it first:"
-            echo "      ps -o pid,ppid,lstart,args -p $bpid"
-            echo "  then, only if you are sure, kill it yourself — children before the parent:"
-            echo "      pkill -P $bpid; kill -TERM $bpid"
-            brokers_candidates=$((brokers_candidates + 1))
-            ;;
-        esac
-      done < <(REAP_SELF_PID=$$ python3 - "${broker_pids[@]}" <<'PY'
-import os, sys
+      # Top-level here-document, not one inside <(…) — see SURVEY_PY above.
+      IFS= read -r -d '' REAP_PY <<'PY' || true
+import os, re, subprocess, sys
 
 self_pid = int(os.environ.get("REAP_SELF_PID", "0"))
+# argv[0] of a real broker is node's process.execPath: `node` for every
+# official build, nvm and Homebrew; `nodejs` on older Debian/Ubuntu packages;
+# a version suffix (`node18`, `node-22`) on distros that ship several side by
+# side. Nothing else — python3, bash, perl — can be the broker.
+NODE_ARGV0 = re.compile(r"^node(js)?(-?[0-9]+(\.[0-9]+)*)?$")
+# ⚠️ /proc is Linux-only. On darwin every open() below failed, every broker
+# read as "vanished", and the sweep reported zero candidates — silently. /proc
+# stays the primary source where it exists; elsewhere ppid comes from ps and
+# argv from sysctl KERN_PROCARGS2, which is NUL-separated like /proc cmdline.
+HAVE_PROC = os.path.isdir("/proc/self")
 
 
 def ppid_of(pid):
+    if not HAVE_PROC:
+        try:
+            out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)],
+                                 capture_output=True, text=True, timeout=10).stdout
+            return int(out.strip())
+        except Exception:
+            return None
     try:
         with open(f"/proc/{pid}/status") as f:
             for line in f:
@@ -2901,6 +2964,36 @@ def ppid_of(pid):
     except Exception:
         return None
     return None
+
+
+def procargs_darwin(pid):
+    # NOT `ps -o command=`: that is space-joined, the same lossy form as the
+    # pgrep line, and a --cwd containing a space would be truncated into a path
+    # that does not exist — a false candidate. KERN_PROCARGS2 is
+    # [int32 argc][exec path\0][\0 padding][argv0\0 ... argvN\0][env...].
+    import ctypes, ctypes.util, struct
+    libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    mib = (ctypes.c_int * 3)(1, 49, pid)  # CTL_KERN, KERN_PROCARGS2
+    size = ctypes.c_size_t(0)
+    if libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0 or size.value < 4:
+        return None
+    buf = ctypes.create_string_buffer(size.value)
+    if libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0:
+        return None
+    raw = buf.raw[:size.value]
+    argc = struct.unpack_from("i", raw, 0)[0]
+    rest = raw[4:]
+    end = rest.find(b"\0")  # skip the exec path
+    if end < 0:
+        return None
+    rest = rest[end:].lstrip(b"\0")
+    # KERN_PROCARGS2 cannot tell the padding after the exec path from an empty
+    # argv[0], so an empty argv[0] is lost here. Acceptable: it can only come
+    # from a deliberate spoof, and the reaper prints advisory lines, never kills.
+    parts = rest.split(b"\0")
+    if argc <= 0 or len(parts) < argc:
+        return None
+    return parts[:argc]
 
 
 # Our own ancestry is never a candidate. pgrep matched on the full command
@@ -2917,12 +3010,26 @@ while walker and walker > 1 and walker not in ancestors:
 def cmdline(pid):
     # /proc/<pid>/cmdline is NUL-separated and authoritative. The pgrep line is
     # space-joined and cannot be re-split safely once a path contains a space.
+    if not HAVE_PROC:
+        try:
+            raw_args = procargs_darwin(pid) if sys.platform == "darwin" else None
+        except Exception:
+            raw_args = None
+        if not raw_args:
+            return None
+        return [a.decode("utf-8", "replace") for a in raw_args]
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
             raw = f.read()
     except Exception:
         return None
-    return [a.decode("utf-8", "replace") for a in raw.split(b"\0") if a]
+    # ⚠️ Empty elements are argv, not noise: dropping them turned
+    # ["node", "", script, "serve", …] into the accepted shape. Only the one
+    # empty tail produced by the terminal NUL is removed.
+    parts = raw.split(b"\0")
+    if raw.endswith(b"\0"):
+        parts = parts[:-1]
+    return [a.decode("utf-8", "replace") for a in parts]
 
 
 for arg in sys.argv[1:]:
@@ -2937,11 +3044,21 @@ for arg in sys.argv[1:]:
     if not args:
         print(f"SKIP\t{pid}\tprocess vanished before inspection")
         continue
-    # A real broker is `node .../app-server-broker.mjs serve --endpoint ...
-    # --cwd <workspace> --pid-file ...`. Anything without the serve verb and a
-    # --cwd is some other process that merely mentions the pattern.
-    if "serve" not in args:
-        print(f"SKIP\t{pid}\tnot a broker 'serve' invocation")
+    # ⚠️ Identity first: pgrep matched a SUBSTRING of the joined command line,
+    # so `bash app-server-broker-check.sh serve --cwd /gone` — and then
+    # `python3 -c '…' app-server-broker.mjs serve --cwd /gone`, which carries
+    # the script name as a mere positional argument — were handed out with a
+    # paste-ready kill command. Only the vendor's EXACT invocation shape is ever
+    # classified. codex 1.0.6 scripts/lib/broker-lifecycle.mjs spawns
+    #   spawn(process.execPath, [scriptPath, "serve", "--endpoint", …])
+    # so argv[0] is the node binary (no node flags precede the script), argv[1]
+    # is the script, argv[2] is `serve`. Everything else is skipped, everywhere.
+    # Positions are checked on the RAW argv with empty elements preserved, and
+    # fullmatch, not match: `$` would let a basename ending in "\n" through.
+    if not (len(args) >= 3 and NODE_ARGV0.fullmatch(os.path.basename(args[0]))
+            and os.path.basename(args[1]) == "app-server-broker.mjs"
+            and args[2] == "serve"):
+        print(f"SKIP\t{pid}\tnot the codex broker script")
         continue
     cwd = None
     for i, a in enumerate(args):
@@ -2967,7 +3084,32 @@ for arg in sys.argv[1:]:
     else:
         print(f"LIVE\t{pid}\t{cwd}")
 PY
-      )
+      # An empty program would classify nothing and report a clean sweep.
+      [[ -n "$REAP_PY" ]] || { echo "crew-codex: internal error: reaper program failed to load" >&2; exit 1; }
+      while IFS=$'\t' read -r verdict bpid bnote; do
+        case "$verdict" in
+          LIVE)
+            echo "broker live: pid $bpid (cwd $bnote exists — not a candidate)"
+            brokers_kept=$((brokers_kept + 1))
+            ;;
+          UNKNOWN)
+            echo "broker unknown: pid $bpid ($bnote) — cwd could NOT be proven absent, so this is not a candidate"
+            brokers_unknown=$((brokers_unknown + 1))
+            ;;
+          SKIP)
+            echo "broker skipped: pid $bpid ($bnote)"
+            brokers_skipped=$((brokers_skipped + 1))
+            ;;
+          REAP)
+            echo "broker candidate: pid $bpid (cwd $bnote is gone — nothing can dispatch into that workspace any more)"
+            echo "  ⚠️ this pid may belong to ANOTHER Claude Code session. Confirm it first:"
+            echo "      ps -o pid,ppid,lstart,args -p $bpid"
+            echo "  then, only if you are sure, kill it yourself — children before the parent:"
+            echo "      pkill -P $bpid; kill -TERM $bpid"
+            brokers_candidates=$((brokers_candidates + 1))
+            ;;
+        esac
+      done < <(REAP_SELF_PID=$$ python3 -c "$REAP_PY" "${broker_pids[@]}")
     fi
     echo "reap brokers summary: $brokers_candidates reported (nothing killed), $brokers_kept live (cwd exists), $brokers_unknown unknown (cwd unreadable), $brokers_skipped skipped (not a broker)"
     echo "reap --brokers took no action: killing a broker from a sweep has failed open five times and cannot be made safe from outside the broker; socket dirs under /tmp/cxc-* are likewise left alone because that namespace is shared with other sessions."

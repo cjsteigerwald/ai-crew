@@ -58,6 +58,69 @@ export CODEX_HOME="$TMP/no-codex-home"
 # survey and want zero process discovery.
 NOMATCH="crewtest-nomatch-$$"
 
+# ---- portability shims: the suite runs on GNU/Linux AND on stock macOS ------
+# `touch -d '<N> <unit> ago'` is GNU-only; BSD touch aborted the whole suite
+# under `set -e`. touch_ago backdates a file by "<N> minutes|hours ago" with
+# GNU touch when it works, else via an absolute `touch -t` stamp.
+touch_ago() { # $1 = "<N> minutes|hours ago", $2 = file
+  touch -d "$1" "$2" 2>/dev/null && return 0
+  local n unit secs
+  read -r n unit _ <<<"$1"
+  case "$unit" in
+    minute|minutes) secs=$(( n * 60 )) ;;
+    hour|hours)     secs=$(( n * 3600 )) ;;
+    *) echo "touch_ago: unsupported offset '$1'" >&2; return 1 ;;
+  esac
+  touch -t "$(date -r $(( $(date +%s) - secs )) +%Y%m%d%H%M.%S)" "$2"
+}
+# `timeout` is GNU coreutils; stock macOS has none. Prefer gtimeout, else
+# portable_timeout. ⚠️ NOT `perl -e 'alarm shift; exec @ARGV'`: that exits 142
+# (SIGALRM), so every `rc == 124` hang check below silently never fired, and it
+# signals only the direct child, so a grandchild holding a captured stdout pipe
+# kept `$(...)` blocked past the deadline. portable_timeout matches GNU: CMD
+# runs in its own process group; on expiry the WHOLE group gets TERM, then KILL
+# after a short grace, and the result is 124. Otherwise CMD's own status, or
+# 128+signal if CMD died by a signal.
+portable_timeout() { # $1 = seconds, rest = command
+  perl -e '
+    use strict; use Time::HiRes ();
+    my $secs = shift @ARGV; my $grace = 2;
+    my $pid = fork; die "portable_timeout: fork: $!\n" unless defined $pid;
+    if ($pid == 0) { setpgrp(0, 0); exec { $ARGV[0] } @ARGV; exit 127; }
+    setpgrp($pid, $pid);  # also from the parent, so the group exists before any kill
+    for my $sig (qw(TERM INT HUP)) { $SIG{$sig} = sub { kill $sig, -$pid; }; }
+    # ⚠️ Escalation is driven by the ALARM, never by the leader exiting: a
+    # leader that ignores TERM never returns from waitpid, so grace/KILL code
+    # placed after waitpid was unreachable and the timeout waited forever.
+    # First ALRM: TERM the group and re-arm for the grace. Second: KILL it.
+    my $timed_out = 0;
+    $SIG{ALRM} = sub {
+      if (!$timed_out) { $timed_out = 1; kill "TERM", -$pid; Time::HiRes::alarm($grace); }
+      else             { $timed_out = 2; kill "KILL", -$pid; }
+    };
+    Time::HiRes::alarm($secs);
+    1 while waitpid($pid, 0) == -1 && $!{EINTR};
+    my $status = $?;
+    if ($timed_out) {
+      # The leader is gone but TERM-ignoring members may remain: keep the
+      # grace the armed alarm promised, then KILL whatever is left.
+      Time::HiRes::sleep(0.1) while $timed_out == 1 && kill(0, -$pid);
+      Time::HiRes::alarm(0);
+      kill "KILL", -$pid;
+      exit 124;
+    }
+    Time::HiRes::alarm(0);
+    exit(($status & 127) ? 128 + ($status & 127) : $status >> 8);
+  ' "$@"
+}
+if ! command -v timeout >/dev/null 2>&1; then
+  if command -v gtimeout >/dev/null 2>&1; then
+    timeout() { gtimeout "$@"; }
+  else
+    timeout() { portable_timeout "$@"; }
+  fi
+fi
+
 pass=0
 fail=0
 skipped=0
@@ -128,6 +191,40 @@ check() {
     fail=$((fail + 1))
   fi
 }
+
+# Case T1: portable_timeout is exercised DIRECTLY on every machine, whether or
+# not GNU timeout exists — the old perl fallback was never run here because this
+# suite's machines all had GNU timeout, which is how its 142 exit code survived.
+# (a) expiry returns 124 and does not wait on a grandchild holding the pipe.
+t0=$(date +%s)
+out="$(portable_timeout 1 bash -c 'sleep 30 & wait')" && rc=0 || rc=$?
+elapsed=$(( $(date +%s) - t0 ))
+if [[ "$rc" == 124 && "$elapsed" -lt 5 ]]; then
+  echo "PASS: portable_timeout expiry returns 124 and kills the process group"; pass=$((pass + 1))
+else
+  echo "FAIL: portable_timeout expiry (exit=$rc, want=124; elapsed=${elapsed}s, want <5s)"; fail=$((fail + 1))
+fi
+# (a2) a group LEADER that ignores TERM (and whose grandchild does too) must
+# still be killed: escalation to KILL used to wait on the leader exiting, which
+# a TERM-ignoring leader never does, so the "timeout" blocked forever.
+T1_GC="$TMP/t1-grandchild.pid"
+t0=$(date +%s)
+out="$(portable_timeout 1 perl -e '$SIG{TERM}="IGNORE"; if (!fork) { open my $f, ">", $ARGV[0]; print $f $$; close $f; sleep 30; exit } sleep 60' "$T1_GC")" && rc=0 || rc=$?
+elapsed=$(( $(date +%s) - t0 ))
+t1_gc="$(cat "$T1_GC" 2>/dev/null || true)"
+for _ in 1 2 3 4 5 6 7 8 9 10; do   # the orphaned grandchild may take a moment to be reaped
+  [[ -n "$t1_gc" ]] && kill -0 "$t1_gc" 2>/dev/null || break
+  sleep 0.1
+done
+if [[ "$rc" == 124 && "$elapsed" -lt 6 && -n "$t1_gc" ]] && ! kill -0 "$t1_gc" 2>/dev/null; then
+  echo "PASS: portable_timeout kills a TERM-ignoring leader and its grandchild"; pass=$((pass + 1))
+else
+  echo "FAIL: portable_timeout TERM-ignoring leader (exit=$rc, want=124; elapsed=${elapsed}s, want <6s; grandchild=${t1_gc:-none} $(kill -0 "${t1_gc:-0}" 2>/dev/null && echo ALIVE || echo gone))"; fail=$((fail + 1))
+  [[ -n "$t1_gc" ]] && kill -9 "$t1_gc" 2>/dev/null || true
+fi
+# (b) a command that finishes in time keeps its own exit status.
+out="$(portable_timeout 5 bash -c 'exit 3')" && rc=0 || rc=$?
+check "portable_timeout passes through the command's exit status" 3 "" "$rc" "$out"
 
 # Asserts the fake companion recorded NO invocation — the whole point of the
 # usage guards is that a help/--effort request never becomes a dispatch at all.
@@ -372,7 +469,7 @@ EOF
 
 # Case 19: live pid + frozen log -> HUNG, exit 4
 sleep 30 & HUNG_PID=$!
-frozen="$TMP/await/frozen.log"; echo x > "$frozen"; touch -d '10 minutes ago' "$frozen"
+frozen="$TMP/await/frozen.log"; echo x > "$frozen"; touch_ago '10 minutes ago' "$frozen"
 out="$(CLAUDE_CONFIG_DIR="$TMP/await" CREW_CODEX_HUNG_SECS=2 CREW_CODEX_HUNG_POLL_SECS=1 \
   CREW_TEST_PID="$HUNG_PID" CREW_TEST_LOG="$frozen" \
   bash "$CREW" await task-x --for 30 2>&1)" && rc=0 || rc=$?
@@ -502,7 +599,7 @@ out="$(CLAUDE_CONFIG_DIR="$TMP/meta" CREW_CODEX_ARCHIVE_DIR="$arc" CREW_CODEX_PO
   CREW_TEST_SECRET="$SECRET" bash "$CREW" await task-secret1 --for 5 2>"$metaerr")" && rc=0 || rc=$?
 check "await over a sanitized archive still exits 0" 0 "DONE completed" "$rc" "$out"
 check "await stdout contract unchanged" 0 "archived: $arc/task-secret1.result.txt" "$rc" "$out"
-if [[ "$(wc -l <<<"$out")" == "1" && ! -s "$metaerr" ]]; then
+if [[ $(( $(wc -l <<<"$out") )) -eq 1 && ! -s "$metaerr" ]]; then
   echo "PASS: await still prints exactly one stdout line and nothing on stderr"; pass=$((pass + 1))
 else
   echo "FAIL: await stdout/stderr contract changed (stdout: $out; stderr: $(cat "$metaerr"))"; fail=$((fail + 1))
@@ -1240,14 +1337,14 @@ fi
 REAP_DATA="$TMP/reap-data"
 mkdir -p "$REAP_DATA/state/repo-a/jobs" "$REAP_DATA/state/repo-b/jobs" "$REAP_DATA/state/repo-c/jobs"
 DEAD_PID2=$(bash -c 'echo $$')
-oldlog="$REAP_DATA/state/repo-a/jobs/dead.log"; echo x > "$oldlog"; touch -d '2 hours ago' "$oldlog"
+oldlog="$REAP_DATA/state/repo-a/jobs/dead.log"; echo x > "$oldlog"; touch_ago '2 hours ago' "$oldlog"
 cat > "$REAP_DATA/state/repo-a/jobs/dead.json" <<EOF
 {"id":"job-dead","status":"running","pid":$DEAD_PID2,"logFile":"$oldlog","createdAt":"2026-07-01T00:00:00Z"}
 EOF
 cat > "$REAP_DATA/state/repo-a/state.json" <<EOF
 [{"id":"job-dead","status":"running","pid":$DEAD_PID2},{"id":"job-other","status":"completed"}]
 EOF
-frozenlog="$REAP_DATA/state/repo-b/jobs/frozen.log"; echo x > "$frozenlog"; touch -d '2 hours ago' "$frozenlog"
+frozenlog="$REAP_DATA/state/repo-b/jobs/frozen.log"; echo x > "$frozenlog"; touch_ago '2 hours ago' "$frozenlog"
 cat > "$REAP_DATA/state/repo-b/jobs/frozen.json" <<EOF
 {"id":"job-frozen","status":"running","logFile":"$frozenlog","createdAt":"2026-07-01T00:00:00Z"}
 EOF
@@ -1258,7 +1355,7 @@ EOF
 cat > "$REAP_DATA/state/repo-b/jobs/done.json" <<EOF
 {"id":"job-done","status":"completed"}
 EOF
-frozenlog2="$REAP_DATA/state/repo-c/jobs/frozen2.log"; echo x > "$frozenlog2"; touch -d '2 hours ago' "$frozenlog2"
+frozenlog2="$REAP_DATA/state/repo-c/jobs/frozen2.log"; echo x > "$frozenlog2"; touch_ago '2 hours ago' "$frozenlog2"
 cat > "$REAP_DATA/state/repo-c/jobs/frozen2.json" <<EOF
 {"id":"job-frozen2","status":"running","logFile":"$frozenlog2","createdAt":"2026-07-01T00:00:00Z"}
 EOF
@@ -1572,12 +1669,17 @@ cp -r "$SWEEP/dead-ws" "$SWEEP/live-ws" "$SWEEP/unresolved-ws" "$CLEAN/"
 
 # Three fake "brokers": dead cwd (reapable), live cwd (kept), no serve verb
 # (skipped). The pattern is unique to this run so pgrep cannot reach a real one.
+# The script's basename must be exactly app-server-broker.mjs — the sweep only
+# classifies that script — so the unique pattern lives in its directory.
 BROKER_PAT="crewtest-broker-$$"
-BSCRIPT="$TMP/$BROKER_PAT.sh"
-printf '#!/usr/bin/env bash\nsleep 60\n' > "$BSCRIPT"
-bash "$BSCRIPT" serve --endpoint "unix:$TMP/none.sock" --cwd "$GONE_WS" & DEADCWD_PID=$!
-bash "$BSCRIPT" serve --endpoint "unix:$TMP/none.sock" --cwd "$TMP" & LIVECWD_PID=$!
-bash "$BSCRIPT" notserve --cwd "$GONE_WS" & NOTBROKER_PID=$!
+mkdir -p "$TMP/$BROKER_PAT"
+# They run under REAL node, in the vendor's exact argv shape
+# (`node <script> serve …`), because the sweep classifies nothing else.
+BSCRIPT="$TMP/$BROKER_PAT/app-server-broker.mjs"
+echo 'setTimeout(() => {}, 60000);' > "$BSCRIPT"
+node "$BSCRIPT" serve --endpoint "unix:$TMP/none.sock" --cwd "$GONE_WS" & DEADCWD_PID=$!
+node "$BSCRIPT" serve --endpoint "unix:$TMP/none.sock" --cwd "$TMP" & LIVECWD_PID=$!
+node "$BSCRIPT" notserve --cwd "$GONE_WS" & NOTBROKER_PID=$!
 sleep 0.5
 
 # Socket dirs: one held by a live pid via broker.pid, one idle.
@@ -1619,14 +1721,93 @@ fi
 kill "$DEADCWD_PID" "$LIVECWD_PID" "$NOTBROKER_PID" 2>/dev/null || true
 wait "$DEADCWD_PID" "$LIVECWD_PID" "$NOTBROKER_PID" 2>/dev/null || true
 
+# Case 37a: a process that matches the pgrep pattern, has the `serve` verb and
+# a --cwd that is provably gone, but is NOT the broker script, is skipped — it
+# used to be reported as a candidate with a paste-ready kill command. The
+# decoy's name deliberately contains `app-server-broker` too.
+DECOY_PAT="crewtest-decoy-$$"
+mkdir -p "$TMP/$DECOY_PAT"
+printf '#!/usr/bin/env bash\nsleep 60\n' > "$TMP/$DECOY_PAT/app-server-broker-decoy.sh"
+bash "$TMP/$DECOY_PAT/app-server-broker-decoy.sh" serve --cwd "$GONE_WS" & DECOY_PID=$!
+STUB_PIDS="$STUB_PIDS $DECOY_PID"   # the suite's EXIT trap kills it if anything aborts
+sleep 0.5
+out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/sweep-clean" \
+  CREW_CODEX_BROKER_PATTERN="$DECOY_PAT" \
+  bash "$CREW" reap --brokers 2>&1)" && rc=0 || rc=$?
+kill "$DECOY_PID" 2>/dev/null || true
+wait "$DECOY_PID" 2>/dev/null || true
+STUB_PIDS="${STUB_PIDS% $DECOY_PID}"   # reaped: never kill -9 a recycled pid at exit
+check "non-broker script matching the pattern is skipped" 0 "broker skipped: pid $DECOY_PID (not the codex broker script)" "$rc" "$out"
+if ! grep -q "broker candidate: pid $DECOY_PID" <<<"$out"; then
+  echo "PASS: non-broker script was never offered as a kill candidate"; pass=$((pass + 1))
+else
+  echo "FAIL: non-broker script offered as a candidate (output: $out)"; fail=$((fail + 1))
+fi
+
+# Case 37e: the adversarial reviewer's PoC. A NON-node process carrying the
+# exact script basename and `serve` as plain positional arguments, with a cwd
+# that is provably gone, satisfied the old "some argv element is the script"
+# test and was reported REAP with a paste-ready kill command.
+POC_PAT="crewtest-poc-$$"
+python3 -c 'import time; time.sleep(60)' "$TMP/$POC_PAT/app-server-broker.mjs" serve --cwd "$GONE_WS" & POC_PID=$!
+STUB_PIDS="$STUB_PIDS $POC_PID"
+sleep 0.5
+out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/sweep-clean" \
+  CREW_CODEX_BROKER_PATTERN="$POC_PAT" \
+  bash "$CREW" reap --brokers 2>&1)" && rc=0 || rc=$?
+kill "$POC_PID" 2>/dev/null || true
+wait "$POC_PID" 2>/dev/null || true
+STUB_PIDS="${STUB_PIDS% $POC_PID}"
+check "python3 carrying the broker script as an argument is skipped" 0 "broker skipped: pid $POC_PID (not the codex broker script)" "$rc" "$out"
+check "python3 PoC summary has no candidate" 0 "reap brokers summary: 0 reported (nothing killed), 0 live (cwd exists), 0 unknown (cwd unreadable), 1 skipped" "$rc" "$out"
+if ! grep -q "broker candidate: pid $POC_PID" <<<"$out"; then
+  echo "PASS: python3 PoC was never offered as a kill candidate"; pass=$((pass + 1))
+else
+  echo "FAIL: python3 PoC offered as a candidate (output: $out)"; fail=$((fail + 1))
+fi
+
+# Case 37f: an EMPTY argv element. cmdline() used to drop every empty element,
+# so argv ["node", "", <script>, "serve", "--cwd", /gone] normalized into the
+# accepted shape and was reported REAP. `cat` fails on "" and then blocks
+# opening the FIFO for read, which keeps that argv alive on darwin and Linux.
+# POSIXLY_CORRECT: GNU cat otherwise permutes and rejects `--cwd` as its own
+# option; `--` would change the argv shape under test. BSD cat ignores it.
+EMPTY_PAT="crewtest-emptyarg-$$"
+EMPTY_GONE="/nonexistent-$EMPTY_PAT"
+mkdir -p "$TMP/$EMPTY_PAT"
+mkfifo "$TMP/$EMPTY_PAT/app-server-broker.mjs"
+bash -c 'export POSIXLY_CORRECT=1; exec -a node cat "" "$1" serve --cwd "$2"' _ "$TMP/$EMPTY_PAT/app-server-broker.mjs" "$EMPTY_GONE" 2>/dev/null & EMPTY_PID=$!
+STUB_PIDS="$STUB_PIDS $EMPTY_PID"
+sleep 0.5
+empty_args="$(ps -o args= -p "$EMPTY_PID" 2>/dev/null)" || empty_args=""
+if [[ "$empty_args" == "node "*"$EMPTY_PAT/app-server-broker.mjs serve --cwd $EMPTY_GONE" ]]; then
+  echo "PASS: empty-argv decoy is alive with the expected argv"; pass=$((pass + 1))
+else
+  echo "FAIL: empty-argv decoy fixture did not start as expected (ps: $empty_args)"; fail=$((fail + 1))
+fi
+out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/sweep-clean" \
+  CREW_CODEX_BROKER_PATTERN="$EMPTY_PAT" \
+  bash "$CREW" reap --brokers 2>&1)" && rc=0 || rc=$?
+kill "$EMPTY_PID" 2>/dev/null || true
+wait "$EMPTY_PID" 2>/dev/null || true
+STUB_PIDS="${STUB_PIDS% $EMPTY_PID}"
+rm -f "$TMP/$EMPTY_PAT/app-server-broker.mjs"
+check "empty argv element before the script is skipped" 0 "broker skipped: pid $EMPTY_PID (not the codex broker script)" "$rc" "$out"
+if ! grep -q "broker candidate: pid $EMPTY_PID" <<<"$out"; then
+  echo "PASS: empty-argv decoy was never offered as a kill candidate"; pass=$((pass + 1))
+else
+  echo "FAIL: empty-argv decoy offered as a candidate (output: $out)"; fail=$((fail + 1))
+fi
+
 # Case 37b: a cwd that cannot be PROVEN absent is UNKNOWN, never a candidate.
 # os.path.isdir returns False for permission-denied, which is what reported a
 # workspace we merely cannot see as one that is gone.
 BROKER_PAT_U="crewtest-unknown-$$"
-printf '#!/usr/bin/env bash\nsleep 60\n' > "$TMP/$BROKER_PAT_U.sh"
+mkdir -p "$TMP/$BROKER_PAT_U"
+echo 'setTimeout(() => {}, 60000);' > "$TMP/$BROKER_PAT_U/app-server-broker.mjs"
 mkdir -p "$TMP/unreadable-parent/ws"
 chmod 000 "$TMP/unreadable-parent" 2>/dev/null || true
-bash "$TMP/$BROKER_PAT_U.sh" serve --cwd "$TMP/unreadable-parent/ws" & UNKNOWN_PID=$!
+node "$TMP/$BROKER_PAT_U/app-server-broker.mjs" serve --endpoint "unix:$TMP/none.sock" --cwd "$TMP/unreadable-parent/ws" & UNKNOWN_PID=$!
 sleep 0.5
 out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/sweep-clean" \
   CREW_CODEX_BROKER_PATTERN="$BROKER_PAT_U" \
@@ -1746,8 +1927,9 @@ fi
 # pattern, `serve` verb, --cwd that does not exist) leaves it ALIVE. The old
 # code killed exactly this process. A candidate may be another session's broker,
 # so the only correct action is to print the command and stop.
-printf '#!/usr/bin/env bash\nsleep 60\n' > "$TMP/crewtest-broker2-$$.sh"
-bash "$TMP/crewtest-broker2-$$.sh" serve --endpoint "unix:$TMP/none.sock" --cwd "$GONE_WS" & SURVIVOR_PID=$!
+mkdir -p "$TMP/crewtest-broker2-$$"
+echo 'setTimeout(() => {}, 60000);' > "$TMP/crewtest-broker2-$$/app-server-broker.mjs"
+node "$TMP/crewtest-broker2-$$/app-server-broker.mjs" serve --endpoint "unix:$TMP/none.sock" --cwd "$GONE_WS" & SURVIVOR_PID=$!
 sleep 0.5
 out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/sweep-clean" \
   CREW_CODEX_BROKER_PATTERN="crewtest-broker2-$$" \
@@ -2786,7 +2968,7 @@ mkfifo "$MERGE_FIFO"
 # this machine has recycled the throwaway pid, because if the job is NOT
 # reaped then reap never writes to the FIFO and the reader below would block
 # forever. Every wait in this case is bounded for the same reason.
-touch -d '2 hours ago' "$MERGE_FIFO"
+touch_ago '2 hours ago' "$MERGE_FIFO"
 DEAD_PID3=$(bash -c 'echo $$')
 cat > "$MERGE_DATA/state/repo-m/jobs/dead.json" <<EOF
 {"id":"job-m-dead","status":"running","pid":$DEAD_PID3,"logFile":"$MERGE_FIFO","createdAt":"2026-07-01T00:00:00Z"}
@@ -2853,7 +3035,7 @@ fi
 reap_fifo_fixture() {  # $1 = fixture root, $2 = workspace name, $3 = dead pid
   mkdir -p "$1/state/$2/jobs"
   printf 'log line\n' > "$1/state/$2/jobs/dead.log"
-  touch -d '2 hours ago' "$1/state/$2/jobs/dead.log"
+  touch_ago '2 hours ago' "$1/state/$2/jobs/dead.log"
   cat > "$1/state/$2/jobs/dead.json" <<EOF
 {"id":"job-fifo","status":"running","pid":$3,"logFile":"$1/state/$2/jobs/dead.log","createdAt":"2026-07-01T00:00:00Z"}
 EOF
@@ -3024,7 +3206,7 @@ PART_DATA="$TMP/reap-partial"
 mkdir -p "$PART_DATA/state/repo-w/jobs"
 for n in a b; do
   printf 'log line\n' > "$PART_DATA/state/repo-w/jobs/$n.log"
-  touch -d '2 hours ago' "$PART_DATA/state/repo-w/jobs/$n.log"
+  touch_ago '2 hours ago' "$PART_DATA/state/repo-w/jobs/$n.log"
   cat > "$PART_DATA/state/repo-w/jobs/$n.json" <<EOF
 {"id":"job-$n","status":"running","pid":$DEAD_PID_F,"logFile":"$PART_DATA/state/repo-w/jobs/$n.log","createdAt":"2026-07-01T00:00:00Z"}
 EOF
@@ -3060,7 +3242,7 @@ DUP_DATA="$TMP/reap-dup"
 mkdir -p "$DUP_DATA/state/repo-d/jobs"
 for n in one two; do
   printf 'log line\n' > "$DUP_DATA/state/repo-d/jobs/$n.log"
-  touch -d '2 hours ago' "$DUP_DATA/state/repo-d/jobs/$n.log"
+  touch_ago '2 hours ago' "$DUP_DATA/state/repo-d/jobs/$n.log"
   cat > "$DUP_DATA/state/repo-d/jobs/$n.json" <<EOF
 {"id":"job-dup","status":"running","pid":$DEAD_PID_F,"logFile":"$DUP_DATA/state/repo-d/jobs/$n.log","createdAt":"2026-07-01T00:00:00Z"}
 EOF
@@ -3085,7 +3267,7 @@ fi
 DUP2_DATA="$TMP/reap-dup-partial"
 mkdir -p "$DUP2_DATA/state/repo-e/jobs"
 printf 'log line\n' > "$DUP2_DATA/state/repo-e/jobs/stuck.log"
-touch -d '2 hours ago' "$DUP2_DATA/state/repo-e/jobs/stuck.log"
+touch_ago '2 hours ago' "$DUP2_DATA/state/repo-e/jobs/stuck.log"
 cat > "$DUP2_DATA/state/repo-e/jobs/stuck.json" <<EOF
 {"id":"job-twin","status":"running","pid":$DEAD_PID_F,"logFile":"$DUP2_DATA/state/repo-e/jobs/stuck.log","createdAt":"2026-07-01T00:00:00Z"}
 EOF
@@ -3148,7 +3330,7 @@ fi
 NOENT_DATA="$TMP/reap-no-entry"
 mkdir -p "$NOENT_DATA/state/repo-n/jobs"
 printf 'log line\n' > "$NOENT_DATA/state/repo-n/jobs/dead.log"
-touch -d '2 hours ago' "$NOENT_DATA/state/repo-n/jobs/dead.log"
+touch_ago '2 hours ago' "$NOENT_DATA/state/repo-n/jobs/dead.log"
 cat > "$NOENT_DATA/state/repo-n/jobs/dead.json" <<EOF
 {"id":"job-orphan","status":"running","pid":$DEAD_PID_F,"logFile":"$NOENT_DATA/state/repo-n/jobs/dead.log","createdAt":"2026-07-01T00:00:00Z"}
 EOF
@@ -3172,7 +3354,7 @@ fi
 stagearc2="$TMP/staging-report"
 mkdir -p "$stagearc2"
 printf 'half-written meta\n' > "$stagearc2/.crew-w.abc123"
-touch -d '3 hours ago' "$stagearc2/.crew-w.abc123"
+touch_ago '3 hours ago' "$stagearc2/.crew-w.abc123"
 echo '{"job":{"id":"task-keep","status":"completed"},"storedJob":{"id":"task-keep","status":"completed"}}' \
   > "$stagearc2/task-keep.meta.json"
 out="$(bash "$CREW" sanitize-archive --dir "$stagearc2" 2>&1)" && rc=0 || rc=$?
@@ -3191,7 +3373,7 @@ fi
 STATUS_DATA="$TMP/reap-status"
 mkdir -p "$STATUS_DATA/state/repo-s/jobs"
 printf 'log line\n' > "$STATUS_DATA/state/repo-s/jobs/dead.log"
-touch -d '2 hours ago' "$STATUS_DATA/state/repo-s/jobs/dead.log"
+touch_ago '2 hours ago' "$STATUS_DATA/state/repo-s/jobs/dead.log"
 cat > "$STATUS_DATA/state/repo-s/jobs/dead.json" <<EOF
 {"id":"job-status","status":"running","pid":$DEAD_PID_F,"logFile":"$STATUS_DATA/state/repo-s/jobs/dead.log","createdAt":"2026-07-01T00:00:00Z"}
 EOF
@@ -3885,6 +4067,61 @@ out="$(CLAUDE_CONFIG_DIR="$TMP/patchgone" bash "$CREW" patch --apply 2>&1)" && r
 check "patch refuses to half-apply" 1 "refusing to half-apply" "$rc" "$out"
 check "refused install is untouched" 1 "upstream rewrote this file entirely" "$rc" "$(cat "$TMP/patchgone/install/scripts/app-server-broker.mjs")"
 
+# Case 37d: patched-state detection is right under EVERY patch(1) on this
+# machine, not just whichever is first on PATH. Apple's patch auto-answers
+# "Ignore -R? [y]" on an unpatched tree, so the old reverse-first probe read an
+# UNPATCHED install as PATCHED and the SessionStart --apply silently did
+# nothing. Each available implementation is pinned in turn via a PATH shim.
+patch_impls=()
+for cand in /usr/bin/patch "$(command -v gpatch 2>/dev/null || true)" "$(command -v patch 2>/dev/null || true)"; do
+  [[ -n "$cand" && -x "$cand" ]] || continue
+  real="$(cd "$(dirname "$cand")" && pwd -P)/$(basename "$cand")"
+  dup=0; for seen in "${patch_impls[@]+"${patch_impls[@]}"}"; do [[ "$seen" == "$real" ]] && dup=1; done
+  [[ $dup -eq 0 ]] && patch_impls+=("$real")
+done
+for impl in "${patch_impls[@]}"; do
+  tag="$(basename "$impl")"; [[ "$impl" == /usr/bin/patch ]] && tag="usr-bin-patch"
+  shim="$TMP/patchimpl-$tag/bin"; root="$TMP/patchimpl-$tag"
+  mkdir -p "$shim" "$root/plugins" "$root/install/scripts"
+  ln -sf "$impl" "$shim/patch"
+  touch "$root/install/scripts/codex-companion.mjs"
+  echo "{\"version\":2,\"plugins\":{\"codex@openai-codex\":[{\"installPath\":\"$root/install\"}]}}" > "$root/plugins/installed_plugins.json"
+  build_fixture "$root/install"
+  pp() { PATH="$shim:$PATH" CLAUDE_CONFIG_DIR="$root" bash "$CREW" patch "$@" 2>&1; }
+  out="$(pp --status)" && rc=0 || rc=$?
+  check "[$tag] unpatched install is not reported PATCHED" 10 "UNPATCHED" "$rc" "$out"
+  out="$(pp --apply)" && rc=0 || rc=$?
+  check "[$tag] SessionStart --apply really applies an unpatched install" 0 "PATCHED | codex plugin install | backups" "$rc" "$out"
+  check "[$tag] applied tree carries the change" 0 "experimentalApi: true" "$rc" "$(cat "$root/install/scripts/lib/app-server.mjs")"
+  out="$(pp --status)" && rc=0 || rc=$?
+  check "[$tag] patched install reports PATCHED" 0 "PATCHED | codex plugin" "$rc" "$out"
+  out="$(pp --revert)" && rc=0 || rc=$?
+  check "[$tag] revert restores the original" 0 "experimentalApi: false" "$rc" "$(cat "$root/install/scripts/lib/app-server.mjs")"
+
+  # Case 37c: a HALF-applied install (one target patched, one restored from
+  # its backup) is stale. --revert must refuse with exit 1 and change nothing —
+  # it used to print "nothing to revert" and exit 0 over the patched hunks.
+  out="$(pp --apply)" && rc=0 || rc=$?
+  check "[$tag] re-apply before the half-applied case" 0 "PATCHED" "$rc" "$out"
+  cp "$root/install/scripts/lib/app-server.mjs.crew-orig" "$root/install/scripts/lib/app-server.mjs"
+  sums_before="$(cksum "$root/install/scripts/lib/app-server.mjs" "$root/install/scripts/app-server-broker.mjs")"
+  out="$(pp --revert)" && rc=0 || rc=$?
+  check "[$tag] revert refuses a half-applied install" 1 "in state 'stale'.*nothing was changed.*crew-orig" "$rc" "$out"
+  if ! grep -q "nothing to revert" <<<"$out"; then
+    echo "PASS: [$tag] half-applied install is not reported clean"; pass=$((pass + 1))
+  else
+    echo "FAIL: [$tag] half-applied install reported as nothing to revert (output: $out)"; fail=$((fail + 1))
+  fi
+  sums_after="$(cksum "$root/install/scripts/lib/app-server.mjs" "$root/install/scripts/app-server-broker.mjs")"
+  if [[ "$sums_before" == "$sums_after" ]]; then
+    echo "PASS: [$tag] refused revert left both targets byte-identical"; pass=$((pass + 1))
+  else
+    echo "FAIL: [$tag] refused revert modified a target"; fail=$((fail + 1))
+  fi
+  out="$(pp --apply)" && rc=0 || rc=$?
+  check "[$tag] apply still refuses a half-applied install" 1 "refusing to half-apply" "$rc" "$out"
+done
+
 # --- queue: say something to a running job without stopping it ---------------
 # Stubs the codex plugin's app-server client, so the real lib/appserver-cli.mjs
 # and the real queue/await paths run against a scripted server.
@@ -4290,6 +4527,77 @@ else
   echo "FAIL: cleanup killed an unrelated process holding a recycled pid"; fail=$((fail + 1))
 fi
 kill -9 "$innocent" 2>/dev/null || true
+
+# Case B32: macOS system bash. /bin/bash there is 3.2, which has no
+# `declare -A` (sanitize-archive aborted) and mis-parses a here-document inside
+# $(…) / <(…) at RUNTIME — `bash -n` passes. The suite may itself run under
+# bash 5, so both paths are driven through /bin/bash explicitly and compared
+# against the suite's own `bash`.
+# ⚠️ Where /bin/bash is not 3.x (every Linux box) this case records an explicit
+# SKIP. ai-crew has no CI, so the bash 3.2 gate is the local suite run on a Mac,
+# where /bin/bash is 3.2 and B32 always runs. A Linux-only run passing does NOT
+# cover bash 3.2. Deferred follow-up: a macOS CI job asserting /bin/bash is 3.x.
+if [[ -x /bin/bash ]] && [[ "$(/bin/bash -c 'echo ${BASH_VERSINFO[0]}')" -lt 4 ]]; then
+  # sanitize-archive: the pristine legacy fixture from case 20i plus the
+  # newline-named file from case 20w, in two identical copies.
+  for b32 in ref b32; do
+    mkdir -p "$TMP/b32-arc-$b32"
+    cp "$TMP/legacy-meta-before.json" "$TMP/b32-arc-$b32/task-old1.meta.json"
+    cp "$TMP/legacy-result-before.txt" "$TMP/b32-arc-$b32/task-old1.result.txt"
+    printf '# Codex Task\n\nJob: %s\nStatus: completed\nSummary: Investigate %s\n\nNo captured result payload was stored for this job.\n' \
+      "task-nl" "$SECRET" > "$TMP/b32-arc-$b32/$nlname.result.txt"
+  done
+  ref_out="$(bash "$CREW" sanitize-archive --dir "$TMP/b32-arc-ref" 2>&1)" && ref_rc=0 || ref_rc=$?
+  out="$(/bin/bash "$CREW" sanitize-archive --dir "$TMP/b32-arc-b32" 2>&1)" && rc=0 || rc=$?
+  if [[ "$rc" == 0 && "$ref_rc" == 0 ]] && ! grep -rq "$SECRET" "$TMP/b32-arc-b32" \
+     && [[ "${out//b32-arc-b32/X}" == "${ref_out//b32-arc-ref/X}" ]] \
+     && diff -r "$TMP/b32-arc-ref" "$TMP/b32-arc-b32" >/dev/null; then
+    echo "PASS: /bin/bash 3.2 sanitize-archive matches the suite's bash"; pass=$((pass + 1))
+  else
+    echo "FAIL: /bin/bash 3.2 sanitize-archive diverged (exit=$rc/$ref_rc; output: $out; ref: $ref_out)"; fail=$((fail + 1))
+  fi
+  cp -R "$TMP/b32-arc-b32" "$TMP/b32-arc-clean"
+  out="$(/bin/bash "$CREW" sanitize-archive --dir "$TMP/b32-arc-b32" 2>&1)" && rc=0 || rc=$?
+  if [[ "$rc" == 0 ]] && grep -q "0 rewritten" <<<"$out" \
+     && diff -r "$TMP/b32-arc-clean" "$TMP/b32-arc-b32" >/dev/null; then
+    echo "PASS: /bin/bash 3.2 sanitize-archive second pass is a no-op"; pass=$((pass + 1))
+  else
+    echo "FAIL: /bin/bash 3.2 sanitize-archive is not idempotent (exit=$rc; output: $out)"; fail=$((fail + 1))
+  fi
+
+  # reap --brokers: case 37's fake broker, under its own unique pattern.
+  B32_PAT="crewtest-b32broker-$$"
+  mkdir -p "$TMP/$B32_PAT"
+  echo 'setTimeout(() => {}, 60000);' > "$TMP/$B32_PAT/app-server-broker.mjs"
+  node "$TMP/$B32_PAT/app-server-broker.mjs" serve --endpoint "unix:$TMP/none.sock" --cwd "$GONE_WS" & B32_PID=$!
+  STUB_PIDS="$STUB_PIDS $B32_PID"
+  sleep 0.5
+  out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/sweep-clean" \
+    CREW_CODEX_BROKER_PATTERN="$B32_PAT" CREW_CODEX_SOCKET_GLOB="$TMP/sockets/cxc-*" \
+    /bin/bash "$CREW" reap --brokers 2>&1)" && rc=0 || rc=$?
+  check "/bin/bash 3.2 reap --brokers reports the fake broker" 0 "broker candidate: pid $B32_PID" "$rc" "$out"
+  check "/bin/bash 3.2 reap --brokers summary" 0 "reap brokers summary: 1 reported (nothing killed), 0 live (cwd exists), 0 unknown (cwd unreadable), 0 skipped" "$rc" "$out"
+  check "/bin/bash 3.2 reap --brokers survey ran" 0 "registry survey: every job record read cleanly and is terminal" "$rc" "$out"
+  kill "$B32_PID" 2>/dev/null || true
+  wait "$B32_PID" 2>/dev/null || true
+  # The clean message above is also what an EMPTY survey program prints, so it
+  # cannot tell "ran" from "no-op". Case 56d's fixture holds a running job: the
+  # 3.2 run must name it, byte-for-byte as the suite's own bash does.
+  ref_out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/gate-ws000" \
+    CREW_CODEX_BROKER_PATTERN="$NOMATCH" \
+    bash "$CREW" reap --brokers 2>&1)" && ref_rc=0 || ref_rc=$?
+  out="$(CLAUDE_CONFIG_DIR="$TMP/await" CLAUDE_PLUGIN_DATA="$TMP/gate-ws000" \
+    CREW_CODEX_BROKER_PATTERN="$NOMATCH" \
+    /bin/bash "$CREW" reap --brokers 2>&1)" && rc=0 || rc=$?
+  check "/bin/bash 3.2 reap --brokers survey names the non-terminal job" 0 "registry survey: non-terminal or unreadable record(s): ws-live/live-000(running)" "$rc" "$out"
+  if [[ "$(grep '^registry survey:' <<<"$out")" == "$(grep '^registry survey:' <<<"$ref_out")" && "$rc" == "$ref_rc" ]]; then
+    echo "PASS: /bin/bash 3.2 survey line matches the suite's bash"; pass=$((pass + 1))
+  else
+    echo "FAIL: /bin/bash 3.2 survey diverged (exit=$rc/$ref_rc; output: $out; ref: $ref_out)"; fail=$((fail + 1))
+  fi
+else
+  skip "bash 3.2 sanitize-archive and reap --brokers" "/bin/bash is absent or not bash 3.x"
+fi
 
 
 echo
