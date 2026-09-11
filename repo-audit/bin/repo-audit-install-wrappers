@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# repo-audit-install-wrappers — symlink this plugin's wrapper commands onto
+# PATH via ~/.local/bin, idempotently.
+#
+# Usage: repo-audit-install-wrappers
+#
+# Skill `allowed-tools` entries reference gh-read, git-read, repo-fetch, and
+# ai-readiness-package by bare name, so they must resolve on PATH. Either add
+# <plugin-root>/bin to PATH yourself, or run this once to symlink each
+# wrapper into ~/.local/bin (creating it if needed). Existing symlinks that
+# already point at this plugin's copy are left alone; anything else in the
+# way is reported, not overwritten.
+set -uo pipefail
+HERE="$(cd "$(dirname "$(readlink "$0" || echo "$0")")" && pwd)"
+TARGET_DIR="${HOME}/.local/bin"
+mkdir -p "$TARGET_DIR" || { echo "ERROR: cannot create $TARGET_DIR"; exit 1; }
+
+wrappers="gh-read git-read repo-fetch ai-readiness-package"
+status=0
+for w in $wrappers; do
+  src="$HERE/$w"
+  dst="$TARGET_DIR/$w"
+  if [ ! -f "$src" ]; then
+    echo "ERROR: $src not found — is this script inside the plugin's bin/?"
+    status=1
+    continue
+  fi
+  if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then
+    echo "OK (already linked): $dst -> $src"
+    continue
+  fi
+  if [ -e "$dst" ]; then
+    echo "SKIPPED (already exists, not our symlink): $dst"
+    status=1
+    continue
+  fi
+  ln -s "$src" "$dst" && echo "LINKED: $dst -> $src" || { echo "ERROR: failed to link $dst"; status=1; }
+done
+exit "$status"

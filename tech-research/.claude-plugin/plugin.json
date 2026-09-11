@@ -1,0 +1,8 @@
+{
+  "name": "tech-research",
+  "version": "0.1.0",
+  "description": "Interrogative, evidence-tiered research protocol for technology and vendor decisions, with seven specialised research agents.",
+  "author": {
+    "name": "Chris Steigerwald"
+  }
+}

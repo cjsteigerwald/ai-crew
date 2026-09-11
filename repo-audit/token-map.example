@@ -1,0 +1,15 @@
+# Per-org GitHub token map for the repo audit suite.
+#
+# One line per org: "<org> <ENV_VAR_NAME>". When an audit target's GitHub org
+# matches an entry here, the wrappers (gh-read, repo-fetch) use the named
+# environment variable as GH_TOKEN instead of gh's normal authentication —
+# useful when different orgs need different tokens (e.g. separate identities
+# per GitHub Enterprise install). An unmapped org falls back to gh's normal
+# auth. Unset lines are ignored.
+#
+# Copy this file to the location named by the `token_map` config key
+# (default ~/.claude/plugins/data/crew/token-map), edit it for your orgs, and
+# export the named variables in your shell before running an audit. Never
+# commit a real token-map with live org names next to real tokens.
+
+example-org GITHUB_TOKEN_EXAMPLE_ORG

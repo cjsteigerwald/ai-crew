@@ -1,0 +1,26 @@
+{
+  "research_root": "~/Research",
+  "research_state_dir": "~/.claude/tech-research-state",
+  "audit_output_root": "~/repo-audits",
+  "audit_cache_dir": "~/.cache/repo-audit",
+  "package_output_root": "~/ai-readiness",
+  "delivery_dir": "",
+  "token_map": "~/.claude/plugins/data/crew/token-map",
+  "org_allowlist": [],
+  "marketplaces": [
+    {
+      "name": "cjs-plugins",
+      "repo": "~/repos/ai-crew"
+    }
+  ],
+  "lanes": {
+    "scout": "claude-crew:claude-scout",
+    "reader": "claude-crew:claude-reader",
+    "implementer_haiku": "claude-crew:claude-implementer-haiku",
+    "implementer_sonnet": "claude-crew:claude-implementer-sonnet",
+    "implementer_opus": "claude-crew:claude-implementer-opus",
+    "writer": "code-writer",
+    "verifier": "fresh-verifier",
+    "adversary": "codex-adversary"
+  }
+}
