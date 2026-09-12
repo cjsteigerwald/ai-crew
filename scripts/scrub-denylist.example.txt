@@ -1,0 +1,35 @@
+# Example PRIVATE denylist for scripts/scrub-check.sh and
+# scripts/scrub-history.sh.
+#
+# Copy to (and edit at) the real location, which is deliberately OUTSIDE
+# this repository:
+#
+#   ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/data/crew/scrub-denylist.txt
+#
+# or point $SCRUB_DENYLIST at a path of your choosing.
+#
+# EVERY entry below is SYNTHETIC. This file is committed to a PUBLIC
+# repository, so it must never contain a real employer name, hostname,
+# ticket prefix, system code name, or personal handle — a denylist that
+# spells out the strings it hides publishes exactly those strings. The
+# generic classes that ARE safe to commit (home paths, RDP shares, UUIDs,
+# credential shapes) live in scripts/scrub-patterns.sh instead.
+#
+# Format: one entry per line, three TAB-separated fields
+#
+#   <name><TAB><flags><TAB><POSIX-ERE>
+#
+#   name   [A-Za-z0-9_-]+ — also the key used by scripts/scrub-allow.txt
+#          entries and the label printed on a hit.
+#   flags  "i" for case-insensitive matching, "-" for case-sensitive.
+#   regex  POSIX ERE, compatible with BOTH GNU and BSD grep -E: use \< \>
+#          for word boundaries, never the GNU-only \b, and never -P syntax.
+#
+# Blank lines and lines starting with "#" are ignored. The separators MUST
+# be literal tabs, not spaces.
+
+employer	i	\<acme\>|acmecorp|acme-internal
+employer-host	i	acmecorp\.com|\<[a-z0-9]{8}\.saas-vendor\.example\.com
+ticket-key	i	\<(acme|proj)[-_]?[0-9]+\>
+internal-system	i	\<(alpha|bravo)-(prod|test|dev)\>|\<codename\>
+user-handle	i	jdoe@example\.com|\<jdoe\>|\<janedoe\>

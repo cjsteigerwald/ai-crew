@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# gh-read — GET-only GitHub API reader for the repo audit suite.
+#
+# Usage: gh-read <endpoint> [--paginate] [--jq <expr>] [--raw] [--in <repo-dir>]
+# --in resolves {owner}/{repo} from another checkout (e.g. a repo-fetch clone).
+#
+# Only allow-listed endpoints are accepted; the request method is always GET;
+# secret values (`.secret`) are stripped before any caller-supplied jq runs; jq runs
+# with an empty environment and no module path so an expression cannot read tokens
+# or local files. `--raw` prints jq string results without JSON quoting (jq -r).
+#
+# Output contract (same as git-read), always on stdout:
+#   ERROR: ...     the call was refused or failed — read it as UNVERIFIED
+#   (no results)   the call succeeded and the projection is empty
+# The exit status is 0 whenever one of these lines was printed, so a skill's
+# pre-gathered command never fails to load; the ERROR: line is the signal.
+set -uo pipefail
+
+fail() {
+  echo "ERROR: gh-read: $1"
+  exit 0
+}
+
+# Resolve our own directory, following one level of symlink (e.g. from
+# ~/.local/bin) so _auth.sh and the vendored config library are found
+# relative to the real script, not the symlink's location. bash 3.2 has no
+# `readlink -f`, so this handles only an absolute-target symlink or none.
+HERE="$(cd "$(dirname "$(readlink "$0" || echo "$0")")" && pwd)"
+# shellcheck source=../lib/crew-config.sh
+source "$HERE/../lib/crew-config.sh"
+# shellcheck source=_auth.sh
+source "$HERE/_auth.sh"
+
+[ $# -ge 1 ] || fail "usage: gh-read <endpoint> [--paginate] [--jq <expr>] [--raw]" 2
+
+endpoint=$1
+shift
+paginate=()
+expr='.'
+raw=()
+dir=''
+while [ $# -gt 0 ]; do
+  case $1 in
+    --in) [ $# -ge 2 ] && [ -d "$2" ] || fail "--in needs an existing directory"; dir=$2; shift 2 ;;
+    --paginate) paginate=(--paginate); shift ;;
+    --jq) [ $# -ge 2 ] || fail "--jq needs an expression" 2; expr=$2; shift 2 ;;
+    --raw) raw=(-r); shift ;;
+    *) fail "unsupported argument: $1" 2 ;;
+  esac
+done
+
+name='[A-Za-z0-9_.-]+'
+owner_repo="repos/(\{owner\}|$name)/(\{repo\}|$name)"
+ref='[A-Za-z0-9_./-]+'
+path="(rulesets(/[0-9]+)?|rules/branches/$ref|branches(/$ref)?|environments(/$name)?"
+path+="|commits(/[0-9a-f]{7,40}(/pulls|/check-runs|/status)?)?|pulls(/[0-9]+(/reviews|/comments|/files|/commits)?)?"
+path+="|issues(/[0-9]+(/comments|/timeline|/events)?)?|codeowners/errors"
+path+="|secret-scanning/alerts(/[0-9]+(/locations)?)?|secret-scanning/push-protection-bypasses"
+path+="|dependabot/alerts(/[0-9]+)?|code-scanning/alerts(/[0-9]+)?|code-scanning/analyses"
+path+="|actions/permissions(/workflow)?|actions/runs(/[0-9]+(/jobs|/attempts/[0-9]+)?)?|actions/workflows(/$name/runs)?"
+path+="|releases|tags|collaborators|teams|deployments|vulnerability-alerts"
+path+="|automated-security-fixes|private-vulnerability-reporting)"
+query='(\?([A-Za-z0-9_=&.,:+%/<>-]|\{owner\}|\{repo\})*)?'
+
+if [[ $endpoint == *..* ]] ||
+  ! [[ $endpoint =~ ^($owner_repo(/$path)?|search/issues)$query$ ]]; then
+  fail "endpoint not allow-listed: $endpoint" 3
+fi
+
+# jq can read local files through its module system; refuse those constructs.
+if [[ $expr =~ (import|include|modulemeta|get_search_list|input_filename|\$__prog|\$__loc__) ]]; then
+  fail "jq expression uses a disallowed construct" 3
+fi
+
+# --in: resolve {owner}/{repo} from another checkout (e.g. a repo-fetch clone).
+if [ -n "$dir" ]; then
+  cd "$dir" || fail "cannot enter $dir"
+fi
+# Per-org token choice (see _auth.sh and the `token_map` config key).
+audit_apply_token "$(audit_owner_of_dir . 2>/dev/null)"
+hint=''
+[ -z "${AUDIT_TOKEN_NOTE:-}" ] || hint=" [$AUDIT_TOKEN_NOTE]"
+
+errf=$(mktemp) || exit 1
+trap 'rm -f "$errf"' EXIT
+
+# GitHub's search API has a strict secondary rate limit; a burst of audit calls can
+# trip it. Wait once and retry before reporting the read as failed.
+for attempt in 1 2; do
+  body=$(env -u GH_DEBUG -u DEBUG gh api --method GET ${paginate[@]+"${paginate[@]}"} "$endpoint" 2>"$errf")
+  rc=$?
+  [ $rc -ne 0 ] && [ $attempt -eq 1 ] && grep -qi 'rate limit' "$errf" || break
+  sleep 60
+done
+if [ $rc -ne 0 ]; then
+  echo "ERROR: gh api GET $endpoint failed (rc $rc): $(head -3 "$errf" | tr '\n' ' ')$hint"
+  exit 0
+fi
+
+out=$(printf '%s\n' "$body" \
+  | env -i jq 'walk(if type == "object" then del(.secret) else . end)' \
+  | env -i jq -L /nonexistent ${raw[@]+"${raw[@]}"} -- "$expr" 2>"$errf")
+rc=$?
+if [ $rc -ne 0 ]; then
+  echo "ERROR: jq failed (rc $rc): $(head -3 "$errf" | tr '\n' ' ')"
+  exit 0
+fi
+
+# An empty projection is a successful read with zero items — say so explicitly.
+if [ -z "$out" ]; then echo "(no results)"; else printf '%s\n' "$out"; fi

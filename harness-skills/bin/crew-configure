@@ -1,0 +1,304 @@
+#!/usr/bin/env bash
+# crew-configure — writer for the crew's shared JSON config file
+# (lib/crew-config.sh is the reader half; this is the only supported way to
+# mutate it). Bash 3.2 compatible; requires jq for anything that touches an
+# existing/new config file (not for `show` on an absent file).
+#
+# Usage:
+#   crew-configure show
+#   crew-configure set key=value [key=value...]
+#   crew-configure set-list key v1,v2[,...]
+#   crew-configure unset key
+#
+# Keys use dotted form for lane overrides (lanes.scout=my-org:my-scout).
+# org_allowlist and marketplaces are arrays and can only be written with
+# set-list, never set. marketplaces entries are "name:repo" pairs
+# (set-list marketplaces cjs-plugins:~/repos/ai-crew,other:~/repos/other).
+#
+# Safety:
+#   - An absent config file starts from {} — never from `jq ... /dev/null`,
+#     which succeeds with EMPTY output and would silently produce a
+#     zero-byte config.
+#   - An existing file that is not valid JSON is refused untouched (exit 3)
+#     — never partially overwritten.
+#   - An unknown key is refused (exit 2), listing the valid keys.
+#   - Writes go to a temp file in the same directory, then `mv` into place.
+#   - An exclusive lock (mkdir-based, portable) guards the read-modify-write
+#     so two concurrent writers cannot lose an update; removed on exit via
+#     trap, including on error paths.
+
+set -u
+
+BIN_HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=../lib/crew-config.sh
+. "$BIN_HERE/../lib/crew-config.sh"
+
+PROG="crew-configure"
+
+VALID_SCALAR_KEYS="research_root research_state_dir audit_output_root audit_cache_dir package_output_root delivery_dir token_map"
+VALID_ARRAY_KEYS="org_allowlist marketplaces"
+VALID_LANE_KEYS="scout reader implementer_haiku implementer_sonnet implementer_opus writer verifier adversary"
+
+usage() {
+  cat >&2 <<EOF
+usage: $PROG show
+       $PROG set key=value [key=value...]
+       $PROG set-list key v1,v2[,...]
+       $PROG unset key
+EOF
+  exit 2
+}
+
+list_valid_keys() {
+  {
+    for k in $VALID_SCALAR_KEYS; do echo "  $k"; done
+    for k in $VALID_ARRAY_KEYS; do echo "  $k  (array — use set-list)"; done
+    for k in $VALID_LANE_KEYS; do echo "  lanes.$k"; done
+  } >&2
+}
+
+is_scalar_key() {
+  case " $VALID_SCALAR_KEYS " in
+    *" $1 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_array_key() {
+  case " $VALID_ARRAY_KEYS " in
+    *" $1 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_lane_key() {
+  case " $VALID_LANE_KEYS " in
+    *" $1 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+require_jq() {
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "$PROG: jq is required for this command" >&2
+    exit 3
+  fi
+}
+
+CFG="$(crew_config_path)"
+LOCKDIR="${CFG}.lock"
+
+LOCK_HELD=0
+release_lock() {
+  if [ "$LOCK_HELD" -eq 1 ]; then
+    rmdir "$LOCKDIR" 2>/dev/null || true
+  fi
+}
+trap release_lock EXIT
+
+acquire_lock() {
+  mkdir -p "$(dirname "$CFG")"
+  tries=0
+  while ! mkdir "$LOCKDIR" 2>/dev/null; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge 50 ]; then
+      echo "$PROG: could not acquire lock $LOCKDIR (another instance running?)" >&2
+      exit 1
+    fi
+    sleep 0.1
+  done
+  LOCK_HELD=1
+}
+
+# Reads $CFG into a valid-JSON base document, printed on stdout. Absent file
+# -> "{}" (never a zero-byte jq-on-/dev/null accident). Existing but
+# malformed file -> refuse, exit 3, leaving the file untouched.
+load_base() {
+  if [ ! -f "$CFG" ]; then
+    printf '{}'
+    return 0
+  fi
+  if ! jq -e . >/dev/null 2>&1 <"$CFG"; then
+    echo "$PROG: $CFG is not valid JSON — refusing to modify" >&2
+    exit 3
+  fi
+  cat "$CFG"
+}
+
+# Writes $1 (a JSON document, already validated by jq) atomically to $CFG.
+write_atomic() {
+  doc="$1"
+  dir="$(dirname "$CFG")"
+  tmp="$(mktemp "$dir/.crew-config.XXXXXX")"
+  printf '%s\n' "$doc" > "$tmp"
+  mv "$tmp" "$CFG"
+}
+
+cmd_show() {
+  echo "config file: $CFG"
+  if [ ! -f "$CFG" ]; then
+    echo "absent"
+    return 0
+  fi
+  require_jq
+  if ! jq -e . >/dev/null 2>&1 <"$CFG"; then
+    echo "$PROG: $CFG is not valid JSON" >&2
+    return 3
+  fi
+  jq . "$CFG"
+}
+
+cmd_set() {
+  [ $# -ge 1 ] || usage
+  require_jq
+  acquire_lock
+
+  jq_args=()
+  filter=""
+  i=0
+  for pair in "$@"; do
+    case "$pair" in
+      *=*) : ;;
+      *)
+        echo "$PROG: invalid set argument '$pair' (expected key=value)" >&2
+        exit 2
+        ;;
+    esac
+    key="${pair%%=*}"
+    val="${pair#*=}"
+
+    case "$key" in
+      lanes.*)
+        sub="${key#lanes.}"
+        if ! is_lane_key "$sub"; then
+          echo "$PROG: unknown lane key '$key'" >&2
+          list_valid_keys
+          exit 2
+        fi
+        target=".lanes.${sub}"
+        ;;
+      lanes)
+        echo "$PROG: 'lanes' is an object — set a lane directly, e.g. lanes.scout=<value>" >&2
+        exit 2
+        ;;
+      *)
+        if is_array_key "$key"; then
+          echo "$PROG: '$key' is an array — use: $PROG set-list $key v1,v2" >&2
+          exit 2
+        fi
+        if ! is_scalar_key "$key"; then
+          echo "$PROG: unknown key '$key'" >&2
+          list_valid_keys
+          exit 2
+        fi
+        target=".${key}"
+        ;;
+    esac
+
+    i=$((i + 1))
+    varname="v$i"
+    jq_args+=(--arg "$varname" "$val")
+    if [ -n "$filter" ]; then
+      filter="${filter} | "
+    fi
+    filter="${filter}${target} = \$${varname}"
+  done
+
+  base="$(load_base)" || exit $?
+  doc="$(printf '%s' "$base" | jq "${jq_args[@]}" "$filter")" || {
+    echo "$PROG: jq failed to apply the update" >&2
+    exit 1
+  }
+  write_atomic "$doc"
+  echo "wrote $CFG"
+  jq . "$CFG"
+}
+
+cmd_set_list() {
+  [ $# -eq 2 ] || usage
+  require_jq
+  acquire_lock
+
+  key="$1"
+  csv="$2"
+
+  if ! is_array_key "$key"; then
+    if is_scalar_key "$key" || { case "$key" in lanes*) true ;; *) false ;; esac; }; then
+      echo "$PROG: '$key' is not an array — use: $PROG set $key=<value>" >&2
+    else
+      echo "$PROG: unknown key '$key'" >&2
+      list_valid_keys
+    fi
+    exit 2
+  fi
+
+  base="$(load_base)" || exit $?
+
+  case "$key" in
+    org_allowlist)
+      doc="$(printf '%s' "$base" | jq --arg csv "$csv" \
+        '.org_allowlist = ($csv | split(",") | map(select(length > 0)))')" || {
+        echo "$PROG: jq failed to apply the update" >&2
+        exit 1
+      }
+      ;;
+    marketplaces)
+      doc="$(printf '%s' "$base" | jq --arg csv "$csv" \
+        '.marketplaces = ($csv | split(",") | map(select(length > 0) | split(":") | {name: .[0], repo: (.[1:] | join(":"))}))')" || {
+        echo "$PROG: jq failed to apply the update" >&2
+        exit 1
+      }
+      ;;
+  esac
+
+  write_atomic "$doc"
+  echo "wrote $CFG"
+  jq . "$CFG"
+}
+
+cmd_unset() {
+  [ $# -eq 1 ] || usage
+  require_jq
+  acquire_lock
+
+  key="$1"
+  case "$key" in
+    lanes.*)
+      sub="${key#lanes.}"
+      if ! is_lane_key "$sub"; then
+        echo "$PROG: unknown lane key '$key'" >&2
+        list_valid_keys
+        exit 2
+      fi
+      target=".lanes.${sub}"
+      ;;
+    *)
+      if ! is_scalar_key "$key" && ! is_array_key "$key" && [ "$key" != "lanes" ]; then
+        echo "$PROG: unknown key '$key'" >&2
+        list_valid_keys
+        exit 2
+      fi
+      target=".${key}"
+      ;;
+  esac
+
+  base="$(load_base)" || exit $?
+  doc="$(printf '%s' "$base" | jq "del(${target})")" || {
+    echo "$PROG: jq failed to apply the update" >&2
+    exit 1
+  }
+  write_atomic "$doc"
+  echo "wrote $CFG"
+  jq . "$CFG"
+}
+
+[ $# -ge 1 ] || usage
+sub="$1"
+shift
+case "$sub" in
+  show) cmd_show "$@" ;;
+  set) cmd_set "$@" ;;
+  set-list) cmd_set_list "$@" ;;
+  unset) cmd_unset "$@" ;;
+  *) usage ;;
+esac

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+
+# Never commit the PRIVATE denylist or the PRIVATE history allowlist. Both
+# spell out exactly the strings the scanners exist to keep out of a public
+# repo; their real homes are outside this tree (see README § Contributing
+# plugins). scrub-check.sh exits 2 if it finds the denylist inside a scanned
+# target — this is the belt to that braces.
+scripts/scrub-denylist.txt
+scripts/scrub-allow-history.txt

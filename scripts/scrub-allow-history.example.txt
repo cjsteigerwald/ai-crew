@@ -1,0 +1,35 @@
+# Example PRIVATE history-only allowlist for scripts/scrub-history.sh.
+#
+# Copy to (and edit at) the real location, which is deliberately OUTSIDE
+# this repository:
+#
+#   ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/data/crew/scrub-allow-history.txt
+#
+# or point $SCRUB_ALLOW_HISTORY at a path of your choosing.
+#
+# WHY THIS FILE IS PRIVATE. scripts/scrub-allow.txt covers the working
+# tree, and `scrub-check.sh --check-allowlist` deletes entries there that
+# stop matching, so it stays honest. History is different: an entry for
+# content that exists only in an already-published commit can never expire,
+# and writing it down means writing down the value being excused. In a
+# public repository that re-publishes exactly what the denylist exists to
+# hide. So history-only exceptions live here, next to the private denylist,
+# and scrub-check.sh never reads this file at all.
+#
+# EVERY entry below is SYNTHETIC. Same format as scrub-allow.txt:
+#
+#   <pattern-name>:<path-regex>[:<match-regex>]
+#
+# Always write the third field. No lint reads THIS file —
+# `scrub-check.sh --check-allowlist` only ever sees the allowlist it is
+# given with --allow, and the real copy of this one lives outside the
+# repository — so nothing here is checked for you. A bare path excuses
+# every present AND future value of that class in the file, and a wildcard
+# third field (".*", "[A-Z0-9]+") does the same while looking scoped.
+#
+# Do NOT copy this file to scripts/scrub-allow-history.txt. Nothing reads
+# that path; it is ordinary content that a `git add -A` would publish, and
+# .gitignore lists it for exactly that reason.
+
+home-path:^vendor/tests/fixtures\.sh$:/home/jdoe/
+employer:^vendor/tests/fixtures\.sh$:projects/acme|acme-deadbeef

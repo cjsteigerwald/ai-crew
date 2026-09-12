@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# git-read — read-only git for the repo audit suite.
+#
+# Usage: git-read <subcommand> [git args...] [--match <ERE>] [--exclude <ERE>]
+#                 [--icase] [--limit <N>] [--count] [--in <repo-dir>]
+# --in runs against another checkout (e.g. a repo-fetch clone) instead of the cwd.
+#
+# Only read-only subcommands are accepted. Pagers, external diff drivers, textconv
+# filters, fsmonitor hooks, and global/system config are disabled so a hostile repo
+# cannot make a read execute code. Filtering happens here, not in a shell pipeline,
+# so a failure is always visible. Output contract, always on stdout:
+#   ERROR: ...        refused or failed — read it as UNVERIFIED
+#   (no matches)      git succeeded; nothing matched
+#   (showing L of N)  output was truncated (default limit 200 lines)
+# The exit status is 0 whenever one of these lines was printed, so a skill's
+# pre-gathered command never fails to load; the ERROR: line is the signal.
+set -uo pipefail
+
+err() { echo "ERROR: git-read: $1"; exit 0; }
+
+[ $# -ge 1 ] || err "usage: git-read <subcommand> [args...] [--match ERE] [--exclude ERE] [--icase] [--limit N] [--count]"
+
+sub=$1
+shift
+match='' exclude='' limit=200 count=0 gflags=(-E) args=() dir=.
+while [ $# -gt 0 ]; do
+  case $1 in
+    --in) [ $# -ge 2 ] && [ -d "$2" ] || err "--in needs an existing directory"; dir=$2; shift 2 ;;
+    --match) [ $# -ge 2 ] || err "--match needs an expression"; match=$2; shift 2 ;;
+    --exclude) [ $# -ge 2 ] || err "--exclude needs an expression"; exclude=$2; shift 2 ;;
+    --icase) gflags=(-iE); shift ;;
+    --limit) [[ ${2:-} =~ ^[0-9]+$ ]] || err "--limit needs a number"; limit=$2; shift 2 ;;
+    --count) count=1; shift ;;
+    --output* | -O* | --open-files-in-pager* | --textconv | --ext-diff | --no-index | --exec* | --upload-pack* | --contents*)
+      err "refused argument: $1" ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+
+safe=()
+case $sub in
+  log | show) safe=(--no-ext-diff --no-textconv) ;;
+  grep | blame) safe=(--no-textconv) ;;
+  ls-files | ls-tree | shortlog | rev-parse | rev-list | merge-base | for-each-ref | check-mailmap) ;;
+  cat-file)
+    [[ ${args[0]:-} == -t || ${args[0]:-} == -s || ${args[0]:-} == -e ]] || err "cat-file allows only -t/-s/-e" ;;
+  tag)
+    [[ ${args[0]:-} == -l || ${args[0]:-} == --list ]] || err "tag requires -l/--list" ;;
+  remote)
+    err "remote is not allowed — resolve identity with gh-read" ;;
+  *) err "subcommand not allowed: $sub" ;;
+esac
+
+tmp=$(mktemp -d) || err "cannot create temp dir"
+trap 'rm -rf "$tmp"' EXIT
+
+env -u GIT_EXTERNAL_DIFF GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+  GIT_PAGER=cat PAGER=cat GIT_OPTIONAL_LOCKS=0 \
+  git -C "$dir" -c core.fsmonitor=false -c core.pager=cat -c color.ui=never --no-pager \
+  "$sub" ${safe[@]+"${safe[@]}"} ${args[@]+"${args[@]}"} >"$tmp/out" 2>"$tmp/err"
+rc=$?
+
+# git grep exits 1 for "no matches"; merge-base --is-ancestor exits 1 for "no".
+# Anything else non-zero is a failure.
+if [ $rc -ne 0 ]; then
+  if [[ $sub == grep && $rc -eq 1 && ! -s $tmp/err ]]; then
+    :
+  elif [[ $sub == merge-base && $rc -eq 1 && ! -s $tmp/err ]]; then
+    echo "false"
+    exit 0
+  else
+    err "git $sub failed (rc $rc): $(head -5 "$tmp/err" | tr '\n' ' ')"
+  fi
+elif [[ $sub == merge-base && " ${args[*]} " == *" --is-ancestor "* ]]; then
+  echo "true"
+  exit 0
+fi
+
+# Second line of defence: mask common credential shapes before anything is printed.
+sed -E \
+  -e 's#(://)[^/@[:space:]]+@#\1<redacted>@#g' \
+  -e 's#((password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret|connection[_-]?string|sas)["'\'']?[[:space:]]*[:=][[:space:]]*)["'\'']?[^"'\''[:space:],;]+#\1<redacted>#Ig' \
+  -e 's#AKIA[0-9A-Z]{16}#<redacted-aws-key>#g' \
+  -e 's#gh[pousr]_[A-Za-z0-9]{36,}#<redacted-github-token>#g' \
+  -e 's#github_pat_[A-Za-z0-9_]{40,}#<redacted-github-token>#g' \
+  -e 's#xox[abprs]-[A-Za-z0-9-]{10,}#<redacted-slack-token>#g' \
+  -e 's#-----BEGIN [A-Z ]*PRIVATE KEY-----#<redacted-private-key>#g' \
+  -e 's#(AccountKey|SharedAccessKey|sig)=[^;&[:space:]]+#\1=<redacted>#g' \
+  "$tmp/out" >"$tmp/red"
+
+filtered=$tmp/red
+if [ -n "$match" ]; then
+  grep ${gflags[@]+"${gflags[@]}"} -e "$match" "$filtered" >"$tmp/m"
+  [ $? -le 1 ] || err "invalid --match expression"
+  filtered=$tmp/m
+fi
+if [ -n "$exclude" ]; then
+  grep -v ${gflags[@]+"${gflags[@]}"} -e "$exclude" "$filtered" >"$tmp/x"
+  [ $? -le 1 ] || err "invalid --exclude expression"
+  filtered=$tmp/x
+fi
+
+total=$(wc -l <"$filtered")
+if [ $count -eq 1 ]; then
+  echo "$total"
+elif [ "$total" -eq 0 ]; then
+  echo "(no matches)"
+else
+  head -n "$limit" "$filtered"
+  [ "$total" -le "$limit" ] || echo "(showing $limit of $total lines)"
+fi
+[ ! -s "$tmp/err" ] || sed 's/^/STDERR: /' "$tmp/err" | head -5
+exit 0

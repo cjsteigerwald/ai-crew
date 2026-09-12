@@ -50,6 +50,30 @@ unset CLAUDE_PLUGIN_DATA CREW_CODEX_ARCHIVE_DIR CREW_CODEX_BROKER_PATTERN \
 # effortConfig assertions depend on the machine.
 mkdir -p "$TMP/no-codex-home"
 export CODEX_HOME="$TMP/no-codex-home"
+# Default CLAUDE_CONFIG_DIR to a RESOLVABLE fixture for the same reason.
+# crew-codex resolves the codex companion through
+# $CLAUDE_CONFIG_DIR/plugins/installed_plugins.json (bin/crew-codex: the
+# manifest must exist, must carry codex@openai-codex, and that entry's
+# installPath must hold scripts/codex-companion.mjs) and exits 1 with
+# "install the official Codex plugin first" when it does not — for EVERY
+# subcommand, sanitize-archive included. So each case that does not pin its own
+# config dir — the whole sanitize-archive group — silently required the
+# developer's real ~/.claude to have the codex plugin installed. Where it does
+# not (a CI runner, a fresh machine), 15 secret-scrubbing assertions died at
+# that precondition instead of running, and the suite reported them as ordinary
+# failures. This fixture satisfies the resolver while pointing at nothing real.
+# ⚠️ Its companion is a stub that REFUSES to run: a case reaching an actual
+# dispatch through this default is using the wrong fixture, and must say so
+# loudly rather than pass against a companion that does nothing. Cases that
+# need a working companion keep pinning their own CLAUDE_CONFIG_DIR.
+mkdir -p "$TMP/resolvable/plugins" "$TMP/resolvable/install/scripts"
+cat > "$TMP/resolvable/install/scripts/codex-companion.mjs" <<'EOF'
+console.error("crew tests: the shared resolvable fixture's companion was invoked — this case must pin its own CLAUDE_CONFIG_DIR");
+process.exit(97);
+EOF
+echo "{\"version\":2,\"plugins\":{\"codex@openai-codex\":[{\"installPath\":\"$TMP/resolvable/install\"}]}}" \
+  > "$TMP/resolvable/plugins/installed_plugins.json"
+export CLAUDE_CONFIG_DIR="$TMP/resolvable"
 
 # ⚠️ EVERY `reap --brokers` case must pin CREW_CODEX_BROKER_PATTERN. The default
 # is the real `app-server-broker` pattern, so an unpinned case would pgrep the
@@ -2518,12 +2542,12 @@ gate_turn_effort() {
 }
 
 # 58a: a Terraform-only change is labelled and runs at exactly the requested medium.
-out="$(run_gate "infra/edp/main.tf,infra/edp/prod.tfvars" "STUB-DIFF" \
+out="$(run_gate "infra/svc/main.tf,infra/svc/prod.tfvars" "STUB-DIFF" \
   adversarial-review --effort medium --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
 check "terraform change keeps --effort medium" 0 "^medium\$" "$rc" "$(gate_turn_effort)"
 check "terraform label is announced" 0 "sensitivity classifier: this diff matches sensitive rules" "$rc" "$out"
 check_absent "terraform label raises nothing" "$out" "raising --effort"
-check "terraform label names the triggering path" 0 "infra/edp/main.tf" "$rc" "$out"
+check "terraform label names the triggering path" 0 "infra/svc/main.tf" "$rc" "$out"
 check "terraform label names the rule" 0 "terraform:" "$rc" "$out"
 check "terraform label still dispatches the review" 0 "RENDERED Adversarial Review" "$rc" "$out"
 check "label says it is informational" 0 "Informational only" "$rc" "$out"
@@ -2593,10 +2617,10 @@ check_absent "plain source change was not escalated" "$out" "xhigh"
 
 # 58f: an explicit xhigh on a sensitive diff runs at xhigh — the orchestrator's
 # choice — and is labelled, never described as changed.
-out="$(run_gate "infra/edp/main.tf" "STUB-DIFF" \
+out="$(run_gate "infra/svc/main.tf" "STUB-DIFF" \
   adversarial-review --effort xhigh --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
 check "explicit xhigh survives the gate" 0 "^xhigh\$" "$rc" "$(gate_turn_effort)"
-check "explicit xhigh on a sensitive diff is still labelled" 0 "terraform: infra/edp/main.tf" "$rc" "$out"
+check "explicit xhigh on a sensitive diff is still labelled" 0 "terraform: infra/svc/main.tf" "$rc" "$out"
 check_absent "explicit xhigh is never described as raised" "$out" "raising --effort"
 
 # 58g: FAIL CLOSED. A context that reports changed files it cannot name leaves
@@ -2612,7 +2636,7 @@ check "unclassifiable diff says why it escalated" 0 "unclassifiable-diff" "$rc" 
 # that no longer exists; a value left in a shell profile is reported as dead
 # and changes nothing — the review runs at the requested effort either way.
 export CREW_CODEX_SENSITIVITY_OVERRIDE="re-run of an already-reviewed diff"
-out="$(run_gate "infra/edp/main.tf" "STUB-DIFF" \
+out="$(run_gate "infra/svc/main.tf" "STUB-DIFF" \
   adversarial-review --effort low --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
 unset CREW_CODEX_SENSITIVITY_OVERRIDE
 check "retired override keeps the requested effort" 0 "^low\$" "$rc" "$(gate_turn_effort)"
@@ -2652,7 +2676,7 @@ check "unreadable diff body still dispatches the review" 0 "RENDERED Adversarial
 # itself then fails on the same collector — the assertion is on the gate's
 # stderr, which is emitted before the dispatch.
 export CREW_TEST_COLLECT_THROW=all
-out="$(run_gate "infra/edp/main.tf" "STUB-DIFF" \
+out="$(run_gate "infra/svc/main.tf" "STUB-DIFF" \
   adversarial-review --effort low --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
 unset CREW_TEST_COLLECT_THROW
 # Not `check ... 0 ...`: the run's OWN collection fails on the same collector,
@@ -2706,7 +2730,7 @@ check "the unattributable hit is labelled as such" 0 "unattributed diff content"
 
 # 58o: `--effort none` on a sensitive diff is NOT raised any more, so the
 # strict-model warning about the effort actually sent must still fire.
-out="$(run_gate "infra/edp/main.tf" "STUB-DIFF" \
+out="$(run_gate "infra/svc/main.tf" "STUB-DIFF" \
   adversarial-review --effort none --model gpt-6-astra "focus")" && rc=0 || rc=$?
 check "none on a sensitive diff runs at none" 0 "^none\$" "$rc" "$(gate_turn_effort)"
 check "none on a sensitive diff still warns about the API" 0 "rejected by gpt-6-astra" "$rc" "$out"
@@ -2831,7 +2855,7 @@ HELM_DIFF='### charts/app/values.yaml
 CFN_DIFF='### deploy/stack.yaml
 AWSTemplateFormatVersion: "2010-09-09"'
 effort_fixtures=(
-  "infra/edp/main.tf,infra/edp/prod.tfvars|STUB|"
+  "infra/svc/main.tf,infra/svc/prod.tfvars|STUB|"
   "infra/deploy.bicep|STUB|"
   "deploy/manifest.yaml|K8S_DIFF|"
   ".github/workflows/deploy.yml|STUB|"
@@ -2851,7 +2875,7 @@ effort_fixtures=(
   "config/app.txt|CRED_DIFF|"
   "charts/app/values.yaml|HELM_DIFF|"
   "deploy/stack.yaml|CFN_DIFF|"
-  "infra/edp/main.tf,src/auth/session.ts|STUB|"
+  "infra/svc/main.tf,src/auth/session.ts|STUB|"
 )
 effort_bad=""
 effort_runs=0
@@ -2904,7 +2928,7 @@ check_absent "a plain diff is not labelled" "$out" "sensitivity classifier"
 
 # A mixed Terraform + auth diff at low stays low, and the job record and job log
 # carry BOTH labels.
-out="$(run_gate "infra/edp/main.tf,src/auth/session.ts" "STUB-DIFF" \
+out="$(run_gate "infra/svc/main.tf,src/auth/session.ts" "STUB-DIFF" \
   adversarial-review --effort low --model gpt-5.6-sol "focus")" && rc=0 || rc=$?
 check "mixed terraform+auth diff at low stays low" 0 "^low\$" "$rc" "$(gate_turn_effort)"
 if python3 -c "
