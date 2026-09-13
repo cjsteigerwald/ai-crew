@@ -1,0 +1,24 @@
+# Credential-shaped literals that are DOCUMENTED PUBLIC EXAMPLES, not
+# secrets. Read by scripts/scrub-patterns.sh only, and used for exactly one
+# purpose: deciding whether the match-regex field of an allow entry may be
+# exempt from scanning.
+#
+# Without this list, "only the third field is exempt" would still let a
+# real credential be laundered into the repository by parking it in the
+# match-regex field of a plausible-looking allow entry. With it, a third
+# field that contains anything secret-shaped is exempt ONLY when every
+# secret-shaped part of it is one of the literals below; otherwise the
+# whole line is scanned and the hit is reported at the allow-file line.
+#
+# One POSIX ERE per line; blank lines and lines starting with # ignored.
+# Add an entry here only for a value that is published, by its vendor, AS
+# an example — never for a real credential that happens to be revoked.
+
+# AWS's canonical documentation example access key, and the adjacent
+# variant codex-crew's own tests use to prove redaction of a SECOND key.
+AKIAIOSFODNN7EXAMPLE
+AKIAIOSFODNN7SECRETV
+
+# A bare PEM header with no key material after it — a placeholder, used to
+# prove that header-shaped text is detected.
+-+BEGIN [A-Z ]+PRIVATE KEY-+

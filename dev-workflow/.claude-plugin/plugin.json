@@ -1,0 +1,8 @@
+{
+  "name": "dev-workflow",
+  "version": "0.1.0",
+  "description": "Engineering workflow skills (PR gates, orchestrated plan implementation, incident investigation and write-ups, skill retrospectives, Copilot readiness) plus the cold-context verifier, adversarial reviewer, worker, and specialist review agents.",
+  "author": {
+    "name": "Chris Steigerwald"
+  }
+}

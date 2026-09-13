@@ -1,0 +1,70 @@
+# Deliberate scrub-check / scrub-history exceptions. One per line:
+#
+#   <pattern-name>:<path-regex>[:<match-regex>]
+#
+# Blank lines and lines starting with # are ignored. The split is on the
+# FIRST colon (name) and then the FIRST colon of the remainder (path), so a
+# path-regex may not contain a colon.
+#
+# Every entry is scoped to a specific pattern AND a specific path — never a
+# blanket "allow this whole directory" line. Where the exception is really
+# about ONE value (a documented example credential, a public handle in an
+# install command), add the third field: the hit is then allowed only if
+# deleting every <match-regex> occurrence from the line leaves nothing the
+# denylist pattern still matches. A second, different secret on the same
+# line still fails.
+#
+# `scrub-check.sh --allow scripts/scrub-allow.txt --check-allowlist .`
+# reports any entry here that suppressed nothing, so dead exceptions cannot
+# accumulate. Run it WITH the private denylist loaded (--require-private) —
+# the entries below keyed on private pattern names (employer, user-handle,
+# ...) are inert, and would look dead, without it.
+
+# The generic pattern table has to spell out the classes it greps for, and
+# the rdp-share regex contains a literal share path — self-matching is
+# unavoidable there, not a leak. The other generic classes no longer
+# self-match (their regexes are written as character classes), so they have
+# no entry here.
+rdp-share:^scripts/scrub-patterns\.sh$
+
+# scrub-check.sh's own fixture test deliberately writes one hit per generic
+# pattern class to prove the scanner catches it — synthetic data, by design.
+# Its organisation-shaped fixtures are synthetic too (acme / jdoe), so they
+# need no entry: they only match the test's own throwaway private denylist.
+# The credential classes are VALUE-scoped, so adding a new synthetic secret
+# to a test file fails the scan until it is listed here deliberately —
+# `--check-allowlist` rejects a bare-path exception for secret-shape or
+# home-path outright.
+home-path:^scripts/tests/test-scrub-check\.sh$:/home/(bob|carol|dave|eve)/
+rdp-share:^scripts/tests/test-scrub-check\.sh$
+uuid:^scripts/tests/test-scrub-check\.sh$
+secret-shape:^scripts/tests/test-scrub-check\.sh$:AKIA(ABCDEFGHIJKLMNOP|EMPTYFIELDTEST01|IOSFODNN7(EXAMPLE|SECRETV)|YYYYYYYYYYYYYYYY|ZZZZZZZZZZZZZZZZ)
+
+# scrub-history.sh's own fixture test builds disposable throwaway git repos
+# containing fake secret commits, to prove the history scanner catches
+# (and, allowlisted, suppresses) a historical hit — synthetic, by design.
+secret-shape:^scripts/tests/test-scrub-history\.sh$:AKIA(ABCDEFGHIJKLMNOP|ALLOWFILETESTVAL|BINARYNEIGHBORAA|COMMENTLAUNDERED1|DEVNULLSHAPED012|EMPTYFIELDTEST01|HISTORYALLOWTEST|IOSFODNN7(EXAMPLE|SECRETV)|LAUNDEREDVIAFIELD|MERGERESOLUTION1|MINUSMINUSAAAAAA|PLUSPLUSAAAAAAAA)
+
+# README.md's own prose names the [[wikilink]] syntax as an example while
+# documenting the dangling-link check — it isn't a real skill/agent
+# reference, so it will never resolve.
+dangling-link:^README\.md$
+
+# codex-crew's own test fixtures use fake-but-pattern-shaped data to prove
+# codex-crew's OWN secret-redaction logic: AWS's canonical documentation
+# example access key, a near-identical second one, and a placeholder RSA
+# key header. Value-scoped — any OTHER credential shape in the same file
+# still fails.
+secret-shape:^codex-crew/tests/run\.sh$:AKIAIOSFODNN7(EXAMPLE|SECRETV)
+secret-shape:^codex-crew/tests/run\.sh$:-+BEGIN [A-Z ]+PRIVATE KEY-+
+
+# scrub-public-examples.txt lists, by design, the documented public example
+# credentials the scanners will tolerate in an allow entry's third field.
+# It has to name them to do its job.
+secret-shape:^scripts/scrub-public-examples\.txt$:AKIAIOSFODNN7(EXAMPLE|SECRETV)
+
+# The two *.example.txt files show the shape of the private denylist and
+# the private history allowlist. They are documentation, not files any
+# scanner loads, so they get no field-level exemption — their one
+# synthetic sample value is listed here explicitly instead.
+home-path:^scripts/scrub-allow-history\.example\.txt$:/home/jdoe/

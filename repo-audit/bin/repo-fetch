@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# repo-fetch — resolve an audit target to a local git directory.
+#
+# Usage: repo-fetch <https-url | git@github.com:org/repo | org/repo | local-path>
+#
+# A local path is used as-is and never modified (audit a working branch this way).
+# Anything else becomes a blobless partial clone — full commit history, file contents
+# fetched on demand — cached under the `audit_cache_dir` config key (default
+# ~/.cache/repo-audit/<org>-<repo>) and refreshed on each call, checked out detached
+# at the default-branch tip. Never use --depth: it breaks every history metric.
+# Submodules, hooks, global/system git config, and filter drivers are not used.
+#
+# Prints on stdout:  REPO_DIR=… / IDENTITY=<org>/<repo> / ID=<org>-<repo> /
+#                    SHA=… / SOURCE=clone|cache|local /
+#                    AUDIT_OUTPUT_ROOT=… (the resolved `audit_output_root`
+#                    config key, default ~/repo-audits — callers use this
+#                    value instead of hardcoding the default, so they agree
+#                    with anything else that reads the same config key)
+# On failure prints "ERROR: …" and exits 0 (the audit suite's wrapper contract).
+set -uo pipefail
+# Resolve our own directory, following one level of symlink (e.g. from
+# ~/.local/bin) — bash 3.2 has no `readlink -f`.
+here=$(cd "$(dirname "$(readlink "$0" || echo "$0")")" && pwd)
+# shellcheck source=../lib/crew-config.sh
+source "$here/../lib/crew-config.sh"
+# shellcheck source=_auth.sh
+source "$here/_auth.sh"
+
+err() { echo "ERROR: repo-fetch: $1"; exit 0; }
+[ $# -eq 1 ] || err "usage: repo-fetch <url | org/repo | local-path>"
+target=$1
+
+g() {
+  env -u GIT_EXTERNAL_DIFF GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_TERMINAL_PROMPT=0 GIT_PAGER=cat \
+    git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c protocol.file.allow=never \
+    -c credential.helper= -c 'credential.helper=!gh auth git-credential' "$@"
+}
+
+emit() {  # dir identity source
+  local sha
+  sha=$(g -C "$1" rev-parse HEAD 2>&1) || err "cannot read HEAD in $1: $sha"
+  echo "REPO_DIR=$1"
+  echo "IDENTITY=$2"
+  echo "ID=${2/\//-}"
+  echo "SHA=$sha"
+  echo "SOURCE=$3"
+  echo "AUDIT_OUTPUT_ROOT=$(crew_config_get audit_output_root)"
+  [ -z "${AUDIT_TOKEN_NOTE:-}" ] || echo "AUTH=$AUDIT_TOKEN_NOTE"
+  exit 0
+}
+
+# Local path: use as-is.
+if [ -d "$target" ]; then
+  dir=$(cd "$target" && pwd -P)
+  [ "$(g -C "$dir" rev-parse --is-inside-work-tree 2>&1)" = true ] || err "$dir is not a git work tree"
+  dir=$(g -C "$dir" rev-parse --show-toplevel)
+  owner=$(audit_owner_of_dir "$dir")
+  url=$(g -C "$dir" config --get remote.origin.url 2>/dev/null)
+  url=${url%.git}
+  repo=${url##*/}
+  if [ -n "$owner" ] && [ -n "$repo" ] && [[ $url == *github.com* ]]; then
+    emit "$dir" "$owner/$repo" local
+  fi
+  emit "$dir" "local/$(basename "$(dirname "$dir")")-$(basename "$dir")" local
+fi
+
+# Remote: normalise to org/repo.
+slug=$target
+slug=${slug%.git}
+slug=${slug%/}
+slug=${slug#https://github.com/}
+slug=${slug#http://github.com/}
+slug=${slug#git@github.com:}
+slug=${slug#github.com/}
+[[ $slug =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || err "not a GitHub repo URL, org/repo, or existing directory: $target"
+owner=${slug%%/*}
+audit_apply_token "$owner"
+cache_root="$(crew_config_get audit_cache_dir)"
+cache="$cache_root/${slug/\//-}"
+hint=''
+[ -z "${AUDIT_TOKEN_NOTE:-}" ] || hint=" ($AUDIT_TOKEN_NOTE)"
+
+if [ -d "$cache/.git" ]; then
+  out=$(g -C "$cache" fetch --quiet --prune --filter=blob:none origin 2>&1) || err "fetch failed: $out$hint"
+  out=$(g -C "$cache" remote set-head origin --auto 2>&1) || err "cannot resolve default branch: $out$hint"
+  out=$(g -C "$cache" checkout --quiet --detach origin/HEAD 2>&1) || err "checkout failed: $out"
+  emit "$cache" "$slug" cache
+fi
+
+mkdir -p "$cache_root" || err "cannot create $cache_root"
+out=$(g clone --quiet --filter=blob:none --no-recurse-submodules \
+  "https://github.com/$slug.git" "$cache" 2>&1) || { rm -rf "$cache"; err "clone failed: $out$hint"; }
+out=$(g -C "$cache" checkout --quiet --detach 2>&1) || err "checkout failed: $out"
+emit "$cache" "$slug" clone

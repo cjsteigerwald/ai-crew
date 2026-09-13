@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# ai-readiness-package — assemble an AI-readiness run and, if configured,
+# mirror it to a delivery directory.
+#
+# Usage: ai-readiness-package <org>-<repo> <YYYY-MM-DD>
+#
+# For each audit, takes the newest full report dated on or before <date> from
+# <audit_output_root>/<org>-<repo>/<date>/ (default ~/repo-audits), plus that
+# date's agentic-readiness.md and executive-summary.md, and copies them to
+# <package_output_root>/<org>-<repo>/<date>/ (default ~/ai-readiness) with an
+# index README.md. Then, only when the `delivery_dir` config key is set,
+# mirrors the folder to <delivery_dir>/ai-readiness/<org>-<repo>/<date>/.
+# Earlier dated folders are never touched, so history accumulates.
+# On failure prints "ERROR: …" and exits 0 (the audit suite's wrapper contract).
+set -uo pipefail
+# Resolve our own directory, following one level of symlink (e.g. from
+# ~/.local/bin) — bash 3.2 has no `readlink -f`.
+HERE="$(cd "$(dirname "$(readlink "$0" || echo "$0")")" && pwd)"
+# shellcheck source=../lib/crew-config.sh
+source "$HERE/../lib/crew-config.sh"
+
+err() { echo "ERROR: ai-readiness-package: $1"; exit 0; }
+[ $# -eq 2 ] || err "usage: ai-readiness-package <org>-<repo> <YYYY-MM-DD>"
+id=$1
+day=$2
+[[ $id =~ ^[A-Za-z0-9_.-]+$ ]] || err "bad id: $id"
+[[ $day =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || err "bad date: $day"
+
+audit_output_root="$(crew_config_get audit_output_root)"
+src_root="$audit_output_root/$id"
+dst_root="$(crew_config_get package_output_root "$HOME/ai-readiness")"
+dst="$dst_root/$id/$day"
+[ -f "$src_root/$day/executive-summary.md" ] || err "no executive-summary.md in $src_root/$day — run the roll-up first"
+[ -f "$src_root/$day/agentic-readiness.md" ] || err "no agentic-readiness.md in $src_root/$day"
+
+audits=(pipeline-gates-audit test-audit feedback-loop-audit pr-review-audit
+  security-supply-chain-audit change-safety-audit context-legibility-audit
+  ownership-activity-audit)
+
+mkdir -p "$dst" || err "cannot create $dst"
+cp -p "$src_root/$day/executive-summary.md" "$src_root/$day/agentic-readiness.md" "$dst/" ||
+  err "copy of roll-up documents failed"
+
+rows=()
+for a in "${audits[@]}"; do
+  found=''
+  for d in $(ls -1 "$src_root" 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | sort -r); do
+    [[ $d > $day ]] && continue
+    if [ -f "$src_root/$d/$a.md" ]; then found="$d"; break; fi
+  done
+  if [ -n "$found" ]; then
+    cp -p "$src_root/$found/$a.md" "$dst/" || err "copy of $a failed"
+    commit=$(sed -n 's/^commit: *//p' "$dst/$a.md" | head -1)
+    rows+=("| [$a.md]($a.md) | $found | ${commit:0:12} |")
+  else
+    rows+=("| $a | — not run — | |")
+  fi
+done
+
+{
+  echo "# AI readiness — $id — $day"
+  echo
+  echo "Start with **[executive-summary.md](executive-summary.md)**; the full verdict and"
+  echo "evidence trail is **[agentic-readiness.md](agentic-readiness.md)**."
+  echo
+  echo "| Audit report | Report date | Commit |"
+  echo "|---|---|---|"
+  printf '%s\n' "${rows[@]}"
+} >"$dst/README.md"
+
+echo "PACKAGE=$dst"
+ls -1 "$dst"
+
+# Optional mirror to a delivery directory (e.g. a laptop share reachable from
+# this environment). Disabled by default — set the `delivery_dir` config key
+# to enable it.
+delivery_dir="$(crew_config_get delivery_dir)"
+if [ -z "$delivery_dir" ]; then
+  echo "LAPTOP=not configured — set the delivery_dir config key to enable mirroring; package is at $dst"
+else
+  lap="$delivery_dir/ai-readiness/$id/$day"
+  if mkdir -p "$lap" 2>/dev/null && cp -p "$dst"/*.md "$lap/" 2>/dev/null; then
+    echo "LAPTOP=$lap"
+    ls -1 "$lap"
+  else
+    echo "LAPTOP=not delivered — $delivery_dir is unavailable; package is at $dst"
+  fi
+fi

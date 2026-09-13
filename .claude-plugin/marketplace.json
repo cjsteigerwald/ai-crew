@@ -13,6 +13,36 @@
       "name": "codex-crew",
       "source": "./codex-crew",
       "description": "Codex (GPT-family) delegate agents with pinned models \u2014 implementer lanes (luna/terra/sol/astra) and a read-only reviewer \u2014 riding the official Codex plugin's companion runtime, with in-flight job control (steer/queue/redirect), a per-job broker so concurrency never strands a job, per-dispatch reasoning effort on adversarial reviews, and a redacting archive that outlives session cleanup"
+    },
+    {
+      "name": "crew-gates",
+      "source": "./crew-gates",
+      "version": "0.1.0",
+      "description": "PreToolUse gates that make an orchestrator delegate to cheaper lanes: delegation-gate, read-budget-gate, lane-model-gate, plus a per-prompt routing table."
+    },
+    {
+      "name": "harness-skills",
+      "source": "./harness-skills",
+      "version": "0.1.0",
+      "description": "Crew configuration writer and the ai-crew-update plugin updater/reconciler."
+    },
+    {
+      "name": "tech-research",
+      "source": "./tech-research",
+      "version": "0.1.0",
+      "description": "Interrogative, evidence-tiered research protocol for technology and vendor decisions, with seven specialised research agents."
+    },
+    {
+      "name": "repo-audit",
+      "source": "./repo-audit",
+      "version": "0.1.0",
+      "description": "Read-only repository audit suite: seven audit skills, an agentic-readiness roll-up, and an ai-readiness orchestrator, with sandboxing wrappers for gh and git."
+    },
+    {
+      "name": "dev-workflow",
+      "source": "./dev-workflow",
+      "version": "0.1.0",
+      "description": "Engineering workflow skills (PR gates, orchestrated plan implementation, incident investigation and write-ups, skill retrospectives, Copilot readiness) plus verifier, adversarial reviewer, worker, and specialist review agents."
     }
   ]
 }
