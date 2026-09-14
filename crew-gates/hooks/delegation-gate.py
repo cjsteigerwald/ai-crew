@@ -24,19 +24,20 @@ non-error result. The marker requires a `Bash(:)` allow rule in settings; withou
 marker call is denied (is_error=True) and the gate keeps blocking. Static fixtures
 cannot test this: the timing above came from a live session recorder, not the suite.
 
-Bash: only a command that WRITES a file consults the classification (heredoc/redirect,
-tee, dd of=, sed/perl/ruby -i, cp/mv/install/rsync/ln, a heredoc script calling a write
-API). Read-only commands pass untouched -- gating every Bash call would deadlock the
-investigation that precedes classification -- and the marker command ":" is allowed
-before any inspection, or the recovery path itself would be blocked. A write whose
-every resolvable destination is scratch (/tmp, /private/tmp, /var/tmp), /dev, or an
-EXEMPT_SUBSTRINGS path passes; a write with no resolvable destination is gated. The
-detection is a heuristic and knowingly incomplete -- see the _bash_needs_classification
-block.
+Bash: only a command that WRITES a file consults the classification (redirects, a
+heredoc script calling a write API, and writers such as tee/dd/sed -i/cp/touch/curl -o/
+tar -x in command position). Read-only commands pass untouched -- gating every Bash
+call would deadlock the investigation that precedes classification -- and the marker
+command ":" is allowed before any inspection, or the recovery path itself would be
+blocked. A write passes only when EVERY destination resolves to an absolute path under
+/tmp, /private/tmp, /var/tmp, /dev, or the Claude config dir's projects/ or _backups/;
+an unresolvable destination is gated. The detection is a heuristic and knowingly
+incomplete -- see the _bash_needs_classification block.
 
 Design rules, in priority order:
   1. FAIL OPEN on any internal error. A broken gate must never brick the session;
-     a missed dispatch is cheaper than an unusable edit path.
+     a missed dispatch is cheaper than an unusable edit path. The one exception:
+     a deny already decided is never downgraded to allow -- see _VERDICT.
   2. FAIL CLOSED when the transcript is readable and carries no token. That is the
      entire point of the gate.
   3. NEVER fire inside a subagent. The subagent IS the delegation target.
@@ -44,6 +45,7 @@ Design rules, in priority order:
 import json
 import os
 import re
+import signal
 import sys
 
 # A classification is a STRUCTURED line, not a clause buried in prose. Accepted forms:
@@ -94,15 +96,50 @@ EXEMPT_SUBSTRINGS = (
 )
 
 
+# The verdict, latched by the store in block(). Once that store has completed, a later
+# in-process failure (KeyboardInterrupt, SystemExit, a failed stderr write or flush)
+# does not downgrade it to allow. None means "nothing decided yet" => allow. The
+# contract is enforced by the __main__ handler, so tests must run this as __main__.
+_VERDICT = None
+
+
+def _exit(code):
+    """Exit with an EXACT status from the alphabet {0, 2}. Flush stderr inside a guard,
+    then bypass the interpreter shutdown flush -- if that flush fails, CPython replaces
+    the status with 120, and this hook's exit code IS its verdict."""
+    if code not in (0, 2):
+        code = 2 if _VERDICT == 2 else 0
+    try:
+        sys.stderr.flush()
+    except BaseException:
+        pass
+    os._exit(code)
+
+
 def allow(reason=""):
     if reason and os.environ.get("DELEGATION_GATE_DEBUG"):
-        print(f"[delegation-gate] allow: {reason}", file=sys.stderr)
-    sys.exit(0)
+        try:
+            print(f"[delegation-gate] allow: {reason}", file=sys.stderr)
+        except BaseException:
+            pass
+    _exit(0)
 
 
 def block(message):
-    print(message, file=sys.stderr)
-    sys.exit(2)  # exit 2 == deny the tool call, surface stderr to the model
+    # COMMIT POINT: the successful `_VERDICT = 2` store, not entry to this function. A
+    # fault before the store exits 0 (irreducible in pure Python); after it, delivery is
+    # best-effort and must not turn the deny into exit 0 -- a silent allow.
+    global _VERDICT
+    _VERDICT = 2
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    except BaseException:
+        pass
+    try:
+        print(message, file=sys.stderr)
+    except BaseException:
+        pass
+    _exit(2)  # exit 2 == deny the tool call, surface stderr to the model
 
 
 DENY_MESSAGE = """\
@@ -250,18 +287,29 @@ def _answered_ok(later, tid):
 # the classification at all.
 #
 # THIS DETECTION IS A HEURISTIC OVER ARBITRARY SHELL AND IS KNOWN TO BE INCOMPLETE. It
-# covers the high-value forms: >/>> redirection, heredocs feeding a redirect, a heredoc
-# script body that writes, tee, sed -i / perl -i / ruby -i, dd of=, and
-# cp/mv/install/rsync/ln into a destination. It does NOT catch a destination assembled
-# from a shell variable or command substitution, a write inside a `python3 -c` /
-# `node -e` string, an eval'd command, a helper script that writes on the command's
-# behalf, or deliberate obfuscation. The bias is intentional: a missed exotic write is
-# a gap, but gating an innocent read-only command trains the user to switch the hook
-# off, losing everything.
+# covers: output redirections (>, >>, >|, &>, &>>, >&file, <>; spaced or not), a
+# heredoc script body that writes, and these writers in command position (also behind
+# sudo/env/nice/time/timeout/xargs and after find -exec): tee FILE, dd of=, sed/perl/
+# ruby in-place, cp/mv/install/rsync/ln, touch, truncate, patch, git apply, curl -o/-O,
+# wget, tar extraction, unzip. It does NOT catch a write inside a `python3 -c` /
+# `node -e` / awk string, an eval'd command, a helper script or shell function that
+# writes on the command's behalf, or deliberate obfuscation. Destinations are compared
+# lexically: a symlink out of an exempt directory is not followed. The bias is
+# intentional: a missed exotic write is a gap, but gating an innocent read-only command
+# trains the user to switch the hook off, losing everything.
 _HEREDOC_START = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_]\w*)\1")
-# A redirect and its destination. `2>&1` / `>&2` match here too and are dropped below
-# by the leading-& test -- they retarget a descriptor, not a file.
-_REDIR = re.compile(r"(?:^|[\s;&|()])(?:\d*|&)>>?\s*([^\s;&|()<]+)")
+# Every redirection operator, input ones included so they can be REMOVED before the
+# command words are tokenized (`cp a b < /dev/null` must not make /dev/null the
+# destination). Longest operators first. The target stops at whitespace and at shell
+# metacharacters, so `echo x>a` and `2>&1>out` both split correctly.
+_REDIR = re.compile(r"\d*(<<<|<<-?|&>>|&>|<>|>>|>\||>&|<&|>|<)[ \t]*([^\s;&|()<>]*)")
+# Placeholders written by _neutralize_quotes. _QPH replaces a quoted span that cannot
+# stand in as one plain word; its `$` makes it unresolvable, so as a destination it
+# gates. _EPH replaces an escaped metacharacter (`\>`, `\;`) or a quoted lone `;`/`+`.
+_QPH = "$__Q"
+_EPH = "__E__"
+# `[[ ... ]]` and `(( ... ))` / `$(( ... ))` compare with `>`; they never redirect.
+_TEST_SPANS = re.compile(r"\[\[[ \t][^\n]*?[ \t]\]\]|\$?\(\([^\n]*?\)\)")
 # Writes performed by a script fed in on a heredoc, for which no shell redirect appears.
 # sys.stdout/sys.stderr .write() are excluded: those are prints.
 _SCRIPT_WRITE = re.compile(
@@ -272,18 +320,34 @@ _SCRIPT_WRITE = re.compile(
     r"""|\bshutil\.(?:copy|copy2|copyfile|move)\s*\("""
     r"""|\bos\.(?:replace|rename|remove)\s*\("""
 )
-# Path literals inside a heredoc body, used only to decide whether that body's write
-# lands somewhere exempt.
-_BODY_PATH = re.compile(r"""['"]([^'"\n]*/[^'"\n]*)['"]""")
-# Tokens that precede the real command word without being it.
-_WRAPPERS = frozenset((
-    "sudo", "env", "command", "nohup", "time", "nice", "exec", "builtin",
-    "xargs", "then", "else", "do", "!",
-))
-_INPLACE_CMDS = frozenset(("sed", "perl", "ruby"))
-_COPY_CMDS = frozenset(("cp", "mv", "install", "rsync", "ln"))
-_SEG_SPLIT = re.compile(r"\|\||&&|[;|&()\n{}]")
+# String literals inside a heredoc body. Both quote styles are scanned independently,
+# so a stray quote of one kind cannot hide a literal of the other.
+_BODY_LITERALS = (re.compile(r'"([^"\n]*)"'), re.compile(r"'([^'\n]*)'"))
+_FILENAME = re.compile(r"[\w.+-]*\w\.[A-Za-z][A-Za-z0-9]{0,9}")
+_SEG_SPLIT = re.compile(r"\|\||&&|[;|&()\n]|(?:^|(?<=\s))[{}](?=\s|;|$)")
+_BACKTICK = re.compile(r"`([^`]*)`")
 _ENV_ASSIGN = re.compile(r"^\w+=")
+
+# Shell keywords that precede a command word without being it.
+_KEYWORDS = frozenset(("then", "else", "elif", "do", "if", "while", "until", "!"))
+# Wrappers: name -> (short options taking an argument, long options taking one,
+# leading positionals). Their options are stripped so `sudo -u root cp` finds `cp`.
+_WRAPPERS = {
+    "sudo": (frozenset("CDghpRrTtUu"), frozenset((
+        "--close-from", "--chdir", "--group", "--host", "--prompt", "--chroot",
+        "--role", "--type", "--command-timeout", "--other-user", "--user")), 0),
+    "env": (frozenset("uCSP"), frozenset(("--unset", "--chdir", "--split-string")), 0),
+    "nice": (frozenset("n"), frozenset(("--adjustment",)), 0),
+    "time": (frozenset("of"), frozenset(("--output", "--format")), 0),
+    "timeout": (frozenset("sk"), frozenset(("--signal", "--kill-after")), 1),
+    "xargs": (frozenset("ILnPsdEa"), frozenset((
+        "--max-args", "--max-procs", "--max-chars", "--delimiter", "--arg-file",
+        "--max-lines")), 0),
+    "exec": (frozenset("a"), frozenset(), 0),
+    "nohup": (frozenset(), frozenset(), 0),
+    "command": (frozenset(), frozenset(), 0),
+    "builtin": (frozenset(), frozenset(), 0),
+}
 
 
 def _resolve_dest(dest, cwd):
@@ -292,8 +356,8 @@ def _resolve_dest(dest, cwd):
     Relative destinations resolve against the payload cwd, so `> ./out.txt` while cwd is
     a scratch directory is not gated. A destination containing a variable, a command
     substitution, or a leading `~` is returned unchanged: its value is not knowable
-    here, and unchanged it matches no exemption and therefore gates. normpath collapses
-    `..`, so `> /tmp/../repo/src/x.ts` gates rather than passing itself off as scratch."""
+    here, and _exempt_dest refuses anything not absolute. normpath collapses `..`, so
+    `> /tmp/../repo/src/x.ts` gates rather than passing itself off as scratch."""
     p = dest.strip().strip("'\"")
     if not p or "$" in p or "`" in p or p.startswith("~"):
         return p
@@ -304,17 +368,37 @@ def _resolve_dest(dest, cwd):
     return p  # no usable cwd -> unresolvable -> gates
 
 
+def _claude_config_dir():
+    base = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude")
+    return os.path.normpath(base) if base.startswith("/") else None
+
+
 def _exempt_dest(dest, cwd=None):
-    """A write destination that is never a project edit."""
+    """A write destination that is never a project edit. None means "a write whose
+    destination could not be determined" and is never exempt."""
+    if not isinstance(dest, str):
+        return False
     p = _resolve_dest(dest, cwd)
+    # Unresolved (`$HOME/...`, `~/...`, `` `pwd`/... ``, relative with no cwd): refuse
+    # BEFORE any prefix test, or `$X/.claude/projects/../../src/a.py` passes as
+    # bookkeeping while the shell writes it into the repo.
+    if not p.startswith("/") or "$" in p or "`" in p:
+        return False
     if p.startswith("/dev/"):
         return True
     # /tmp and /private/tmp are the SAME directory on macOS (/tmp is a symlink), and the
     # per-session scratchpad lives under /private/tmp/claude-*/.
-    if p.startswith(("/tmp/", "/private/tmp/", "/var/tmp/")):
-        return True
-    # Same bookkeeping exemption the Edit/Write path applies to file_path.
-    return any(s in p for s in EXEMPT_SUBSTRINGS)
+    for root in ("/tmp", "/private/tmp", "/var/tmp"):
+        if p == root or p.startswith(root + "/"):
+            return True
+    # Bookkeeping, anchored to the REAL Claude config dir. An unanchored substring test
+    # exempted /repo/.claude/projects/pkg/src/a.py. Mirrors EXEMPT_SUBSTRINGS.
+    base = _claude_config_dir()
+    if base:
+        for s in EXEMPT_SUBSTRINGS:
+            if p.startswith(base + s[len("/.claude"):]):
+                return True
+    return False
 
 
 def _strip_heredocs(command):
@@ -341,89 +425,434 @@ def _strip_heredocs(command):
 
 
 def _neutralize_quotes(text):
-    """Blank out quoted spans that could fake a redirect or a separator (awk '$1 > 5'),
-    while keeping spans that are plausibly a path or plain argument, so `> "/tmp/x"`
-    still yields its destination."""
+    """Collapse quoting so a quoted or escaped metacharacter cannot fake a redirect or a
+    separator (awk '$1 > 5', [ a \\> b ]). A quoted span that is a plain word is kept
+    as that word, so `> "/tmp/x"` still yields its destination; anything else becomes
+    one placeholder token, never several words."""
     out, i, n = [], 0, len(text)
     while i < n:
         ch = text[i]
+        if ch == "\\":
+            nxt = text[i + 1:i + 2]
+            if nxt and nxt != "\n":
+                out.append(nxt if (nxt.isalnum() or nxt in "/._-") else _EPH)
+            i += 2
+            continue
         if ch in "'\"":
-            j = text.find(ch, i + 1)
-            if j == -1:
-                out.append(text[i + 1:])
+            j = i + 1
+            while j < n and text[j] != ch:
+                j += 2 if (ch == '"' and text[j] == "\\") else 1
+            if j >= n:
+                out.append(_QPH)  # unterminated: a syntax error, never a clean word
                 break
             inner = text[i + 1:j]
-            out.append("__Q__" if any(c in inner for c in ">;|&") else inner)
+            if inner in (";", "+"):
+                out.append(_EPH)
+            elif inner and any(c.isspace() or c in "<>;|&(){}`\\" for c in inner):
+                out.append(_QPH)
+            else:
+                out.append(inner)
             i = j + 1
-        else:
-            out.append(ch)
-            i += 1
+            continue
+        out.append(ch)
+        i += 1
     return "".join(out)
 
 
-def _bash_write_targets(command):
-    """(writes, destinations) for a Bash command line.
+def _parse_opts(args, short=None, long_arg=frozenset()):
+    """GNU-style option parse -> ([(key, value), ...], operands).
 
-    writes is True if any write indicator was found; destinations are only the targets
-    that could actually be resolved. An indicator with no resolvable destination yields
-    writes=True and an empty list, which the caller treats as "gate it"."""
+    short maps a letter to how it takes a value: "next" (rest of the cluster, else the
+    next word), "rest" (rest of the cluster only, possibly empty), "digits" (leading
+    digits only). Unlisted letters are flags. Options may follow operands."""
+    short = short or {}
+    opts, operands = [], []
+    i, n = 0, len(args)
+    while i < n:
+        a = args[i]
+        i += 1
+        if a == "--":
+            operands.extend(args[i:])
+            break
+        if a.startswith("--"):
+            name, eq, val = a.partition("=")
+            if eq:
+                opts.append((name, val))
+            elif name in long_arg and i < n:
+                opts.append((name, args[i]))
+                i += 1
+            else:
+                opts.append((name, None))
+            continue
+        if a.startswith("-") and len(a) > 1:
+            j = 1
+            while j < len(a):
+                c, rest, kind = a[j], a[j + 1:], short.get(a[j])
+                if kind == "next":
+                    if rest:
+                        opts.append((c, rest))
+                    elif i < n:
+                        opts.append((c, args[i]))
+                        i += 1
+                    else:
+                        opts.append((c, ""))
+                    break
+                if kind == "rest":
+                    opts.append((c, rest))
+                    break
+                if kind == "digits":
+                    k = j + 1
+                    while k < len(a) and a[k].isdigit():
+                        k += 1
+                    opts.append((c, a[j + 1:k]))
+                    j = k
+                    continue
+                opts.append((c, None))
+                j += 1
+            continue
+        operands.append(a)
+    return opts, operands
+
+
+def _values(opts, *keys):
+    return [v for k, v in opts if k in keys]
+
+
+def _keys(opts):
+    return {k for k, _ in opts}
+
+
+def _nexts(letters):
+    return {c: "next" for c in letters}
+
+
+def _w_tee(args):
+    return [a for a in _parse_opts(args)[1] if a != "-"]
+
+
+def _w_dd(args):
+    return [a.split("=", 1)[1] for a in args if a.startswith("of=")]
+
+
+def _inplace(short, long_arg, inplace_keys, script_keys):
+    """sed/perl/ruby: a write only with the in-place flag actually set. The script is
+    the first operand unless given by an option, and is never a destination."""
+    def handler(args):
+        opts, ops = _parse_opts(args, short, long_arg)
+        keys = _keys(opts)
+        if not keys & inplace_keys:
+            return []
+        files = ops if keys & script_keys else ops[1:]
+        return files or [None]
+    return handler
+
+
+def _copy(short, long_arg, target_keys, one_operand):
+    """cp/mv/install/ln/rsync: -t/--target-directory if given, else the last operand."""
+    def handler(args):
+        opts, ops = _parse_opts(args, short, long_arg)
+        tgt = _values(opts, *target_keys)
+        if tgt:
+            return tgt
+        if len(ops) >= 2:
+            return [ops[-1]]
+        if len(ops) == 1:
+            return one_operand(ops)
+        return []
+    return handler
+
+
+def _w_touch(args):
+    return _parse_opts(args, _nexts("rtdA"), frozenset(("--reference", "--date", "--time")))[1]
+
+
+def _w_truncate(args):
+    return _parse_opts(args, _nexts("sr"), frozenset(("--size", "--reference")))[1]
+
+
+def _w_patch(args):
+    opts, ops = _parse_opts(args, _nexts("BDdFgiopVrYzx"), frozenset((
+        "--directory", "--input", "--output", "--strip", "--reject-file", "--prefix",
+        "--suffix", "--basename-prefix", "--ifdef", "--fuzz", "--get", "--quoting-style",
+        "--version-control")))
+    if _keys(opts) & {"--dry-run", "--check", "C"}:
+        return []
+    out = _values(opts, "o", "--output")
+    if out:
+        return [v for v in out if v != "-"]
+    d = _values(opts, "d", "--directory")
+    base = d[-1] if d else "."
+    if ops:
+        return [ops[0] if ops[0].startswith("/") else os.path.join(base, ops[0])]
+    return [base]
+
+
+def _w_git(args):
+    rest, base, worktree = list(args), ".", None
+    while rest and rest[0].startswith("-"):
+        a = rest.pop(0)
+        name, eq, val = a.partition("=")
+        if not eq and name in ("-C", "-c", "--git-dir", "--work-tree", "--namespace",
+                               "--super-prefix", "--config-env") and rest:
+            val = rest.pop(0)
+        if name == "-C":
+            base = val if val.startswith("/") else os.path.join(base, val)
+        elif name == "--work-tree":
+            worktree = val
+    if not rest or rest[0] != "apply":
+        return []
+    opts, _ = _parse_opts(rest[1:], _nexts("pC"), frozenset((
+        "--directory", "--exclude", "--include", "--whitespace", "--build-fake-ancestor")))
+    keys = _keys(opts)
+    if keys & {"--check", "--stat", "--numstat", "--summary"} and "--apply" not in keys:
+        return []
+    if worktree:
+        return [worktree if worktree.startswith("/") else os.path.join(base, worktree)]
+    return [base]
+
+
+def _w_curl(args):
+    opts, _ = _parse_opts(args, _nexts("AbcCdDeEFHKmoPQrtTuUwxXyYz"), frozenset((
+        "--output", "--output-dir", "--data", "--data-binary", "--data-raw",
+        "--data-urlencode", "--header", "--request", "--user", "--user-agent", "--referer",
+        "--cookie", "--cookie-jar", "--form", "--upload-file", "--proxy", "--max-time",
+        "--write-out", "--config", "--range", "--cert", "--key", "--cacert",
+        "--dump-header", "--connect-timeout", "--retry", "--resolve", "--url", "--json",
+        "--limit-rate", "--proto")))
+    outdir = _values(opts, "--output-dir")
+    base = outdir[-1] if outdir else None
+    dests = []
+    for k, v in opts:
+        if k in ("o", "--output") and v != "-":
+            dests.append(v if base is None or v.startswith("/") else os.path.join(base, v))
+        elif k in ("O", "--remote-name", "--remote-name-all"):
+            dests.append(base or ".")
+    return dests
+
+
+def _w_wget(args):
+    opts, ops = _parse_opts(args, _nexts("eoaiBtOTwQPUYlARDIX"), frozenset((
+        "--output-document", "--output-file", "--append-output", "--input-file", "--base",
+        "--tries", "--timeout", "--wait", "--quota", "--directory-prefix", "--user-agent",
+        "--level", "--accept", "--reject", "--domains", "--include-directories",
+        "--exclude-directories", "--user", "--password", "--header", "--post-data",
+        "--post-file", "--load-cookies", "--save-cookies", "--limit-rate", "--execute",
+        "--referer")))
+    keys = _keys(opts)
+    dests = _values(opts, "o", "a", "--output-file", "--append-output")
+    doc = _values(opts, "O", "--output-document")
+    if doc:
+        dests += [v for v in doc if v != "-"]
+    elif "--spider" not in keys and (ops or keys & {"i", "--input-file"}):
+        prefix = _values(opts, "P", "--directory-prefix")
+        dests.append(prefix[-1] if prefix else ".")  # plain `wget URL` writes into cwd
+    return dests
+
+
+def _w_tar(args):
+    args = list(args)
+    if args and re.fullmatch(r"[A-Za-z]+", args[0]):
+        args[0] = "-" + args[0]  # old-style bundle: `tar xzf a.tgz`
+    opts, _ = _parse_opts(args, _nexts("bCfFgHIKLNTVX"), frozenset((
+        "--directory", "--file", "--files-from", "--exclude-from", "--exclude",
+        "--use-compress-program", "--transform", "--xform", "--strip-components",
+        "--owner", "--group", "--mode", "--label", "--newer", "--after-date",
+        "--blocking-factor", "--format", "--listed-incremental", "--to-command")))
+    keys = _keys(opts)
+    if not keys & {"x", "--extract", "--get"} or keys & {"O", "--to-stdout", "t", "--list"}:
+        return []
+    return _values(opts, "C", "--directory") or ["."]
+
+
+def _w_unzip(args):
+    dests, operands, readonly, i = [], [], False, 0
+    while i < len(args):
+        a = args[i]
+        i += 1
+        if a.startswith("-") and len(a) > 1:
+            letters, _, rest = a[1:].partition("d")
+            readonly = readonly or any(c in "clptvzZ" for c in letters)
+            if "d" in a[1:]:
+                if rest:
+                    dests.append(rest)
+                elif i < len(args):
+                    dests.append(args[i])
+                    i += 1
+        else:
+            operands.append(a)
+    if readonly or not operands:
+        return []
+    return dests or ["."]
+
+
+def _w_find(args):
+    dests, i = [], 0
+    while i < len(args):
+        if args[i] in ("-exec", "-execdir", "-ok", "-okdir"):
+            j = i + 1
+            while j < len(args) and args[j] not in (_EPH, "+", ";"):
+                j += 1
+            dests.extend(_segment_dests(args[i + 1:j]))
+            i = j + 1
+        else:
+            i += 1
+    return dests
+
+
+_CP_LONG = frozenset(("--target-directory", "--suffix"))
+_WRITERS = {
+    "tee": _w_tee,
+    "dd": _w_dd,
+    "sed": _inplace({"e": "next", "f": "next", "l": "next", "i": "rest"},
+                    frozenset(("--expression", "--file", "--line-length")),
+                    {"i", "--in-place"}, {"e", "f", "--expression", "--file"}),
+    "perl": _inplace({"e": "next", "E": "next", "I": "next", "i": "rest", "M": "rest",
+                      "m": "rest", "x": "rest", "d": "rest", "D": "rest", "F": "rest",
+                      "V": "rest", "l": "digits", "0": "digits", "C": "digits"},
+                     frozenset(), {"i"}, {"e", "E"}),
+    "ruby": _inplace({"e": "next", "I": "next", "r": "next", "C": "next", "E": "next",
+                      "i": "rest", "x": "rest", "F": "rest", "K": "rest",
+                      "0": "digits", "W": "digits", "T": "digits"},
+                     frozenset(("--encoding", "--external-encoding", "--internal-encoding",
+                                "--enable", "--disable", "--dump")),
+                     {"i"}, {"e"}),
+    "cp": _copy(_nexts("tS"), _CP_LONG, ("t", "--target-directory"), lambda ops: ops),
+    "mv": _copy(_nexts("tS"), _CP_LONG, ("t", "--target-directory"), lambda ops: ops),
+    "ln": _copy(_nexts("tS"), _CP_LONG, ("t", "--target-directory"), lambda ops: ["."]),
+    "install": _copy(_nexts("tSmog"), _CP_LONG | frozenset((
+        "--mode", "--owner", "--group", "--strip-program")),
+        ("t", "--target-directory"), lambda ops: ops),
+    # rsync -t is --times, not a target; a single operand only lists.
+    "rsync": _copy(_nexts("efTBM"), frozenset((
+        "--log-file", "--log-file-format", "--exclude", "--include", "--exclude-from",
+        "--include-from", "--files-from", "--filter", "--rsh", "--rsync-path",
+        "--temp-dir", "--compare-dest", "--copy-dest", "--link-dest", "--backup-dir",
+        "--suffix", "--chmod", "--chown", "--partial-dir", "--timeout", "--contimeout",
+        "--bwlimit", "--password-file", "--port", "--out-format", "--max-size",
+        "--min-size", "--max-delete", "--block-size", "--modify-window", "--iconv",
+        "--checksum-choice", "--compress-choice", "--compress-level", "--skip-compress",
+        "--usermap", "--groupmap", "--info", "--debug", "--outbuf", "--sockopts",
+        "--write-batch", "--only-write-batch", "--read-batch", "--protocol",
+        "--stop-after", "--stop-at", "--remote-option")),
+        (), lambda ops: []),
+    "touch": _w_touch,
+    "truncate": _w_truncate,
+    "patch": _w_patch,
+    "git": _w_git,
+    "curl": _w_curl,
+    "wget": _w_wget,
+    "tar": _w_tar,
+    "unzip": _w_unzip,
+    "find": _w_find,
+}
+# Writers whose file operands `xargs` may supply on stdin: with none on the line, the
+# destination is unknown, not absent.
+_STDIN_OPERAND_WRITERS = frozenset(("tee", "touch", "truncate", "cp", "mv", "install",
+                                    "ln", "rsync"))
+
+
+def _strip_wrappers(tokens):
+    """Drop env assignments, keywords, and wrappers WITH their options from the front of
+    tokens (in place). Returns True if xargs was among them."""
+    via_xargs = False
+    while tokens:
+        t = tokens[0]
+        if _ENV_ASSIGN.match(t) or t in _KEYWORDS:
+            tokens.pop(0)
+            continue
+        name = t.rsplit("/", 1)[-1]
+        spec = _WRAPPERS.get(name)
+        if spec is None:
+            break
+        tokens.pop(0)
+        via_xargs = via_xargs or name == "xargs"
+        short, long_arg, positionals = spec
+        while tokens and tokens[0].startswith("-") and tokens[0] != "-":
+            a = tokens.pop(0)
+            if a == "--":
+                break
+            if a.startswith("--"):
+                if "=" not in a and a in long_arg and tokens:
+                    tokens.pop(0)
+                continue
+            for j in range(1, len(a)):
+                if a[j] in short:
+                    if j == len(a) - 1 and tokens:
+                        tokens.pop(0)
+                    break
+        for _ in range(positionals):
+            if tokens and not _ENV_ASSIGN.match(tokens[0]):
+                tokens.pop(0)
+    return via_xargs
+
+
+def _segment_dests(tokens):
+    """Destinations written by one simple command (a token list)."""
+    tokens = list(tokens)
+    via_xargs = _strip_wrappers(tokens)
+    if not tokens:
+        return []
+    cmd = tokens[0].rsplit("/", 1)[-1]
+    handler = _WRITERS.get(cmd)
+    if handler is None:
+        return []
+    dests = handler(tokens[1:])
+    if not dests and via_xargs and cmd in _STDIN_OPERAND_WRITERS:
+        return [None]
+    return dests
+
+
+def _bash_write_dests(command):
+    """Every destination a Bash command line writes. None stands for a write whose
+    destination could not be determined. An empty list means no write was detected."""
     shell, bodies = _strip_heredocs(command)
     shell = _neutralize_quotes(shell)
-    writes = False
+    shell = _TEST_SPANS.sub("$__T", shell)
     dests = []
 
-    for m in _REDIR.finditer(shell):
-        dest = m.group(1)
-        if dest.startswith("&"):
-            continue  # 2>&1 and friends: a descriptor, not a file
-        writes = True
-        dests.append(dest)
+    def take(m):
+        op, target = m.group(1), m.group(2)
+        if op.startswith("<") and op != "<>":
+            return " "  # input, heredoc, herestring: removed so it is not an operand
+        if op == ">&" and re.fullmatch(r"\d*-?", target) and target:
+            return " "  # 2>&1, >&2, 1>&-: a descriptor, not a file
+        if not target:
+            if op == ">" and shell[m.end():m.end() + 1] == "(":
+                return " "  # >(cmd) process substitution
+            dests.append(None)
+        else:
+            dests.append(target)
+        return " "
 
-    # Indicator commands count only in COMMAND POSITION. Matching them anywhere made
+    shell = _REDIR.sub(take, shell)
+
+    # Writers count only in COMMAND POSITION. Matching them anywhere made
     # `grep -rn cp src/` look like a copy.
-    for seg in _SEG_SPLIT.split(shell):
-        tokens = seg.split()
-        while tokens and (_ENV_ASSIGN.match(tokens[0]) or tokens[0] in _WRAPPERS):
-            tokens.pop(0)
-        if not tokens:
-            continue
-        cmd, args = tokens[0].rsplit("/", 1)[-1], tokens[1:]
-        plain = [a for a in args if not a.startswith("-") and ">" not in a]
-        if cmd == "tee":
-            writes = True
-            dests.extend(plain)
-        elif cmd == "dd":
-            writes = True
-            dests.extend(a.split("=", 1)[1] for a in args if a.startswith("of="))
-        elif cmd in _INPLACE_CMDS and any(
-            a.startswith("--in-place")
-            or (a.startswith("-") and not a.startswith("--") and "i" in a[1:])
-            for a in args
-        ):
-            writes = True
-            dests.extend(plain)
-        elif cmd in _COPY_CMDS and plain:
-            writes = True
-            dests.append(plain[-1])
+    segments = _SEG_SPLIT.split(shell)
+    for inner in _BACKTICK.findall(shell):
+        segments.extend(_SEG_SPLIT.split(inner.replace("`", " ")))
+    for seg in segments:
+        dests.extend(_segment_dests(seg.split()))
 
+    # A heredoc script body that writes is exempt only if it names at least one path or
+    # filename literal and every such literal is exempt. Otherwise its destination is
+    # unknown: open("out.txt","w").write("/tmp/looks-safe") must not pass on the decoy.
     for body in bodies:
-        if _SCRIPT_WRITE.search(body):
-            writes = True
-            dests.extend(_BODY_PATH.findall(body))
+        if not _SCRIPT_WRITE.search(body):
+            continue
+        lits = [s for rx in _BODY_LITERALS for s in rx.findall(body)
+                if "/" in s or _FILENAME.fullmatch(s)]
+        dests.extend(lits or [None])
 
-    return writes, dests
+    return dests
 
 
 def _bash_needs_classification(command, cwd=None):
     """True when a Bash command must face the same gate as an Edit/Write."""
     if not isinstance(command, str) or not command.strip():
         return False
-    writes, dests = _bash_write_targets(command)
-    if not writes:
-        return False
-    # Every destination we could resolve is exempt -> not a project edit. If none
-    # resolved, the write cannot be ruled out, so it is gated.
-    return not (dests and all(_exempt_dest(d, cwd) for d in dests))
+    # Gated if ANY destination is not provably exempt (including an unknown one).
+    return any(not _exempt_dest(d, cwd) for d in _bash_write_dests(command))
 
 
 def main():
@@ -479,10 +908,14 @@ def main():
         if not _bash_needs_classification(command, payload.get("cwd")):
             allow("bash: no project-file write detected")
 
-    # --- Path exemptions ----------------------------------------------------
+    # --- Path exemptions (Edit/Write/NotebookEdit only) ------------------------
+    # Never for Bash: a stray file_path key in a Bash payload says nothing about where
+    # the command writes, and honouring it let `echo x > src/a.py` pass as /tmp.
     fpath = ""
-    if isinstance(tool_input, dict):
+    if payload.get("tool_name") != "Bash" and isinstance(tool_input, dict):
         fpath = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
+    if not isinstance(fpath, str):
+        fpath = ""
     # Genuine scratch only: /tmp/... at the START of the path. A substring test wrongly
     # exempted any repo file under a tmp/ directory (e.g. /repo/tmp/thing.py).
     if fpath.startswith("/tmp/") or fpath.startswith("/var/tmp/"):
@@ -579,9 +1012,17 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except SystemExit:
-        raise
-    except Exception as exc:  # Rule 1: fail open, always
+    except BaseException as exc:
+        # Rule 1: fail open on ANY internal error -- SystemExit and KeyboardInterrupt
+        # included. An arbitrary SystemExit code is never propagated (SystemExit(7) from
+        # stdin.read() used to exit 7); only a latched deny may exit 2.
         if os.environ.get("DELEGATION_GATE_DEBUG"):
-            print(f"[delegation-gate] internal error, failing open: {exc}", file=sys.stderr)
-        sys.exit(0)
+            try:
+                print(f"[delegation-gate] internal error, failing open: {exc!r}",
+                      file=sys.stderr)
+            except BaseException:
+                pass
+        _exit(2 if _VERDICT == 2 else 0)
+    # main() never returns -- allow()/block() both exit -- but if it ever did, the
+    # latched verdict still wins over an implicit exit 0.
+    _exit(2 if _VERDICT == 2 else 0)

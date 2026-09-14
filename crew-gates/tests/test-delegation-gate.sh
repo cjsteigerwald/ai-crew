@@ -2,6 +2,9 @@
 # Overridable so a candidate copy can be tested WITHOUT installing it over the live hook.
 GATE="${GATE:-$(dirname "$0")/../hooks/delegation-gate.py}"
 TD=$(mktemp -d); pass=0; fail=0
+# The Bash bookkeeping exemption is anchored to the real Claude config dir; start from
+# the default (~/.claude) so the host environment cannot change any verdict below.
+unset CLAUDE_CONFIG_DIR DELEGATION_GATE_DEBUG CLAUDE_DELEGATION_GATE
 
 # transcript: user turn, then assistant text WITHOUT a token
 cat > "$TD/none.jsonl" <<'J'
@@ -247,7 +250,12 @@ x
 EOF'
 brun "bash relative in tmp cwd"  0 "$N" /private/tmp/claude-1/sess/scratchpad 'echo x > ./out.txt'
 brun "bash tee /dev/stderr"      0 "$N" /repo 'echo x | tee /dev/stderr'
+export CLAUDE_CONFIG_DIR=/srv/u/.claude
 brun "bash memory path"          0 "$N" /repo 'echo x > /srv/u/.claude/projects/x/memory/foo.md'
+brun "bash backups path"         0 "$N" /repo 'echo x > /srv/u/.claude/_backups/b.json'
+brun "bash config dir ../ escape" 2 "$N" /repo 'echo x > /srv/u/.claude/projects/../../../repo/src/a.py'
+unset CLAUDE_CONFIG_DIR
+brun "bash memory, default dir"  0 "$N" /repo "echo x > $HOME/.claude/projects/x/memory/m.md"
 brun "bash mixed exempt+repo"    2 "$N" /repo 'echo x > /tmp/a; echo y > src/b.py'
 # subagent shell writes are never gated
 brun "bash subagent write"       0 "$N" /repo 'echo x > out.txt' '{"agent_id":"a1","agent_type":"claude-crew:claude-implementer-haiku"}'
@@ -258,4 +266,197 @@ brun "bash command not a string" 0 "$N" /repo 'x' '{"tool_input":{"command":42}}
 brun "bash tool_input not dict"  0 "$N" /repo 'x' '{"tool_input":"echo x > out.txt"}'
 brun "bash write, no transcript" 0 /nope/none.jsonl /repo 'echo x > out.txt'
 
-echo; echo "RESULT: $pass passed, $fail failed"; rm -rf "$TD"; [ "$fail" = 0 ]
+# ---------------------------------------------------------------------------------
+# Respec regressions, grouped by review item. Most of these gave the wrong exit on
+# 5143ee0 (a bypass exiting 0, or a read-only command exiting 2); the rest pin the
+# neighbouring behaviour that must survive the fix (scratch destinations, read-only
+# variants, forms that were already handled). "(guard)" marks some of the latter.
+# Check which fail on a given revision with: GATE=<old delegation-gate.py> bash $0
+echo "== A1: an unresolved destination is never exempt =="
+brun "A1 \$HOME/.claude/projects/../.." 2 "$N" /repo 'echo x > $HOME/.claude/projects/../../repo/src/a.py'
+brun "A1 ~/.claude/projects/../.."     2 "$N" /repo 'echo x > ~/.claude/projects/../../repo/src/a.py'
+brun "A1 \$X/.claude/projects"         2 "$N" /repo 'echo x > $X/.claude/projects/y'
+brun "A1 backtick pwd"                 2 "$N" /repo 'cp src/a.py `pwd`/.claude/projects/../../src/b.py'
+echo "== A2: bookkeeping exemption anchored to the Claude config dir =="
+brun "A2 repo .claude/projects"        2 "$N" /repo 'echo x > /repo/.claude/projects/pkg/src/a.py'
+echo "== A3: heredoc script decoy literal =="
+brun "A3 decoy /tmp literal"           2 "$N" /repo 'python3 - <<PY
+open("out.txt", "w").write("/tmp/looks-safe")
+PY'
+brun "A3 no path literal at all"       2 "$N" /tmp 'python3 - <<PY
+p = name + ext
+open(p, "w").write(data)
+PY'
+brun "A3 only /tmp literal (guard)"    0 "$N" /repo 'python3 - <<PY
+open("/tmp/x.json", "w").write("{}")
+PY'
+echo "== A4: Edit/Write path exemptions never apply to Bash =="
+brun "A4 file_path /tmp on Bash"       2 "$N" /repo 'echo x > src/a.py' '{"tool_input":{"command":"echo x > src/a.py","file_path":"/tmp/x"}}'
+echo "== B5: redirect forms =="
+brun "B5 unspaced abs"                 2 "$N" /repo 'echo x>/repo/src/a.py'
+brun "B5 unspaced rel"                 2 "$N" /repo 'echo x>a'
+brun "B5 noclobber >|"                 2 "$N" /repo 'echo x >| src/a.py'
+brun "B5 >&file"                       2 "$N" /repo 'echo x >&src/a.py'
+brun "B5 &>file"                       2 "$N" /repo 'echo x &>src/a.py'
+brun "B5 &>>file"                      2 "$N" /repo 'echo x &>>src/a.py'
+brun "B5 <>file"                       2 "$N" /repo 'exec 3<>src/a.py'
+brun "B5 input redirect not a dest"    2 "$N" /repo 'cp /tmp/a src/b < /dev/null'
+brun "B5 2>&1 (guard)"                 0 "$N" /repo 'ls 2>&1'
+brun "B5 >&2 (guard)"                  0 "$N" /repo 'echo x >&2'
+brun "B5 1>&- (guard)"                 0 "$N" /repo 'ls 1>&-'
+brun "B5 grep quoted > (guard)"        0 "$N" /repo 'grep -rn "a>b" src'
+brun "B5 &>/dev/null"                  0 "$N" /repo 'make -n &>/dev/null'
+echo "== B6: wrapper options =="
+brun "B6 env -i"                       2 "$N" /repo 'env -i cp a src/b'
+brun "B6 sudo -u root"                 2 "$N" /repo 'sudo -u root cp a src/b'
+brun "B6 nice -n 10"                   2 "$N" /repo 'nice -n 10 cp a src/b'
+brun "B6 time -p"                      2 "$N" /repo 'time -p cp a src/b'
+brun "B6 env -u VAR"                   2 "$N" /repo 'env -u VAR cp a src/b'
+brun "B6 xargs -0 -I{}"                2 "$N" /repo 'find . -print0 | xargs -0 -I{} cp {} src/'
+brun "B6 command -v cp (read-only)"    0 "$N" /repo 'command -v cp'
+echo "== B7: destination-taking options =="
+brun "B7 rsync --log-file"             2 "$N" /repo 'rsync /tmp/src /repo/dest --log-file /tmp/log'
+brun "B7 rsync -e ssh"                 2 "$N" /repo 'rsync -e ssh /tmp/src /repo/dest'
+brun "B7 cp -t repo"                   2 "$N" /repo 'cp -t src/ /tmp/a /tmp/b'
+brun "B7 mv --target-directory="       2 "$N" /repo 'mv --target-directory=src /tmp/a /tmp/b'
+brun "B7 cp -t /tmp from repo"         0 "$N" /repo 'cp -t /tmp/d src/a src/b'
+brun "B7 rsync -t is --times"          0 "$N" /repo 'rsync -avt src/ /tmp/mirror/'
+echo "== B8: additional writers =="
+brun "B8 touch repo"                   2 "$N" /repo 'touch src/a.py'
+brun "B8 touch tmp"                    0 "$N" /repo 'touch /tmp/x'
+brun "B8 truncate repo"                2 "$N" /repo 'truncate -s 0 src/a.py'
+brun "B8 truncate tmp"                 0 "$N" /repo 'truncate -s 0 /tmp/x'
+brun "B8 patch cwd"                    2 "$N" /repo 'patch -p1 < /tmp/p.diff'
+brun "B8 patch -d tmp"                 0 "$N" /repo 'patch -d /tmp/x -p1 < /tmp/p.diff'
+brun "B8 patch --dry-run"              0 "$N" /repo 'patch --dry-run -p1 < /tmp/p.diff'
+brun "B8 git apply"                    2 "$N" /repo 'git apply /tmp/p.diff'
+brun "B8 git -C tmp apply"             0 "$N" /repo 'git -C /tmp/x apply /tmp/p.diff'
+brun "B8 git apply --check"            0 "$N" /repo 'git apply --check /tmp/p.diff'
+brun "B8 git apply --stat"             0 "$N" /repo 'git apply --stat /tmp/p.diff'
+brun "B8 curl -o repo"                 2 "$N" /repo 'curl -o src/a.py https://e.com'
+brun "B8 curl -sSLO cwd"               2 "$N" /repo 'curl -sSLO https://e.com/x'
+brun "B8 curl --output="               2 "$N" /repo 'curl --output=src/a https://e.com'
+brun "B8 curl -o tmp"                  0 "$N" /repo 'curl -o /tmp/x https://e.com'
+brun "B8 curl -O --output-dir tmp"     0 "$N" /repo 'curl -O --output-dir /tmp https://e.com/x'
+brun "B8 curl stdout"                  0 "$N" /repo 'curl -s https://e.com'
+brun "B8 wget -O repo"                 2 "$N" /repo 'wget -O src/a.py https://e.com'
+brun "B8 wget --output-document"       2 "$N" /repo 'wget --output-document src/a https://e.com'
+brun "B8 wget plain URL writes cwd"    2 "$N" /repo 'wget https://e.com/x'
+brun "B8 wget -O tmp"                  0 "$N" /repo 'wget -O /tmp/x https://e.com'
+brun "B8 wget -P tmp"                  0 "$N" /repo 'wget -P /tmp https://e.com/x'
+brun "B8 wget -qO- stdout"             0 "$N" /repo 'wget -qO- https://e.com'
+brun "B8 wget plain URL in tmp cwd"    0 "$N" /tmp  'wget https://e.com/x'
+brun "B8 tar -x cwd"                   2 "$N" /repo 'tar -xzf /tmp/a.tgz'
+brun "B8 tar xzf -C repo"              2 "$N" /repo 'tar xzf /tmp/a.tgz -C src'
+brun "B8 tar -x -C tmp"                0 "$N" /repo 'tar -xzf /tmp/a.tgz -C /tmp/x'
+brun "B8 tar -t list"                  0 "$N" /repo 'tar -tzf /tmp/a.tgz'
+brun "B8 unzip cwd"                    2 "$N" /repo 'unzip /tmp/a.zip'
+brun "B8 unzip -d repo"                2 "$N" /repo 'unzip -o /tmp/a.zip -d src'
+brun "B8 unzip -d tmp"                 0 "$N" /repo 'unzip /tmp/a.zip -d /tmp/x'
+brun "B8 unzip -l list"                0 "$N" /repo 'unzip -l /tmp/a.zip'
+brun "B8 mkdir is not a write (guard)" 0 "$N" /repo 'mkdir -p src/new'
+echo "== B9: find -exec and xargs writers =="
+brun "B9 find -exec cp"                2 "$N" /repo "find . -name '*.py' -exec cp {} /repo/dest/ \\;"
+brun "B9 find -execdir touch +"        2 "$N" /repo "find . -name '*.py' -execdir touch {} +"
+brun "B9 xargs sed -i (stdin files)"   2 "$N" /repo "find . -name '*.py' -print0 | xargs -0 sed -i 's/a/b/'"
+brun "B9 xargs touch (stdin files)"    2 "$N" /repo 'ls | xargs touch'
+brun "B9 find -exec cp into tmp"       0 "$N" /repo "find /tmp -name '*.py' -exec cp {} /tmp/dest/ \\;"
+brun "B9 find -exec grep (guard)"      0 "$N" /repo "find . -name '*.py' -exec grep -l x {} \\;"
+brun "B9 xargs grep (guard)"           0 "$N" /repo "find . -name '*.py' | xargs grep -l foo"
+echo "== C10: comparisons are not redirects =="
+brun "C10 [[ z > a ]]"                 0 "$N" /repo '[[ z > a ]]'
+brun "C10 [ \\> ]"                     0 "$N" /repo '[ "$a" \> "$b" ]'
+brun "C10 (( 3 > 2 ))"                 0 "$N" /repo '(( 3 > 2 ))'
+brun "C10 \$(( a > b ))"               0 "$N" /repo 'echo $(( a > b ))'
+brun "C10 [[ ]] then real write"       2 "$N" /repo '[[ -f x ]] && echo y > src/a.py'
+echo "== C11: dd/tee without a file operand =="
+brun "C11 dd without of="              0 "$N" /repo 'dd if=src/a.py bs=1 count=1 | od -x'
+brun "C11 tee no operand"              0 "$N" /repo 'printf x | tee'
+brun "C11 tee /dev/null"               0 "$N" /repo 'tee /dev/null'
+brun "C11 tee >/dev/null"              0 "$N" /repo 'tee >/dev/null'
+echo "== C12: in-place flag parsing =="
+brun "C12 perl -MFile::Find -ne"       0 "$N" /repo "perl -MFile::Find -ne 'print' src/a.py"
+brun "C12 perl -I/lib -ne"             0 "$N" /repo 'perl -I/lib -ne 1 x'
+brun "C12 perl -lne (guard)"           0 "$N" /repo "perl -lne 'print' src/a.py"
+brun "C12 perl -pi -e (guard)"         2 "$N" /repo "perl -pi -e 's/a/b/' src/a.py"
+brun "C12 perl -pie (guard)"           2 "$N" /repo "perl -pie 's/a/b/' src/a.py"
+brun "C12 perl -lpi -e"                2 "$N" /repo "perl -lpi -e 's/a/b/' src/a.py"
+brun "C12 sed -Ei (guard)"             2 "$N" /repo "sed -Ei 's/a/b/' src/a.py"
+brun "C12 sed -ni (guard)"             2 "$N" /repo "sed -ni 's/a/b/p' src/a.py"
+brun "C12 sed -i'' (guard)"            2 "$N" /repo "sed -i'' 's/a/b/' src/a.py"
+brun "C12 sed --in-place=.bak (guard)" 2 "$N" /repo "sed --in-place=.bak 's/a/b/' src/a.py"
+brun "C12 sed -E no -i (guard)"        0 "$N" /repo "sed -E 's/a/b/' src/a.py"
+echo "== C13: the sed/perl script is not a destination =="
+brun "C13 sed -i.bak into tmp"         0 "$N" /repo "sed -i.bak 's/a/b/' /tmp/x"
+brun "C13 perl -pi -e into tmp"        0 "$N" /repo "perl -pi -e 's/a/b/' /tmp/x"
+brun "C13 sed -i -e tmp + repo"        2 "$N" /repo "sed -i -e 's/a/b/' /tmp/x src/a.py"
+echo "== read-only sweep (guards) =="
+brun "RO pipe 2>&1 | tail"             0 "$N" /repo 'npm test 2>&1 | tail -20'
+brun "RO for loop echo"                0 "$N" /repo 'for f in *.py; do echo "$f"; done'
+brun "RO test && ||"                   0 "$N" /repo 'test -f x && echo ok || echo no'
+brun "RO process substitution"         0 "$N" /repo 'diff <(ls a) <(ls b)'
+brun "RO curl | jq"                    0 "$N" /repo 'curl -s https://e.com | jq .'
+brun "RO python -c"                    0 "$N" /repo "python3 -c 'print(1)'"
+brun "RO quoted metachar echo"         0 "$N" /repo 'echo "a > b; c | d"'
+brun "RO git log format"               0 "$N" /repo "git log --format='%h > %s' -3"
+brun "RO cat heredoc to stdout"        0 "$N" /repo 'cat <<EOF
+hello > world
+EOF'
+
+echo "== D14: fail open on BaseException; a decided deny stays 2 =="
+# Fault injection runs the REAL hook via runpy as __main__, so its actual top-level
+# handler executes (a direct main() call would bypass the contract).
+cat > "$TD/f_sysexit.py" <<'PY'
+import runpy, sys
+class S:
+    def read(self, *a, **k): raise SystemExit(7)
+sys.stdin = S()
+runpy.run_path(sys.argv[1], run_name="__main__")
+PY
+cat > "$TD/f_kbint.py" <<'PY'
+import runpy, sys
+class S:
+    def read(self, *a, **k): raise KeyboardInterrupt()
+sys.stdin = S()
+runpy.run_path(sys.argv[1], run_name="__main__")
+PY
+# stderr whose every write/flush raises: the deny message cannot be delivered, but the
+# verdict must still be 2 (on 5143ee0 the KeyboardInterrupt escaped print()).
+cat > "$TD/f_stderr_kbint.py" <<'PY'
+import runpy, sys
+class E:
+    def write(self, *a): raise KeyboardInterrupt()
+    def flush(self): raise KeyboardInterrupt()
+sys.stderr = E()
+runpy.run_path(sys.argv[1], run_name="__main__")
+PY
+# broken stderr on an ALLOW with debug logging on must not change exit 0.
+cat > "$TD/f_stderr_oserror.py" <<'PY'
+import os, runpy, sys
+class E:
+    def write(self, *a): raise OSError(32, "broken pipe")
+    def flush(self): raise OSError(32, "broken pipe")
+os.environ["DELEGATION_GATE_DEBUG"] = "1"
+sys.stderr = E()
+runpy.run_path(sys.argv[1], run_name="__main__")
+PY
+frun(){ # name expected_exit shim payload
+  printf '%s' "$4" | python3 "$TD/$3" "$GATE" >/dev/null 2>&1; rc=$?
+  if [ "$rc" = "$2" ]; then echo "  PASS  $1 (exit $rc)"; pass=$((pass+1));
+  else echo "  FAIL  $1 (exit $rc, expected $2)"; fail=$((fail+1)); fi
+}
+WRITE_PAYLOAD=$(bpay "$N" /repo 'echo x > src/a.py')
+READ_PAYLOAD=$(bpay "$N" /repo 'ls -la')
+frun "D14 SystemExit(7) from stdin.read"      0 f_sysexit.py "$WRITE_PAYLOAD"
+frun "D14 KeyboardInterrupt from stdin.read"  0 f_kbint.py "$WRITE_PAYLOAD"
+frun "D14 deny latched despite raising stderr" 2 f_stderr_kbint.py "$WRITE_PAYLOAD"
+frun "D14 allow survives broken stderr"       0 f_stderr_oserror.py "$READ_PAYLOAD"
+
+# Executed-case count: removing or skipping fixtures must not keep the suite green.
+EXPECTED_CASES=193
+executed=$((pass+fail))
+echo; echo "EXECUTED: $executed cases (expected $EXPECTED_CASES)"
+if [ "$executed" != "$EXPECTED_CASES" ]; then
+  echo "  FAIL  executed-case count $executed != expected $EXPECTED_CASES"; fail=$((fail+1))
+fi
+echo "RESULT: $pass passed, $fail failed"; rm -rf "$TD"; [ "$fail" = 0 ]

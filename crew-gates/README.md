@@ -35,15 +35,45 @@ the token, run on its own with a non-error result, edit made in a later step. Th
 recovers sessions where mid-turn assistant text is not persisted at hook time.
 
 Bash is covered too, but only commands that write a file need a classification.
-Read-only commands (`ls`, `git status`, `grep`, `cat file`) always pass, and so does the
-`:` marker. The gate treats these as writes: `>`/`>>` redirects (including heredocs
-that feed one), `tee`, `dd of=`, `sed -i`/`perl -i`/`ruby -i`, `cp`/`mv`/`install`/
-`rsync`/`ln`, and heredoc scripts that call a file-write API. A write is exempt when
-every destination it can resolve (relative paths resolve against the payload `cwd`) is
-under `/tmp/`, `/private/tmp/`, `/var/tmp/`, `/dev/`, or the same agent-bookkeeping
-paths the Edit/Write exemption uses. A write with no resolvable destination is gated.
-This check is a heuristic. It misses writes whose destination is built from a variable,
-writes inside `python3 -c` or `eval`, and helper scripts that write for the command.
+
+**Detected as writes:**
+
+- Output redirections, spaced or not: `>`, `>>`, `>|`, `&>`, `&>>`, `>&FILE`, `<>`
+  (including on a line that starts a heredoc). `2>&1`, `>&2`, `1>&-` and `>(cmd)` are
+  not writes.
+- A heredoc script body that calls a file-write API (`open(..., "w")`, `.write(`,
+  `write_text`, `writeFileSync`, `shutil.copy`/`move`, `os.replace`/`rename`/`remove`).
+- These commands in command position, including behind `sudo`/`env`/`nice`/`time`/
+  `timeout`/`nohup`/`command`/`exec`/`xargs` (their options are skipped) and after
+  `find -exec`/`-execdir`/`-ok`: `tee FILE`, `dd of=`, `sed -i` (also `-i.bak`, `-Ei`,
+  `--in-place`), `perl -i` / `ruby -i` (the flag must really be set, not just a letter
+  `i` somewhere in `-MFile::Find`), `cp`/`mv`/`install`/`ln`/`rsync` (`-t DIR` /
+  `--target-directory` honoured), `touch`, `truncate`, `patch` (not `--dry-run`),
+  `git apply` (not `--check`/`--stat`), `curl -o`/`-O`, `wget` (`-O`, or cwd/`-P`),
+  `tar -x` (`-C` or cwd), `unzip` (`-d` or cwd).
+
+**Never gated:** the `:` marker, and read-only commands, including `[[ a > b ]]`,
+`[ a \> b ]`, `(( 3 > 2 ))`, quoted `>` (`awk '$1 > 5'`), `dd` without `of=`, `tee` with
+no file or only `/dev/null`, `sed`/`perl` without an in-place flag, `curl`/`wget` to
+stdout, `tar -t`, `unzip -l`, and `git apply --check`.
+
+**Exemption rule:** a write passes only when every destination resolves (relative paths
+against the payload `cwd`, `..` collapsed) to an absolute path under `/tmp`,
+`/private/tmp`, `/var/tmp`, `/dev/`, or `$CLAUDE_CONFIG_DIR` (default `~/.claude`)
+followed by `/projects/` or `/_backups/`. A destination that cannot be resolved (it
+contains `$`, a backtick, or a leading `~`, or is relative with no `cwd`) is never
+exempt, so such writes are gated. So is a write whose destination is unknown, such as a
+heredoc script with no path literal, or `xargs touch` reading its files from stdin. A
+heredoc script counts as exempt only if every path-like string literal in it is exempt.
+A Bash payload never gets the Edit/Write `file_path` exemption.
+
+**Known limits (not detected):** writes inside `python -c`, `node -e`, `awk`, or `eval`
+strings, and in helper scripts or shell functions/aliases that write for the command;
+writes in a quoted command substitution (`"$(cmd > f)"`); destinations reached through
+a symlink (paths are compared lexically, with no realpath containment check); `tar -c`/
+`-f` archive creation, `sort -o`, and `find -delete`/`-fprint`. **Known asymmetry:** the
+Edit/Write path still uses an unanchored substring test (`/.claude/projects/` anywhere
+in `file_path`), while Bash destinations are anchored to the real config dir.
 
 ### Read budget (`read-budget-gate.py`)
 
