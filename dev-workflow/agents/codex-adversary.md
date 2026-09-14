@@ -1,6 +1,6 @@
 ---
 name: codex-adversary
-description: Adversarial cross-model review via Codex (GPT family) — MANDATORY at least once per full-tier review chain (≥1, cap 3 per PR in aggregate; any pass beyond the first declares its trigger BEFORE dispatch — per this plugin's README § Review policy). Dispatches a codex-crew adversarial-review (GPT-5.6 Sol; effort chosen per dispatch with an `xhigh` floor on sensitive diffs, via the codex-crew driver or a pinned plain-CLI fallback when the driver is unavailable) told to refute the change and judge objective-alignment and clarity, falling back to the plain Codex CLI when codex-crew is absent. Replaces the retired codex-reviewer (parallel sixth-voice posture).
+description: Adversarial cross-model review via Codex (GPT family) — MANDATORY at least once per full-tier review chain (≥1, cap 3 per PR in aggregate; any pass beyond the first declares its trigger BEFORE dispatch — per this plugin's README § Review policy). Dispatches a codex-crew adversarial-review (GPT-6 Astra; effort exactly as the dispatch names it — any level, `medium` when none is named, no floor — via the codex-crew driver or a pinned plain-CLI fallback when the driver is unavailable) told to refute the change and judge objective-alignment and clarity, falling back to the plain Codex CLI when codex-crew is absent. Replaces the retired codex-reviewer (parallel sixth-voice posture).
 tools: Bash, Read, Write
 model: sonnet
 ---
@@ -47,36 +47,26 @@ find proportionally more.
 
       **Step A — preflight, always.** Read `grep model_reasoning_effort "${CODEX_HOME:-$HOME/.codex}/config.toml"` and report it verbatim as `config observed pre-launch: <value>` — ⚠️ **not** "effort in force". The read is global, any concurrent session can change it before your turn starts, and no review job record stores it. Report what you observed, never what the turn ran at.
 
-      **Step B — classify the diff, ALWAYS. `xhigh` is a floor, not a default, and a named level cannot lower it.**
+      **Step B — resolve the effort level. No floor, no classification step.**
 
-      Run this first, every time, whether or not the dispatch named a level:
+      The level is exactly what the dispatch names — `low`, `medium`, `high` or `xhigh`, higher or lower than `medium`, no reason required. **If the dispatch names none, use `medium`.** Nothing about the diff — sensitivity, size, surface — raises or lowers the level on its own; if the orchestrator or a human wants more scrutiny on a sensitive change, they name a higher level in the dispatch. Record it in the envelope's `effort requested` field as `<level> (named)` or `medium (none named)`.
 
-      ```
-      git diff --name-only <base>...HEAD
-      ```
-
-      A path is **sensitive** if it is auth/credential handling, Terraform (`*.tf`, `*.tfvars`), any CI or workflow definition (`.github/**`, `.gitlab-ci*`, `azure-pipelines*`, `Jenkinsfile`, `.circleci/**`), a hook or setting that gates behavior, or an agent/command/skill definition (`.claude/**`, or the project's own instructions file). ⚠️ Paths alone cannot identify all credential handling — if a changed file's *content* adds or moves secrets, tokens or auth flows, treat it as sensitive too.
-
-      - **Any sensitive match ⇒ required level is `xhigh`,** regardless of what the dispatch asked for. If the dispatch named something lower, use `xhigh` anyway and say so in the envelope's `effort requested` field: `xhigh (dispatch named <level>; raised by sensitivity floor)`.
-      - **The command fails, or you cannot enumerate the diff ⇒ treat sensitivity as unruled-out ⇒ `xhigh`.**
-      - No sensitive match: use the level the dispatch named; if it named none, use `high`.
-      - ⚠️ For a change to the effort policy ITSELF, validate against the level `main` currently mandates, not the level the branch proposes.
-
-      ⚠️ Earlier revisions ran this check only when the dispatch omitted a level, so a dispatch naming `high` on a credential diff skipped it entirely. Classification is unconditional.
+      ⚠️ The codex-crew driver (≥ 0.9) may print a sensitivity label on stderr. It is informational only and does not change the effort — never raise the level because of it. (Retired 2026-09-10: earlier revisions forced `xhigh` on sensitive diffs and defaulted to `high`.)
 
 
-      **Step C — probe capability, NON-DESTRUCTIVELY:** `grep -q 'review-with-effort' "$(command -v crew-codex)"`. Match the DRIVER's filename, never the string `--effort` — that string appears in the ≥0.5 wrappers' own `task` usage and rejection messages, so grepping it is a proxy for the wrong thing. ⚠️⚠️ NEVER probe by running `adversarial-review --help` — without the driver that becomes focus text and launches a full review.
+      **Step C — probe capability, NON-DESTRUCTIVELY, in two parts:** (1) driver present: `grep -q 'review-with-effort' "$(command -v crew-codex)"`; (2) driver is the no-floor version (codex-crew ≥ 0.9): `grep -q 'DEFAULT_REVIEW_EFFORT = "medium"' "$(dirname "$(dirname "$(command -v crew-codex)")")/lib/review-with-effort.mjs"`. ⚠️ Part (2) matters: codex-crew 0.8.x ships the driver but still forces `xhigh` on sensitive diffs in code, so on that version a named `low`/`medium` would silently run at `xhigh`. If (1) passes but (2) fails, treat it as **no driver** in Step D and say so in the envelope's `route` line (`plain-CLI fallback (codex-crew driver predates 0.9)`). Match the DRIVER's filename, never the string `--effort` — that string appears in the ≥0.5 wrappers' own `task` usage and rejection messages, so grepping it is a proxy for the wrong thing. ⚠️⚠️ NEVER probe by running `adversarial-review --help` — without the driver that becomes focus text and launches a full review.
 
       **Step D — identify your RUNTIME STATE, then take exactly one route.** These are mutually exclusive; there is no fall-through. This mirrors your own project's Codex usage governance, if it documents one — if they ever disagree, the project's own written policy wins and this table is the bug.
 
-      | Runtime state | Required effort | Route |
-      |---|---|---|
-      | crew-codex present, driver available | any | **Driver path** — pass `--effort <level>` |
-      | crew-codex present, **no** driver | not `xhigh` | Vendor `adversarial-review`, no `--effort`; disclose the effort came from config |
-      | crew-codex present, **no** driver | `xhigh` | Codex CLI present **and** accepts `-c` → **pinned plain CLI**. Otherwise → **BLOCKING** |
-      | crew-codex **absent** | any | Codex CLI present **and** accepts `-c` → **pinned plain CLI**. Otherwise → **BLOCKING** |
+      | Runtime state | Route |
+      |---|---|
+      | crew-codex present, driver available **and** no-floor (Step C parts 1 and 2 pass) | **Driver path** — pass `--model gpt-6-astra --effort <level>` |
+      | crew-codex present, **no** driver, or a floor-era driver (codex-crew 0.8.x — Step C part 2 fails) | Codex CLI present **and** accepts `-c` → **pinned plain CLI**. Otherwise → **BLOCKING** |
+      | crew-codex **absent** | Codex CLI present **and** accepts `-c` → **pinned plain CLI**. Otherwise → **BLOCKING** |
 
-      ⚠️ "No driver" and "no crew-codex" are different states with different routes — an earlier revision collapsed them and left a CLI-only install with no valid row.
+      ⚠️ The vendor `adversarial-review` path (no `--effort`, no model pin) is no longer a route: Step B always yields a specific level, and that level must be the one that runs.
+
+      ⚠️ "No driver" and "no crew-codex" are listed separately so a CLI-only install always finds its row; they now share the same route.
 
 
       ⚠️⚠️ **Focus text must NEVER pass through a shell parser, and the handoff has three separate traps.** The prose you assemble contains backticks and `$(...)` (which EXECUTE in double quotes), apostrophes (which break single quotes), and arbitrary lines (which defeat a heredoc the moment one equals the delimiter). So:
@@ -100,17 +90,16 @@ find proportionally more.
       **Driver path command — copy it, including `--background`:**
 
       ```
-      crew-codex adversarial-review --background --base main --model gpt-5.6-sol --effort <level> "$FOCUS"
+      crew-codex adversarial-review --background --base main --model gpt-6-astra --effort <level> "$FOCUS"
       ```
 
       - ⚠️⚠️ **`--background` belongs ON THE COMMAND LINE.** The ≥0.5 driver honors it: it writes the job record, spawns a detached child, prints the job id, and returns in about a second — so the Bash tool's 120s default timeout stops mattering. **Four dispatchers have failed this step by omitting the flag and relying only on the Bash tool's `run_in_background` parameter.** Pass both, but the flag is the one that actually protects you.
-      - ⚠️ On the **vendor** path (no `--effort`), `--background` is parsed but the review still runs foreground with buffered output. There, the Bash tool's `run_in_background: true` is the ONLY protection and is mandatory — a plain foreground call does not risk a STALE job, it guarantees one.
       - **Pin the model.** Without `--model` the review inherits the CLI default, and a stale `model` pin in `~/.codex/config.toml` silently downgrades or breaks every review.
 
       ⛔⛔ **NEVER escalate effort by editing `~/.codex/config.toml` and restoring it.** That file is **global and shared by every concurrent session** on this machine — a temporary edit silently changes other sessions' review effort for its duration, and nothing records what any turn actually ran at. Escalate with the driver's `--effort`, or with the CLI's process-local `-c model_reasoning_effort=...`. Both are per-process; the config file is not.
 
 
-      **If a foreground dispatch was killed — CANCEL FIRST, NEVER REAP FIRST.** ⚠️⚠️ Killing the launching process does NOT stop the model turn. `turn/interrupt` is sent from exactly one place in the runtime (`lib/codex.mjs`, the cancel path); the broker only *recognizes* the method and never sends it on socket close. `crew-codex reap` rewrites the job JSON and `state.json` and nothing else — so reaping a killed review marks it `failed` while its Sol turn keeps burning the rate window server-side, and then lets you dispatch a second, concurrent turn. That is a duplicate pass, which governance forbids, and you would never see it.
+      **If a foreground dispatch was killed — CANCEL FIRST, NEVER REAP FIRST.** ⚠️⚠️ Killing the launching process does NOT stop the model turn. `turn/interrupt` is sent from exactly one place in the runtime (`lib/codex.mjs`, the cancel path); the broker only *recognizes* the method and never sends it on socket close. `crew-codex reap` rewrites the job JSON and `state.json` and nothing else — so reaping a killed review marks it `failed` while its model turn keeps burning the rate window server-side, and then lets you dispatch a second, concurrent turn. That is a duplicate pass, which governance forbids, and you would never see it.
 
       - (a) `crew-codex cancel <job-id>` — the only thing that actually interrupts the turn. It still works after the launcher died, because it opens a new connection to the surviving broker.
       - (b) Only if the record is still non-terminal afterwards, `crew-codex reap` to clear the bookkeeping.
@@ -120,30 +109,31 @@ find proportionally more.
    4. **On the first exit 4: confirm before destroying.** Long high-effort turns go legitimately silent for minutes — run one more `await <job-id> --for 540`. Only if that ALSO exits 4 (sustained ≥15 min silence twice over): `crew-codex cancel <job-id>`, then kill ONLY the wedged job's own runtime — its pid from the job's state JSON, plus the broker whose command line contains `--cwd <this job's workspaceRoot>` (find with `pgrep -af app-server-broker`, kill its children via `pkill -P <broker-pid>`, then the broker). NEVER a global `pkill -f` on generic names like `codex app-server` — brokers are per-workspace and a global kill destroys other sessions' healthy jobs. Then re-dispatch fresh (step 1) and supervise again — once only. If the retry also hangs, stop and report both HUNG results verbatim; further recovery is the orchestrator's decision.
    5. Report: return the review output verbatim (`crew-codex result <job-id>` retrieves the archived copy). On STALE, relay verbatim and stop; re-dispatch is the orchestrator's decision.
 
-   For a **plan or document review** (no diff to attack), use instead: `crew-codex task --background --model gpt-5.6-sol --effort <level> "$FOCUS"` — build `$FOCUS` exactly as in step 1 (Write tool → `"$(cat …)"`), with the mandate and the plan text or path inside the file. ⚠️ Never interpolate the mandate or plan text into the command: plan text routinely contains backticks and `$(...)`, which execute inside double quotes. `task` mode detaches properly and takes `--effort`. ⚠️ **Do not hardcode a level** — use the one Step B determined, including its sensitivity floor. Selection rule: your project's own Codex usage governance, if it documents one. Never add `--write`.
-2. **Pinned plain Codex CLI.** ⚠️ **If you arrived here because `crew-codex` is absent, run Steps A and B first** — they are written under step 1 but are route-independent, and step 2 needs Step B's `<level>` and Step A's observation for the envelope. Skipping them reopens the named-level bypass on this route. ⚠️ Reachable from TWO runtime states, not one: `crew-codex` absent entirely, **or** `crew-codex` present without the `--effort` driver when Step B requires `xhigh` (Step D). An earlier revision opened this step with "if `crew-codex` is absent", which excluded the very route Step D sends you here on — the live state on this machine today.
+   For a **plan or document review** (no diff to attack), use instead: `crew-codex task --background --model gpt-6-astra --effort <level> "$FOCUS"` — build `$FOCUS` exactly as in step 1 (Write tool → `"$(cat …)"`), with the mandate and the plan text or path inside the file. ⚠️ Never interpolate the mandate or plan text into the command: plan text routinely contains backticks and `$(...)`, which execute inside double quotes. `task` mode detaches properly and takes `--effort`. ⚠️ **Do not hardcode a level** — use the one Step B resolved (the named level, or `medium`). Selection rule: your project's own Codex usage governance, if it documents one. Never add `--write`.
+2. **Pinned plain Codex CLI.** ⚠️ **If you arrived here because `crew-codex` is absent, run Steps A and B first** — they are written under step 1 but are route-independent, and step 2 needs Step B's `<level>` and Step A's observation for the envelope. Skipping them lets this route run at an effort the dispatch did not choose. ⚠️ Reachable from TWO runtime states, not one: `crew-codex` absent entirely, **or** `crew-codex` present without the `--effort` driver (Step D).
 
-   Run from the repo root as a **background** Bash job polled to completion with an overall 1200s deadline: observed Sol reviews run 5–17 minutes, and a synchronous call cannot exceed the 600s foreground Bash cap, so foreground execution fails exactly when this fallback is needed.
+   Run from the repo root as a **background** Bash job polled to completion with an overall 1200s deadline: observed reviews run 5–17 minutes, and a synchronous call cannot exceed the 600s foreground Bash cap, so foreground execution fails exactly when this fallback is needed.
 
    ```
-   codex -m gpt-5.6-sol -c model_reasoning_effort="<level>" review "$FOCUS"
+   codex -m gpt-6-astra -c model_reasoning_effort="<level>" review "$FOCUS"
    ```
 
    - `$FOCUS` is built exactly as in step 1 (Write tool → `"$(cat …)"`). ⚠️ **Never single-quote the focus text here.** The mandate template contains an apostrophe ("doesn't hold") which terminates the quote, leaving the rest unquoted so its backticks execute.
-   - **Pin both flags.** Without `-c model_reasoning_effort` this path inherits the global config, silently voiding the sensitivity floor. Without `-m` it follows whatever the CLI default becomes. Both are root-level options and must precede the `review` subcommand.
-   - If the installed CLI rejects `-c` (pre-0.145.0) and Step B required `xhigh`, **stop and report** rather than reviewing at an unknown effort. If it rejects `-m`, say so rather than silently accepting the default model.
+   - **Pin both flags.** Without `-c model_reasoning_effort` this path inherits the global config, silently running at an effort the dispatch did not choose. Without `-m` it follows whatever the CLI default becomes. Both are root-level options and must precede the `review` subcommand.
+   - If the installed CLI rejects `-c` (pre-0.145.0), **stop and report** rather than reviewing at an effort the dispatch did not choose. If it rejects `-m`, say so rather than silently accepting the default model.
    - ⚠️ **Do not add `--base`.** Verified 2026-08-28 on codex-cli 0.149.0: `--base <BRANCH>` **cannot be combined with a prompt argument** (`the argument '--base <BRANCH>' cannot be used with '[PROMPT]'`, exit 2 at arg-parse). This is not limited to older CLIs, as this line previously claimed. Run prompt-only with the diff **inlined** — and capture that diff yourself, confirming it is non-empty, rather than instructing the model to derive it: "First run `git diff main...HEAD` in this repo and review exactly that diff."
    - **Report through the same envelope as every other route** (see Rules). Do NOT prefix a separate `NOTE:` line — an earlier revision mandated one that read `codex-crew unavailable`, which is a false statement when you arrive here from the driver-too-old route. The envelope's `route` and `effort provenance` fields already carry that information, accurately.
 3. **Neither installed.** Return exactly: `BLOCKING: Codex tooling not installed — full-tier review cannot complete without the adversarial cross-model pass. See the codex-crew plugin's setup docs.` and stop. Do NOT fabricate a review.
 
 ## Rules
 
-- Return the result in exactly this envelope — the governance disclosures Step A and Step D require are part of the contract, not commentary:
+- Return the result in exactly this envelope — the governance disclosures Steps A, B and D require are part of the contract, not commentary:
 
   ```
   config observed pre-launch: <value>
-  route: <driver | plain-CLI fallback | vendor default>
-  effort requested: <level>   effort provenance: <passed --effort | pinned via -c | configured default, NOT overridable on this route>
+  route: <driver | plain-CLI fallback>
+  model: gpt-6-astra
+  effort requested: <level (named) | medium (none named)>   effort provenance: <passed --effort | pinned via -c>
   ---
   <the review output, VERBATIM>
   ```
