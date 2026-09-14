@@ -43,19 +43,29 @@ Bash is covered too, but only commands that write a file need a classification.
   not writes.
 - A heredoc script body that calls a file-write API (`open(..., "w")`, `.write(`,
   `write_text`, `writeFileSync`, `shutil.copy`/`move`, `os.replace`/`rename`/`remove`).
+  Heredoc terminators match bash: `<<EOF` ends only on a line that is exactly `EOF`,
+  `<<-EOF` strips leading tabs only. `<<<` is a herestring, not a heredoc.
+- Command substitutions (`$(...)`, backticks) inside `[[ ]]`, `(( ))`, and `$(( ))`,
+  analysed like top-level shell: `[[ -n $(echo x > f) ]]` is a write.
 - These commands in command position, including behind `sudo`/`env`/`nice`/`time`/
-  `timeout`/`nohup`/`command`/`exec`/`xargs` (their options are skipped) and after
-  `find -exec`/`-execdir`/`-ok`: `tee FILE`, `dd of=`, `sed -i` (also `-i.bak`, `-Ei`,
-  `--in-place`), `perl -i` / `ruby -i` (the flag must really be set, not just a letter
-  `i` somewhere in `-MFile::Find`), `cp`/`mv`/`install`/`ln`/`rsync` (`-t DIR` /
-  `--target-directory` honoured), `touch`, `truncate`, `patch` (not `--dry-run`),
-  `git apply` (not `--check`/`--stat`), `curl -o`/`-O`, `wget` (`-O`, or cwd/`-P`),
-  `tar -x` (`-C` or cwd), `unzip` (`-d` or cwd).
+  `timeout`/`nohup`/`command`/`builtin`/`exec`/`xargs` (their options are skipped) and
+  after `find -exec`/`-execdir`/`-ok`/`-okdir`: `tee FILE`, `dd of=`, `sed -i` (also
+  `-i.bak`, `-Ei`, `--in-place`), `perl -i` / `ruby -i` (the flag must really be set, not
+  just a letter `i` somewhere in `-MFile::Find`), `cp`/`mv`/`install`/`ln` (`-t DIR` /
+  `--target-directory` honoured), `rsync` (the destination plus `--log-file`,
+  `--write-batch`, `--only-write-batch`, and `-T`/`--temp-dir`/`--backup-dir`/
+  `--partial-dir`), `touch`, `truncate`, `patch` (not `--dry-run`), `git apply` (not
+  `--check`/`--stat`), `curl -o`/`-O` and its side files (`-D`/`--dump-header`,
+  `-c`/`--cookie-jar`, `--trace`, `--trace-ascii`, `--stderr`, `--etag-save`, `--hsts`;
+  `-` is stdout), `wget` (`-O`, or cwd/`-P`; also `-o`, `-a`, `--save-cookies`,
+  `--warc-file`), `tar -x` (`-C` or cwd), `unzip` (`-d` or cwd).
+- A wrapper's own output file: `time -o FILE` / `--output=FILE`.
 
 **Never gated:** the `:` marker, and read-only commands, including `[[ a > b ]]`,
-`[ a \> b ]`, `(( 3 > 2 ))`, quoted `>` (`awk '$1 > 5'`), `dd` without `of=`, `tee` with
-no file or only `/dev/null`, `sed`/`perl` without an in-place flag, `curl`/`wget` to
-stdout, `tar -t`, `unzip -l`, and `git apply --check`.
+`[ a \> b ]`, `(( 3 > 2 ))`, quoted `>` (`awk '$1 > 5'`), a `>` inside an unquoted
+`# comment`, `dd` without `of=`, `tee` with no file or only `/dev/null`, `sed`/`perl`
+without an in-place flag, `curl`/`wget` to stdout, `tar -t`, `unzip -l`, and
+`git apply --check`.
 
 **Exemption rule:** a write passes only when every destination resolves (relative paths
 against the payload `cwd`, `..` collapsed) to an absolute path under `/tmp`,
@@ -67,11 +77,23 @@ heredoc script with no path literal, or `xargs touch` reading its files from std
 heredoc script counts as exempt only if every path-like string literal in it is exempt.
 A Bash payload never gets the Edit/Write `file_path` exemption.
 
-**Known limits (not detected):** writes inside `python -c`, `node -e`, `awk`, or `eval`
-strings, and in helper scripts or shell functions/aliases that write for the command;
-writes in a quoted command substitution (`"$(cmd > f)"`); destinations reached through
-a symlink (paths are compared lexically, with no realpath containment check); `tar -c`/
-`-f` archive creation, `sort -o`, and `find -delete`/`-fprint`. **Known asymmetry:** the
+**Known limits (not detected):** writes inside `python -c`, `node -e`, `awk`, `eval`, or
+`sh -c` / `bash -c` / `zsh -c` strings (including `find -exec sh -c '...'`), and in
+helper scripts or shell functions/aliases that write for the command; writes in a quoted
+command substitution (`"$(cmd > f)"`); destinations reached through a symlink (paths are
+compared lexically, with no realpath containment check); `tar -c`/`-f` archive
+creation, `sort -o`, and `find -delete`/`-fprint`; `scp`, `sftp`, and `dd`/`cat` run
+over `ssh` (not treated as writers); a command wrapped in literal `[[ ` ... ` ]]` words
+on one line (`echo [[ ; cp a src/b ; ]]` is read as one `[[ ]]` span, so the `cp` is
+missed); and a `#` after whitespace inside `${...}` (`${x:- # } > f` is read as a
+comment, hiding the redirect).
+
+**Known false blocks:** any heredoc body is scanned for write APIs regardless of the
+command consuming it, so `cat <<'EOF'` that merely displays code containing
+`open(..., 'w')` is gated; a `>` in a parameter expansion (`${VAR:->}`) reads as a
+redirect; a relative `rsync` `--temp-dir`/`--backup-dir`/`--partial-dir` (which rsync
+resolves against the destination) is treated as unknown and gated; `ls;# > f` (a
+comment not preceded by whitespace) still reads the `>`. **Known asymmetry:** the
 Edit/Write path still uses an unanchored substring test (`/.claude/projects/` anywhere
 in `file_path`), while Bash destinations are anchored to the real config dir.
 

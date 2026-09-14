@@ -403,6 +403,72 @@ brun "RO cat heredoc to stdout"        0 "$N" /repo 'cat <<EOF
 hello > world
 EOF'
 
+# ---------------------------------------------------------------------------------
+# Final-round regressions (parity with the global gate, false blocks, and stalls). Each
+# non-guard case gave the wrong exit, or exceeded its time limit, on 9c193a6.
+echo "== R1: rsync secondary output files =="
+brun "R1 rsync --log-file into repo"    2 "$N" /repo 'rsync /tmp/src /tmp/dest --log-file /repo/rsync.log'
+brun "R1 rsync --temp-dir abs repo"     2 "$N" /repo 'rsync -a /tmp/src/ /tmp/m/ --temp-dir=/repo/t'
+brun "R1 rsync all in tmp (guard)"      0 "$N" /repo 'rsync /tmp/a /tmp/b --log-file /tmp/l'
+echo "== R2: command substitutions inside [[ ]] / (( )) / \$(( )) =="
+brun "R2 [[ -n \$(echo x > f) ]]"       2 "$N" /repo '[[ -n $(echo x > src/a.py) ]]'
+brun "R2 (( \$(touch f; echo 1) > 0 ))" 2 "$N" /repo '(( $(touch src/a.py; echo 1) > 0 ))'
+brun "R2 [[ -n backtick cp ]]"          2 "$N" /repo '[[ -n `cp a src/b` ]]'
+brun "R2 \$(( \$(touch f) ))"           2 "$N" /repo 'echo $(( $(touch src/a.py) ))'
+brun "R2 [[ -n \$(ls) ]] (guard)"       0 "$N" /repo '[[ -n $(ls) ]]'
+brun "R2 [[ \$(wc -l < f) ]] (guard)"   0 "$N" /repo '[[ $(wc -l < f) -gt 3 ]]'
+echo "== R3/R4: no quadratic stall (each under 2.0s through the real hook) =="
+# The command is built by a python expression so the 10-50KB inputs never pass through
+# bash quoting; the helper times the hook subprocess itself.
+ptime(){ # gate transcript python-expression -> "rc elapsed"
+  python3 - "$1" "$2" "$3" <<'PY'
+import json,subprocess,sys,time
+gate,tr,expr=sys.argv[1:4]
+p=json.dumps({"tool_name":"Bash","transcript_path":tr,"cwd":"/repo","tool_input":{"command":eval(expr)}})
+t=time.perf_counter()
+r=subprocess.run([sys.executable,gate],input=p.encode(),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+print("%d %.3f" % (r.returncode, time.perf_counter()-t))
+PY
+}
+prun(){ # name expected_exit python-expression
+  _r=$(ptime "$GATE" "$N" "$3"); rc=${_r%% *}; el=${_r#* }
+  if [ "$rc" = "$2" ] && python3 -c 'import sys; sys.exit(not float(sys.argv[1]) < 2.0)' "$el" 2>/dev/null; then
+    echo "  PASS  $1 (exit $rc, ${el}s)"; pass=$((pass+1))
+  else echo "  FAIL  $1 (exit ${rc:-?}, ${el:-?}s; expected exit $2 under 2.0s)"; fail=$((fail+1)); fi
+}
+prun "R3 echo + 10000 digits"           0 '"echo " + "1" * 10000'
+prun "R4 (( x10000 unclosed"            0 '"((" * 10000'
+prun "R4 [[ a x8000 unclosed"           0 '"[[ a " * 8000'
+prun "R4 \$(( a x8000 unclosed"         0 '"$(( a " * 8000'
+prun "R4 50KB benign words/quotes/\\"   0 '("grep -rn '"'"'foo bar'"'"' \"baz qux\" a\\\\b src/ word \\'"'"' " * 2000)[:50000]'
+prun "R4 heredoc body open( x40000"     0 '"python3 - <<PY\n" + "open(" * 40000 + "\nPY"'
+brun "R3 10>file (guard)"               2 "$N" /repo 'exec 10>src/a.py'
+echo "== P1: a herestring does not open a heredoc =="
+brun "P1 <<< foo then write"            2 "$N" /repo 'grep x <<< foo
+echo y > src/a.py'
+brun "P1 <<< quoted then write"         2 "$N" /repo "grep x <<< 'foo'
+echo y > src/a.py"
+brun "P1 cat <<EOF > file (guard)"      2 "$N" /repo 'cat <<EOF > src/a
+x
+EOF'
+echo "== P2: options that write a side file =="
+brun "P2 time -o repo"                  2 "$N" /repo 'time -o /repo/time.log ls'
+brun "P2 curl -D repo"                  2 "$N" /repo 'curl -D /repo/h https://e.com'
+brun "P2 curl -c repo"                  2 "$N" /repo 'curl -c /repo/c https://e.com'
+brun "P2 wget --save-cookies repo"      2 "$N" /repo 'wget -qO- --save-cookies /repo/c https://e.com'
+brun "P2 curl -sD - (stdout)"           0 "$N" /repo 'curl -sD - https://e.com'
+brun "P2 time -o tmp"                   0 "$N" /repo 'time -o /tmp/t ls'
+echo "== F1: unquoted # comments are not commands =="
+brun "F1 ls # note > f"                 0 "$N" /repo 'ls -la # note > src/a.py'
+brun "F1 git log # see > 3"             0 "$N" /repo 'git log -3 # see > 3 commits'
+brun "F1 git status # then; cp"         0 "$N" /repo 'git status # then; cp a b'
+brun "F1 write then comment (guard)"    2 "$N" /repo 'echo x > src/a.py # comment'
+brun "F1 quoted \"#123\" (guard)"       2 "$N" /repo 'git log --grep "#123" > out.txt'
+brun "F1 \"\"# is a word (guard)"       2 "$N" /repo 'echo x ""# > src/a.py'
+echo "== F2: heredoc terminators match bash exactly =="
+brun "F2 ' EOF ' does not end <<EOF"    0 "$N" /repo $'cat <<EOF\n EOF \necho x > src/a.py\nEOF'
+brun "F2 tab-EOF ends <<-EOF"           2 "$N" /repo $'cat <<-EOF\n\tbody\n\tEOF\necho x > src/a.py'
+
 echo "== D14: fail open on BaseException; a decided deny stays 2 =="
 # Fault injection runs the REAL hook via runpy as __main__, so its actual top-level
 # handler executes (a direct main() call would bypass the contract).
@@ -453,7 +519,7 @@ frun "D14 deny latched despite raising stderr" 2 f_stderr_kbint.py "$WRITE_PAYLO
 frun "D14 allow survives broken stderr"       0 f_stderr_oserror.py "$READ_PAYLOAD"
 
 # Executed-case count: removing or skipping fixtures must not keep the suite green.
-EXPECTED_CASES=193
+EXPECTED_CASES=226
 executed=$((pass+fail))
 echo; echo "EXECUTED: $executed cases (expected $EXPECTED_CASES)"
 if [ "$executed" != "$EXPECTED_CASES" ]; then

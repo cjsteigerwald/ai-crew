@@ -288,32 +288,50 @@ def _answered_ok(later, tid):
 #
 # THIS DETECTION IS A HEURISTIC OVER ARBITRARY SHELL AND IS KNOWN TO BE INCOMPLETE. It
 # covers: output redirections (>, >>, >|, &>, &>>, >&file, <>; spaced or not), a
-# heredoc script body that writes, and these writers in command position (also behind
-# sudo/env/nice/time/timeout/xargs and after find -exec): tee FILE, dd of=, sed/perl/
-# ruby in-place, cp/mv/install/rsync/ln, touch, truncate, patch, git apply, curl -o/-O,
-# wget, tar extraction, unzip. It does NOT catch a write inside a `python3 -c` /
-# `node -e` / awk string, an eval'd command, a helper script or shell function that
-# writes on the command's behalf, or deliberate obfuscation. Destinations are compared
-# lexically: a symlink out of an exempt directory is not followed. The bias is
-# intentional: a missed exotic write is a gap, but gating an innocent read-only command
-# trains the user to switch the hook off, losing everything.
-_HEREDOC_START = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_]\w*)\1")
+# heredoc script body that writes, command substitutions inside [[ ]] / (( )), and these
+# writers in command position (also behind sudo/env/nice/time/timeout/nohup/command/
+# builtin/exec/xargs and after find -exec/-execdir/-ok/-okdir): tee FILE, dd of=, sed/
+# perl/ruby in-place, cp/mv/install/ln, rsync (destination plus --log-file/batch/temp/
+# backup/partial dirs), touch, truncate, patch, git apply, curl -o/-O and its dump/
+# cookie/trace files, wget, tar extraction, unzip, and `time -o FILE`. It does NOT catch
+# a write inside a `python3 -c` / `node -e` / awk / `sh -c` string, an eval'd command, a
+# helper script or shell function that writes on the command's behalf, or deliberate
+# obfuscation. Destinations are compared lexically: a symlink out of an exempt directory
+# is not followed. The bias is intentional: a missed exotic write is a gap, but gating
+# an innocent read-only command trains the user to switch the hook off, losing everything.
+#
+# Every pattern below must stay linear on hostile input: the hook runs on each Bash call,
+# and a regex that backtracks quadratically stalls the session (a 25,000-character
+# `((((` took 77s on a lazy span pattern).
+# `<<<` is a herestring, never a heredoc: the lookbehind stops `<<< foo` opening one.
+_HEREDOC_START = re.compile(r"(?<!<)<<-?\s*(['\"]?)([A-Za-z_]\w*)\1")
 # Every redirection operator, input ones included so they can be REMOVED before the
 # command words are tokenized (`cp a b < /dev/null` must not make /dev/null the
 # destination). Longest operators first. The target stops at whitespace and at shell
-# metacharacters, so `echo x>a` and `2>&1>out` both split correctly.
-_REDIR = re.compile(r"\d*(<<<|<<-?|&>>|&>|<>|>>|>\||>&|<&|>|<)[ \t]*([^\s;&|()<>]*)")
+# metacharacters, so `echo x>a` and `2>&1>out` both split correctly. The fd digits start
+# only at the beginning of a digit run: retrying inside the run was quadratic.
+_REDIR = re.compile(r"(?<!\d)\d*(<<<|<<-?|&>>|&>|<>|>>|>\||>&|<&|>|<)[ \t]*([^\s;&|()<>]*)")
+# An unquoted comment: `#` at the start of a word, i.e. after whitespace or at the start.
+# `${x#y}` and `$#` have no whitespace before the `#`, so they stay.
+_COMMENT = re.compile(r"(?:^|(?<=\s))#[^\n]*")
 # Placeholders written by _neutralize_quotes. _QPH replaces a quoted span that cannot
 # stand in as one plain word; its `$` makes it unresolvable, so as a destination it
 # gates. _EPH replaces an escaped metacharacter (`\>`, `\;`) or a quoted lone `;`/`+`.
 _QPH = "$__Q"
 _EPH = "__E__"
-# `[[ ... ]]` and `(( ... ))` / `$(( ... ))` compare with `>`; they never redirect.
-_TEST_SPANS = re.compile(r"\[\[[ \t][^\n]*?[ \t]\]\]|\$?\(\([^\n]*?\)\)")
+# `[[ ... ]]` and `(( ... ))` / `$(( ... ))` compare with `>`; they never redirect. The
+# spans are found by _blank_test_spans (a linear scan) from these openers and closers.
+_TEST_OPEN = re.compile(r"\[\[[ \t]|\$?\(\(")
+_BRACKET_CLOSE = re.compile(r"[ \t]\]\]")
+# Nesting depth past which a command substitution inside a test span is not analysed
+# further; its destination is then unknown (gated) rather than silently dropped.
+_SUBST_DEPTH = 4
 # Writes performed by a script fed in on a heredoc, for which no shell redirect appears.
-# sys.stdout/sys.stderr .write() are excluded: those are prints.
+# sys.stdout/sys.stderr .write() are excluded: those are prints. The open() argument
+# scan stops at `(` as well as `)`: with `[^)]*` a body of repeated `open(` rescanned to
+# the end from each one (quadratic), and a nested call already failed to match anyway.
 _SCRIPT_WRITE = re.compile(
-    r"""\bopen\s*\([^)]*,\s*['"][rbt+]*[wax][\w+]*['"]"""
+    r"""\bopen\s*\([^()]*,\s*['"][rbt+]*[wax][\w+]*['"]"""
     r"""|\.write_text\s*\(|\.writelines\s*\("""
     r"""|(?<!sys\.stdout)(?<!sys\.stderr)\.write\s*\("""
     r"""|\bwriteFileSync\s*\(|\bappendFileSync\s*\("""
@@ -331,22 +349,26 @@ _ENV_ASSIGN = re.compile(r"^\w+=")
 # Shell keywords that precede a command word without being it.
 _KEYWORDS = frozenset(("then", "else", "elif", "do", "if", "while", "until", "!"))
 # Wrappers: name -> (short options taking an argument, long options taking one,
-# leading positionals). Their options are stripped so `sudo -u root cp` finds `cp`.
+# leading positionals, option keys whose value is a file the wrapper itself writes).
+# Their options are stripped so `sudo -u root cp` finds `cp`.
+_NONE = frozenset()
 _WRAPPERS = {
     "sudo": (frozenset("CDghpRrTtUu"), frozenset((
         "--close-from", "--chdir", "--group", "--host", "--prompt", "--chroot",
-        "--role", "--type", "--command-timeout", "--other-user", "--user")), 0),
-    "env": (frozenset("uCSP"), frozenset(("--unset", "--chdir", "--split-string")), 0),
-    "nice": (frozenset("n"), frozenset(("--adjustment",)), 0),
-    "time": (frozenset("of"), frozenset(("--output", "--format")), 0),
-    "timeout": (frozenset("sk"), frozenset(("--signal", "--kill-after")), 1),
+        "--role", "--type", "--command-timeout", "--other-user", "--user")), 0, _NONE),
+    "env": (frozenset("uCSP"), frozenset(("--unset", "--chdir", "--split-string")), 0,
+            _NONE),
+    "nice": (frozenset("n"), frozenset(("--adjustment",)), 0, _NONE),
+    "time": (frozenset("of"), frozenset(("--output", "--format")), 0,
+             frozenset(("o", "--output"))),
+    "timeout": (frozenset("sk"), frozenset(("--signal", "--kill-after")), 1, _NONE),
     "xargs": (frozenset("ILnPsdEa"), frozenset((
         "--max-args", "--max-procs", "--max-chars", "--delimiter", "--arg-file",
-        "--max-lines")), 0),
-    "exec": (frozenset("a"), frozenset(), 0),
-    "nohup": (frozenset(), frozenset(), 0),
-    "command": (frozenset(), frozenset(), 0),
-    "builtin": (frozenset(), frozenset(), 0),
+        "--max-lines")), 0, _NONE),
+    "exec": (frozenset("a"), _NONE, 0, _NONE),
+    "nohup": (_NONE, _NONE, 0, _NONE),
+    "command": (_NONE, _NONE, 0, _NONE),
+    "builtin": (_NONE, _NONE, 0, _NONE),
 }
 
 
@@ -415,8 +437,11 @@ def _strip_heredocs(command):
         i += 1
         for m in _HEREDOC_START.finditer(line):
             delim = m.group(2)
+            # bash: `<<WORD` ends only on a line that IS the word; `<<-WORD` strips
+            # leading tabs, and nothing else, first.
+            tabs = m.group(0).startswith("<<-")
             body = []
-            while i < len(lines) and lines[i].strip() != delim:
+            while i < len(lines) and (lines[i].lstrip("\t") if tabs else lines[i]) != delim:
                 body.append(lines[i])
                 i += 1
             i += 1  # consume the terminator (or run off the end, which is fine)
@@ -448,7 +473,9 @@ def _neutralize_quotes(text):
             inner = text[i + 1:j]
             if inner in (";", "+"):
                 out.append(_EPH)
-            elif inner and any(c.isspace() or c in "<>;|&(){}`\\" for c in inner):
+            # `#` too: an unwrapped "#x" or `""#` would start a word with `#` and be
+            # stripped as a comment, taking a real redirect after it along.
+            elif not inner or any(c.isspace() or c in "<>;|&(){}`\\#" for c in inner):
                 out.append(_QPH)
             else:
                 out.append(inner)
@@ -562,6 +589,32 @@ def _copy(short, long_arg, target_keys, one_operand):
     return handler
 
 
+_RSYNC_LONG = frozenset((
+    "--log-file", "--log-file-format", "--exclude", "--include", "--exclude-from",
+    "--include-from", "--files-from", "--filter", "--rsh", "--rsync-path",
+    "--temp-dir", "--compare-dest", "--copy-dest", "--link-dest", "--backup-dir",
+    "--suffix", "--chmod", "--chown", "--partial-dir", "--timeout", "--contimeout",
+    "--bwlimit", "--password-file", "--port", "--out-format", "--max-size",
+    "--min-size", "--max-delete", "--block-size", "--modify-window", "--iconv",
+    "--checksum-choice", "--compress-choice", "--compress-level", "--skip-compress",
+    "--usermap", "--groupmap", "--info", "--debug", "--outbuf", "--sockopts",
+    "--write-batch", "--only-write-batch", "--read-batch", "--protocol",
+    "--stop-after", "--stop-at", "--remote-option"))
+
+
+def _w_rsync(args):
+    """rsync: the transfer destination (last of >= 2 operands; one operand only lists)
+    plus the files its options write. -t is --times, not a target. The temp/backup/
+    partial dirs resolve against the DESTINATION when relative, which is not modelled:
+    only an absolute one is a known destination."""
+    opts, ops = _parse_opts(args, _nexts("efTBM"), _RSYNC_LONG)
+    dests = [ops[-1]] if len(ops) >= 2 else []
+    dests += _values(opts, "--log-file", "--write-batch", "--only-write-batch")
+    for v in _values(opts, "T", "--temp-dir", "--backup-dir", "--partial-dir"):
+        dests.append(v if isinstance(v, str) and v.startswith("/") else None)
+    return dests
+
+
 def _w_touch(args):
     return _parse_opts(args, _nexts("rtdA"), frozenset(("--reference", "--date", "--time")))[1]
 
@@ -618,7 +671,8 @@ def _w_curl(args):
         "--cookie", "--cookie-jar", "--form", "--upload-file", "--proxy", "--max-time",
         "--write-out", "--config", "--range", "--cert", "--key", "--cacert",
         "--dump-header", "--connect-timeout", "--retry", "--resolve", "--url", "--json",
-        "--limit-rate", "--proto")))
+        "--limit-rate", "--proto", "--trace", "--trace-ascii", "--stderr", "--etag-save",
+        "--hsts")))
     outdir = _values(opts, "--output-dir")
     base = outdir[-1] if outdir else None
     dests = []
@@ -627,6 +681,9 @@ def _w_curl(args):
             dests.append(v if base is None or v.startswith("/") else os.path.join(base, v))
         elif k in ("O", "--remote-name", "--remote-name-all"):
             dests.append(base or ".")
+        elif k in ("D", "--dump-header", "c", "--cookie-jar", "--trace", "--trace-ascii",
+                   "--stderr", "--etag-save", "--hsts") and v != "-":
+            dests.append(v)  # side files; `-` is stdout
     return dests
 
 
@@ -637,9 +694,10 @@ def _w_wget(args):
         "--level", "--accept", "--reject", "--domains", "--include-directories",
         "--exclude-directories", "--user", "--password", "--header", "--post-data",
         "--post-file", "--load-cookies", "--save-cookies", "--limit-rate", "--execute",
-        "--referer")))
+        "--referer", "--warc-file")))
     keys = _keys(opts)
-    dests = _values(opts, "o", "a", "--output-file", "--append-output")
+    dests = _values(opts, "o", "a", "--output-file", "--append-output", "--save-cookies",
+                    "--warc-file")
     doc = _values(opts, "O", "--output-document")
     if doc:
         dests += [v for v in doc if v != "-"]
@@ -722,19 +780,7 @@ _WRITERS = {
     "install": _copy(_nexts("tSmog"), _CP_LONG | frozenset((
         "--mode", "--owner", "--group", "--strip-program")),
         ("t", "--target-directory"), lambda ops: ops),
-    # rsync -t is --times, not a target; a single operand only lists.
-    "rsync": _copy(_nexts("efTBM"), frozenset((
-        "--log-file", "--log-file-format", "--exclude", "--include", "--exclude-from",
-        "--include-from", "--files-from", "--filter", "--rsh", "--rsync-path",
-        "--temp-dir", "--compare-dest", "--copy-dest", "--link-dest", "--backup-dir",
-        "--suffix", "--chmod", "--chown", "--partial-dir", "--timeout", "--contimeout",
-        "--bwlimit", "--password-file", "--port", "--out-format", "--max-size",
-        "--min-size", "--max-delete", "--block-size", "--modify-window", "--iconv",
-        "--checksum-choice", "--compress-choice", "--compress-level", "--skip-compress",
-        "--usermap", "--groupmap", "--info", "--debug", "--outbuf", "--sockopts",
-        "--write-batch", "--only-write-batch", "--read-batch", "--protocol",
-        "--stop-after", "--stop-at", "--remote-option")),
-        (), lambda ops: []),
+    "rsync": _w_rsync,
     "touch": _w_touch,
     "truncate": _w_truncate,
     "patch": _w_patch,
@@ -753,8 +799,9 @@ _STDIN_OPERAND_WRITERS = frozenset(("tee", "touch", "truncate", "cp", "mv", "ins
 
 def _strip_wrappers(tokens):
     """Drop env assignments, keywords, and wrappers WITH their options from the front of
-    tokens (in place). Returns True if xargs was among them."""
-    via_xargs = False
+    tokens (in place). Returns (via_xargs, files the wrappers themselves write), e.g.
+    `time -o FILE`."""
+    via_xargs, dests = False, []
     while tokens:
         t = tokens[0]
         if _ENV_ASSIGN.match(t) or t in _KEYWORDS:
@@ -766,40 +813,119 @@ def _strip_wrappers(tokens):
             break
         tokens.pop(0)
         via_xargs = via_xargs or name == "xargs"
-        short, long_arg, positionals = spec
+        short, long_arg, positionals, outputs = spec
         while tokens and tokens[0].startswith("-") and tokens[0] != "-":
             a = tokens.pop(0)
             if a == "--":
                 break
             if a.startswith("--"):
-                if "=" not in a and a in long_arg and tokens:
-                    tokens.pop(0)
+                opt, eq, val = a.partition("=")
+                if not eq and opt in long_arg:
+                    val = tokens.pop(0) if tokens else ""
+                if opt in outputs:
+                    dests.append(val or None)
                 continue
             for j in range(1, len(a)):
                 if a[j] in short:
-                    if j == len(a) - 1 and tokens:
-                        tokens.pop(0)
+                    if j == len(a) - 1:
+                        val = tokens.pop(0) if tokens else ""
+                    else:
+                        val = a[j + 1:]
+                    if a[j] in outputs:
+                        dests.append(val or None)
                     break
         for _ in range(positionals):
             if tokens and not _ENV_ASSIGN.match(tokens[0]):
                 tokens.pop(0)
-    return via_xargs
+    return via_xargs, dests
 
 
 def _segment_dests(tokens):
     """Destinations written by one simple command (a token list)."""
     tokens = list(tokens)
-    via_xargs = _strip_wrappers(tokens)
+    via_xargs, dests = _strip_wrappers(tokens)
     if not tokens:
-        return []
+        return dests
     cmd = tokens[0].rsplit("/", 1)[-1]
     handler = _WRITERS.get(cmd)
     if handler is None:
-        return []
-    dests = handler(tokens[1:])
-    if not dests and via_xargs and cmd in _STDIN_OPERAND_WRITERS:
-        return [None]
-    return dests
+        return dests
+    written = handler(tokens[1:])
+    if not written and via_xargs and cmd in _STDIN_OPERAND_WRITERS:
+        written = [None]
+    return dests + written
+
+
+def _substitutions(text):
+    """Inner text of every outermost `$( ... )` and `` `...` `` in text, by a balanced
+    paren scan (a regex cannot nest). `$((` arithmetic is stepped over, so substitutions
+    INSIDE it are still found. An unclosed one yields the rest of the text: its shell
+    still runs as far as bash is concerned, and over-reporting only errs toward gating."""
+    subs, i, n = [], 0, len(text)
+    while i < n:
+        if text.startswith("$((", i):
+            i += 3
+        elif text.startswith("$(", i):
+            j, depth = i + 2, 1
+            while j < n:
+                if text[j] == "(":
+                    depth += 1
+                elif text[j] == ")":
+                    depth -= 1
+                    if not depth:
+                        break
+                j += 1
+            subs.append(text[i + 2:j])
+            i = j + 1
+        elif text[i] == "`":
+            j = text.find("`", i + 1)
+            if j < 0:
+                j = n
+            subs.append(text[i + 1:j])
+            i = j + 1
+        else:
+            i += 1
+    return subs
+
+
+def _blank_test_spans(text):
+    """Replace each `[[ ... ]]` / `(( ... ))` / `$(( ... ))` span (closed on its own
+    line) with a placeholder. Returns (text, [command substitution inside a span, ...]).
+
+    Linear: once an opener of one kind finds no closer, no later opener of that kind on
+    the same line can close either, so the rest of the line is not rescanned for it. An
+    unclosed span is left in place for the plain redirect scan (a false block at worst)."""
+    out, subs, pos, n = [], [], 0, len(text)
+    dead = {"[": -1, "(": -1}  # per kind: end of the line on which it cannot close
+    scan = 0
+    while True:
+        m = _TEST_OPEN.search(text, scan)
+        if not m:
+            break
+        start = m.start()
+        kind = "[" if text[start] == "[" else "("
+        if start < dead[kind]:
+            scan = start + 1
+            continue
+        eol = text.find("\n", start)
+        if eol < 0:
+            eol = n
+        if kind == "[":
+            c = _BRACKET_CLOSE.search(text, m.end(), eol)
+            end = c.end() if c else -1
+        else:
+            end = text.find("))", m.end(), eol)
+            end = end + 2 if end >= 0 else -1
+        if end < 0:
+            dead[kind] = eol
+            scan = start + 1
+            continue
+        out.append(text[pos:start])
+        out.append("$__T")
+        subs.extend(_substitutions(text[start:end]))
+        pos = scan = end
+    out.append(text[pos:])
+    return "".join(out), subs
 
 
 def _bash_write_dests(command):
@@ -807,7 +933,27 @@ def _bash_write_dests(command):
     destination could not be determined. An empty list means no write was detected."""
     shell, bodies = _strip_heredocs(command)
     shell = _neutralize_quotes(shell)
-    shell = _TEST_SPANS.sub("$__T", shell)
+    shell = _COMMENT.sub("", shell)
+    dests = _shell_dests(shell, 0)
+
+    # A heredoc script body that writes is exempt only if it names at least one path or
+    # filename literal and every such literal is exempt. Otherwise its destination is
+    # unknown: open("out.txt","w").write("/tmp/looks-safe") must not pass on the decoy.
+    for body in bodies:
+        if not _SCRIPT_WRITE.search(body):
+            continue
+        lits = [s for rx in _BODY_LITERALS for s in rx.findall(body)
+                if "/" in s or _FILENAME.fullmatch(s)]
+        dests.extend(lits or [None])
+
+    return dests
+
+
+def _shell_dests(shell, depth):
+    """Destinations written by shell text whose heredocs, quotes and comments are
+    already neutralized. Command substitutions hidden in a test span are analysed the
+    same way, recursively, since blanking the span would otherwise hide them."""
+    shell, subs = _blank_test_spans(shell)
     dests = []
 
     def take(m):
@@ -834,16 +980,11 @@ def _bash_write_dests(command):
     for seg in segments:
         dests.extend(_segment_dests(seg.split()))
 
-    # A heredoc script body that writes is exempt only if it names at least one path or
-    # filename literal and every such literal is exempt. Otherwise its destination is
-    # unknown: open("out.txt","w").write("/tmp/looks-safe") must not pass on the decoy.
-    for body in bodies:
-        if not _SCRIPT_WRITE.search(body):
-            continue
-        lits = [s for rx in _BODY_LITERALS for s in rx.findall(body)
-                if "/" in s or _FILENAME.fullmatch(s)]
-        dests.extend(lits or [None])
-
+    for inner in subs:
+        if depth >= _SUBST_DEPTH:
+            dests.append(None)
+            break
+        dests.extend(_shell_dests(inner, depth + 1))
     return dests
 
 
