@@ -21,7 +21,8 @@ two domain specialists.
 
 | Agent | Model | Purpose |
 |---|---|---|
-| `fresh-verifier` | Fable (cold context) | Cold-context verification of a diff or plan against its stated objective — no author bias. |
+| `fresh-verifier` | Fable, medium effort (cold context) | Cold-context verification of a diff or plan against its stated objective — no author bias. |
+| `fresh-verifier-high` | Fable, high effort (cold context) | High-effort variant of `fresh-verifier` — dispatch only when deeper verification is explicitly requested. |
 | `codex-adversary` | Sonnet (dispatcher) | Adversarial cross-model review via Codex (GPT family) — mandatory at least once per full-tier review. |
 | `code-writer` | Sonnet | Focused implementer for a single well-scoped coding task. |
 | `performance-reviewer` | Sonnet | Specialist reviewer for runtime performance and resource usage — opt-in. |
@@ -55,7 +56,11 @@ substitute your own and update the cross-references in each skill/agent.
    `dev-workflow:fresh-verifier` + `dev-workflow:codex-adversary` in one message, both in
    plan mode (on the plan) and again before `gh pr create` (on `git diff main...HEAD`).
    At least one adversarial pass is required; cap three per PR in aggregate; every pass
-   beyond the first declares its trigger in the transcript **before** dispatch.
+   beyond the first declares its trigger in the transcript **before** dispatch. Effort
+   cannot be set per dispatch (the Agent tool exposes model, not effort), so escalate by
+   dispatching `dev-workflow:fresh-verifier-high` in place of `fresh-verifier` — model may
+   still be overridden per dispatch — rather than counting it as an extra verifier
+   instance beyond what this policy already allows.
 3. **Routine** — everything else: small, low-blast-radius changes (≤3 files, ≤~150
    lines, none of the sensitive surfaces above). A single code-review pass is enough.
 
