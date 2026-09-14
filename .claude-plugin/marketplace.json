@@ -17,7 +17,7 @@
     {
       "name": "crew-gates",
       "source": "./crew-gates",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "description": "PreToolUse gates that make an orchestrator delegate to cheaper lanes: delegation-gate, read-budget-gate, lane-model-gate, plus a per-prompt routing table."
     },
     {
