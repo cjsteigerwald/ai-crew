@@ -44,7 +44,10 @@ Bash is covered too, but only commands that write a file need a classification.
 - A heredoc script body that calls a file-write API (`open(..., "w")`, `.write(`,
   `write_text`, `writeFileSync`, `shutil.copy`/`move`, `os.replace`/`rename`/`remove`).
   Heredoc terminators match bash: `<<EOF` ends only on a line that is exactly `EOF`,
-  `<<-EOF` strips leading tabs only. `<<<` is a herestring, not a heredoc.
+  `<<-EOF` strips leading tabs only. `<<<` is a herestring, not a heredoc, and a `<<`
+  inside quotes or a `# comment` opens nothing.
+- A heredoc read as a script by a shell (`bash <<EOF`, `sh -s <<EOF`, `cat <<EOF | sh`),
+  analysed like top-level shell text.
 - Command substitutions (`$(...)`, backticks) inside `[[ ]]`, `(( ))`, and `$(( ))`,
   analysed like top-level shell: `[[ -n $(echo x > f) ]]` is a write.
 - These commands in command position, including behind `sudo`/`env`/`nice`/`time`/
@@ -56,8 +59,9 @@ Bash is covered too, but only commands that write a file need a classification.
   `--write-batch`, `--only-write-batch`, and `-T`/`--temp-dir`/`--backup-dir`/
   `--partial-dir`), `touch`, `truncate`, `patch` (not `--dry-run`), `git apply` (not
   `--check`/`--stat`), `curl -o`/`-O` and its side files (`-D`/`--dump-header`,
-  `-c`/`--cookie-jar`, `--trace`, `--trace-ascii`, `--stderr`, `--etag-save`, `--hsts`;
-  `-` is stdout), `wget` (`-O`, or cwd/`-P`; also `-o`, `-a`, `--save-cookies`,
+  `-c`/`--cookie-jar`, `--trace`, `--trace-ascii`, `--stderr` (`-` is stdout for these),
+  and `--etag-save`/`--hsts` (`-` is a file named `-`; an empty `--hsts ""` is
+  in-memory)), `wget` (`-O`, or cwd/`-P`; also `-o`, `-a`, `--save-cookies`,
   `--warc-file`), `tar -x` (`-C` or cwd), `unzip` (`-d` or cwd).
 - A wrapper's own output file: `time -o FILE` / `--output=FILE`.
 
@@ -85,16 +89,22 @@ compared lexically, with no realpath containment check); `tar -c`/`-f` archive
 creation, `sort -o`, and `find -delete`/`-fprint`; `scp`, `sftp`, and `dd`/`cat` run
 over `ssh` (not treated as writers); a command wrapped in literal `[[ ` ... ` ]]` words
 on one line (`echo [[ ; cp a src/b ; ]]` is read as one `[[ ]]` span, so the `cp` is
-missed); and a `#` after whitespace inside `${...}` (`${x:- # } > f` is read as a
-comment, hiding the redirect).
+missed); a `#` after whitespace inside `${...}` (`${x:- # } > f` is read as a
+comment, hiding the redirect); an arithmetic shift written `<<WORD` (`(( a<<b ))`) is
+read as a heredoc opener and hides the lines after it; and a command substitution
+nested deeper than four levels inside `[[ ]]`/`(( ))`, a `find -exec` nested deeper than
+eight, or a shell-fed heredoc nested deeper than eight is not analysed further (it is
+treated as an unknown destination, so gated).
 
 **Known false blocks:** any heredoc body is scanned for write APIs regardless of the
 command consuming it, so `cat <<'EOF'` that merely displays code containing
 `open(..., 'w')` is gated; a `>` in a parameter expansion (`${VAR:->}`) reads as a
 redirect; a relative `rsync` `--temp-dir`/`--backup-dir`/`--partial-dir` (which rsync
 resolves against the destination) is treated as unknown and gated; `ls;# > f` (a
-comment not preceded by whitespace) still reads the `>`. **Known asymmetry:** the
-Edit/Write path still uses an unanchored substring test (`/.claude/projects/` anywhere
+comment not preceded by whitespace) still reads the `>`; `cd DIR && <relative write>`
+resolves the write against the payload `cwd`, not `DIR` (`cd /tmp && echo x > a.py` is
+gated); a read-only command nested five `[[ $( ... ) ]]` levels deep is gated as an
+unknown destination. **Known asymmetry:** the Edit/Write path still uses an unanchored substring test (`/.claude/projects/` anywhere
 in `file_path`), while Bash destinations are anchored to the real config dir.
 
 ### Read budget (`read-budget-gate.py`)

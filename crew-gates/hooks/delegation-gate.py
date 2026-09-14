@@ -288,7 +288,8 @@ def _answered_ok(later, tid):
 #
 # THIS DETECTION IS A HEURISTIC OVER ARBITRARY SHELL AND IS KNOWN TO BE INCOMPLETE. It
 # covers: output redirections (>, >>, >|, &>, &>>, >&file, <>; spaced or not), a
-# heredoc script body that writes, command substitutions inside [[ ]] / (( )), and these
+# heredoc script body that writes, a heredoc fed to a shell (analysed as shell), command
+# substitutions inside [[ ]] / (( )), and these
 # writers in command position (also behind sudo/env/nice/time/timeout/nohup/command/
 # builtin/exec/xargs and after find -exec/-execdir/-ok/-okdir): tee FILE, dd of=, sed/
 # perl/ruby in-place, cp/mv/install/ln, rsync (destination plus --log-file/batch/temp/
@@ -303,21 +304,21 @@ def _answered_ok(later, tid):
 # Every pattern below must stay linear on hostile input: the hook runs on each Bash call,
 # and a regex that backtracks quadratically stalls the session (a 25,000-character
 # `((((` took 77s on a lazy span pattern).
-# `<<<` is a herestring, never a heredoc: the lookbehind stops `<<< foo` opening one.
-_HEREDOC_START = re.compile(r"(?<!<)<<-?\s*(['\"]?)([A-Za-z_]\w*)\1")
+# The delimiter word after an unquoted `<<` (the scanner has already refused `<<<`, a
+# herestring): optional `-`, then WORD, 'WORD', "WORD" or \WORD.
+_HEREDOC_DELIM = re.compile(r"(-?)[ \t]*(?:(['\"])([A-Za-z_]\w*)\2|\\?([A-Za-z_]\w*))")
 # Every redirection operator, input ones included so they can be REMOVED before the
 # command words are tokenized (`cp a b < /dev/null` must not make /dev/null the
 # destination). Longest operators first. The target stops at whitespace and at shell
 # metacharacters, so `echo x>a` and `2>&1>out` both split correctly. The fd digits start
 # only at the beginning of a digit run: retrying inside the run was quadratic.
 _REDIR = re.compile(r"(?<!\d)\d*(<<<|<<-?|&>>|&>|<>|>>|>\||>&|<&|>|<)[ \t]*([^\s;&|()<>]*)")
-# An unquoted comment: `#` at the start of a word, i.e. after whitespace or at the start.
-# `${x#y}` and `$#` have no whitespace before the `#`, so they stay.
-_COMMENT = re.compile(r"(?:^|(?<=\s))#[^\n]*")
-# Placeholders written by _neutralize_quotes. _QPH replaces a quoted span that cannot
-# stand in as one plain word; its `$` makes it unresolvable, so as a destination it
-# gates. _EPH replaces an escaped metacharacter (`\>`, `\;`) or a quoted lone `;`/`+`.
+# Placeholders written by _scan_shell. _QPH replaces a quoted span that cannot stand in
+# as one plain word, _ZPH an empty quoted word (`""`); their `$` makes them unresolvable,
+# so as a destination they gate. _EPH replaces an escaped metacharacter (`\>`, `\;`) or a
+# quoted lone `;`/`+`.
 _QPH = "$__Q"
+_ZPH = "$__Z"
 _EPH = "__E__"
 # `[[ ... ]]` and `(( ... ))` / `$(( ... ))` compare with `>`; they never redirect. The
 # spans are found by _blank_test_spans (a linear scan) from these openers and closers.
@@ -326,6 +327,12 @@ _BRACKET_CLOSE = re.compile(r"[ \t]\]\]")
 # Nesting depth past which a command substitution inside a test span is not analysed
 # further; its destination is then unknown (gated) rather than silently dropped.
 _SUBST_DEPTH = 4
+# Same rule for `find -exec find -exec ...` and for a heredoc fed to a shell that itself
+# feeds a heredoc to a shell: past this depth the destination is unknown (gated). Without
+# a cap, hostile nesting hit RecursionError, which fails open.
+_NEST_DEPTH = 8
+# Shells whose stdin heredoc is a script: its body is analysed as shell text.
+_SHELLS = frozenset(("bash", "sh", "zsh", "dash", "ksh"))
 # Writes performed by a script fed in on a heredoc, for which no shell redirect appears.
 # sys.stdout/sys.stderr .write() are excluded: those are prints. The open() argument
 # scan stops at `(` as well as `)`: with `[^)]*` a body of repeated `open(` rescanned to
@@ -423,67 +430,147 @@ def _exempt_dest(dest, cwd=None):
     return False
 
 
-def _strip_heredocs(command):
-    """Return (shell_text_without_heredoc_bodies, [body, ...]).
-
-    Bodies are pulled out before any tokenizing so their contents cannot invent phantom
-    redirects or command words in the surrounding shell text."""
-    lines = command.split("\n")
-    kept, bodies = [], []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        kept.append(line)
-        i += 1
-        for m in _HEREDOC_START.finditer(line):
-            delim = m.group(2)
-            # bash: `<<WORD` ends only on a line that IS the word; `<<-WORD` strips
-            # leading tabs, and nothing else, first.
-            tabs = m.group(0).startswith("<<-")
-            body = []
-            while i < len(lines) and (lines[i].lstrip("\t") if tabs else lines[i]) != delim:
-                body.append(lines[i])
-                i += 1
-            i += 1  # consume the terminator (or run off the end, which is fine)
-            bodies.append("\n".join(body))
-    return "\n".join(kept), bodies
+def _quoted_word(inner):
+    """Stand-in for a quoted span: the span itself if it is one plain word."""
+    if inner in (";", "+"):
+        return _EPH
+    if not inner:
+        return _ZPH
+    # `#` too: an unwrapped "#x" or `""#` would start a word with `#` and be read as a
+    # comment by a later pass, taking a real redirect after it along.
+    if any(c.isspace() or c in "<>;|&(){}`\\#" for c in inner):
+        return _QPH
+    return inner
 
 
-def _neutralize_quotes(text):
-    """Collapse quoting so a quoted or escaped metacharacter cannot fake a redirect or a
-    separator (awk '$1 > 5', [ a \\> b ]). A quoted span that is a plain word is kept
-    as that word, so `> "/tmp/x"` still yields its destination; anything else becomes
-    one placeholder token, never several words."""
-    out, i, n = [], 0, len(text)
+def _scan_shell(text):
+    """One left-to-right pass over a command line -> (shell_text, [(body, line, off)]).
+
+    Quoting is collapsed so a quoted or escaped metacharacter cannot fake a redirect or a
+    separator (awk '$1 > 5', [ a \\> b ]); a quoted span that is a plain word is kept as
+    that word, so `> "/tmp/x"` still yields its destination. Unquoted `#` comments are
+    dropped (newline kept). A heredoc opens only at an UNQUOTED, uncommented `<<`, so
+    `echo "<<EOF"` or `ls # <<EOF` cannot swallow the lines after it; its body is pulled
+    from the RAW text after the opener's line, ending on a line that IS the delimiter
+    (`<<-` strips leading tabs first), and is returned with the neutralized opener line
+    and the opener's offset in it. Doing all three in one scan is the point: separate
+    passes each misread the others' syntax (an apostrophe in a comment looked like an
+    unterminated quote and discarded every later line)."""
+    out, line, docs, pending = [], [], [], []
+    llen, i, n = 0, 0, len(text)
+    word_start = True  # the previous unit was unquoted whitespace, or the start
+
+    def emit(piece):
+        nonlocal llen
+        line.append(piece)
+        llen += len(piece)
+
     while i < n:
         ch = text[i]
+        if ch == "\n":
+            ltext = "".join(line)
+            out.append(ltext)
+            out.append("\n")
+            line, llen, word_start = [], 0, True
+            i += 1
+            for delim, tabs, off in pending:
+                body = []
+                while i < n:
+                    e = text.find("\n", i)
+                    e = n if e < 0 else e
+                    raw = text[i:e]
+                    i = e + 1
+                    if (raw.lstrip("\t") if tabs else raw) == delim:
+                        break
+                    body.append(raw)
+                docs.append(("\n".join(body), ltext, off))
+            pending = []
+            continue
         if ch == "\\":
             nxt = text[i + 1:i + 2]
             if nxt and nxt != "\n":
-                out.append(nxt if (nxt.isalnum() or nxt in "/._-") else _EPH)
+                emit(nxt if (nxt.isalnum() or nxt in "/._-") else _EPH)
             i += 2
+            word_start = False
             continue
-        if ch in "'\"":
-            j = i + 1
-            while j < n and text[j] != ch:
-                j += 2 if (ch == '"' and text[j] == "\\") else 1
+        ansi = ch == "$" and text.startswith("'", i + 1)
+        if ansi or ch in "'\"":
+            q, j = ("'", i + 2) if ansi else (ch, i + 1)
+            escapes = ansi or q == '"'
+            while j < n and text[j] != q:
+                j += 2 if (escapes and text[j] == "\\") else 1
+            word_start = False
             if j >= n:
-                out.append(_QPH)  # unterminated: a syntax error, never a clean word
-                break
-            inner = text[i + 1:j]
-            if inner in (";", "+"):
-                out.append(_EPH)
-            # `#` too: an unwrapped "#x" or `""#` would start a word with `#` and be
-            # stripped as a comment, taking a real redirect after it along.
-            elif not inner or any(c.isspace() or c in "<>;|&(){}`\\#" for c in inner):
-                out.append(_QPH)
-            else:
-                out.append(inner)
+                # Unterminated: a syntax error, never a clean word. The rest is scanned
+                # as unquoted text, so over-reporting is the worst outcome.
+                emit(_QPH)
+                i += 2 if ansi else 1
+                continue
+            emit(_quoted_word(text[(i + 2 if ansi else i + 1):j]))
             i = j + 1
             continue
-        out.append(ch)
+        if ch == "#" and word_start:
+            e = text.find("\n", i)
+            i = n if e < 0 else e
+            continue
+        if text.startswith("<<<", i):
+            emit("<<<")  # a herestring, consumed whole so its `<<` cannot open a heredoc
+            i += 3
+            word_start = False
+            continue
+        if text.startswith("<<", i):
+            m = _HEREDOC_DELIM.match(text, i + 2)
+            if m:
+                delim = m.group(3) or m.group(4)
+                pending.append((delim, bool(m.group(1)), llen))
+                emit("<<" + m.group(1) + delim)
+                i = m.end()
+                word_start = False
+                continue
+            emit("<<")
+            i += 2
+            word_start = False
+            continue
+        emit(ch)
+        word_start = ch in " \t"
         i += 1
-    return "".join(out)
+    out.append("".join(line))
+    return "".join(out), docs
+
+
+def _shell_fed(line, off):
+    """True when the heredoc opened at `off` in (neutralized) line is read as a script by
+    a shell: its own command is `bash`/`sh`/... reading stdin, or it pipes into one."""
+    parts = re.split(r"(\|\||&&|[;|&()])", line[off:])
+    own = _SEG_SPLIT.split(line[:off])[-1] + parts[0]
+    if _stdin_shell(own):
+        return True
+    k = 1
+    while k + 1 < len(parts) and parts[k] == "|":
+        if _stdin_shell(parts[k + 1]):
+            return True
+        k += 2
+    return False
+
+
+def _stdin_shell(seg):
+    tokens = _REDIR.sub(" ", seg).split()
+    _strip_wrappers(tokens)
+    if not tokens or tokens[0].rsplit("/", 1)[-1] not in _SHELLS:
+        return False
+    args, k, from_stdin = tokens[1:], 0, False
+    while k < len(args):
+        a = args[k]
+        k += 1
+        if a in ("-o", "+o", "-O", "+O"):
+            k += 1
+        elif a[:1] in "-+" and len(a) > 1 and a != "--":
+            if "c" in a[1:]:
+                return False  # -c STRING: the heredoc is stdin to that string's command
+            from_stdin = from_stdin or "s" in a[1:]
+        elif a != "--":
+            return from_stdin  # `bash script.sh <<EOF` reads the body as data
+    return True
 
 
 def _parse_opts(args, short=None, long_arg=frozenset()):
@@ -682,8 +769,10 @@ def _w_curl(args):
         elif k in ("O", "--remote-name", "--remote-name-all"):
             dests.append(base or ".")
         elif k in ("D", "--dump-header", "c", "--cookie-jar", "--trace", "--trace-ascii",
-                   "--stderr", "--etag-save", "--hsts") and v != "-":
+                   "--stderr") and v != "-":
             dests.append(v)  # side files; `-` is stdout
+        elif k in ("--etag-save", "--hsts") and v not in ("", _ZPH):
+            dests.append(v)  # `-` is a file named "-"; an empty --hsts is in-memory
     return dests
 
 
@@ -743,14 +832,16 @@ def _w_unzip(args):
     return dests or ["."]
 
 
-def _w_find(args):
+def _w_find(args, depth=0):
     dests, i = [], 0
     while i < len(args):
         if args[i] in ("-exec", "-execdir", "-ok", "-okdir"):
+            if depth >= _NEST_DEPTH:
+                return dests + [None]
             j = i + 1
             while j < len(args) and args[j] not in (_EPH, "+", ";"):
                 j += 1
-            dests.extend(_segment_dests(args[i + 1:j]))
+            dests.extend(_segment_dests(args[i + 1:j], depth + 1))
             i = j + 1
         else:
             i += 1
@@ -840,8 +931,9 @@ def _strip_wrappers(tokens):
     return via_xargs, dests
 
 
-def _segment_dests(tokens):
-    """Destinations written by one simple command (a token list)."""
+def _segment_dests(tokens, depth=0):
+    """Destinations written by one simple command (a token list). depth counts the
+    `find -exec` nesting this command sits in."""
     tokens = list(tokens)
     via_xargs, dests = _strip_wrappers(tokens)
     if not tokens:
@@ -850,7 +942,7 @@ def _segment_dests(tokens):
     handler = _WRITERS.get(cmd)
     if handler is None:
         return dests
-    written = handler(tokens[1:])
+    written = handler(tokens[1:], depth) if handler is _w_find else handler(tokens[1:])
     if not written and via_xargs and cmd in _STDIN_OPERAND_WRITERS:
         written = [None]
     return dests + written
@@ -892,11 +984,14 @@ def _blank_test_spans(text):
     """Replace each `[[ ... ]]` / `(( ... ))` / `$(( ... ))` span (closed on its own
     line) with a placeholder. Returns (text, [command substitution inside a span, ...]).
 
-    Linear: once an opener of one kind finds no closer, no later opener of that kind on
-    the same line can close either, so the rest of the line is not rescanned for it. An
-    unclosed span is left in place for the plain redirect scan (a false block at worst)."""
+    Linear: once a `[[` finds no closer, no later `[[` on the same line can close either,
+    so the rest of the line is not rescanned for it; `((` closers come from one cached
+    paren-matching pass per line. An unclosed span is left in place for the plain
+    redirect scan (a false block at worst)."""
     out, subs, pos, n = [], [], 0, len(text)
-    dead = {"[": -1, "(": -1}  # per kind: end of the line on which it cannot close
+    dead = {"[": -1}  # end of the line on which a `[[` cannot close
+    match = None  # for the current line: {index of "(": index of its matching ")"}
+    lo, eol = 0, -1  # bounds of the current line; openers arrive in increasing order
     scan = 0
     while True:
         m = _TEST_OPEN.search(text, scan)
@@ -904,20 +999,37 @@ def _blank_test_spans(text):
             break
         start = m.start()
         kind = "[" if text[start] == "[" else "("
-        if start < dead[kind]:
+        if kind == "[" and start < dead[kind]:
             scan = start + 1
             continue
-        eol = text.find("\n", start)
-        if eol < 0:
-            eol = n
+        if start > eol:
+            # Line bounds are found once per line: per opener they were a quadratic scan.
+            lo = text.rfind("\n", 0, start) + 1
+            eol = text.find("\n", start)
+            if eol < 0:
+                eol = n
+            match = None
         if kind == "[":
             c = _BRACKET_CLOSE.search(text, m.end(), eol)
             end = c.end() if c else -1
         else:
-            end = text.find("))", m.end(), eol)
-            end = end + 2 if end >= 0 else -1
+            # `((` closes at the `))` matching BOTH its parens, found by one paren-depth
+            # pass per line (cached, so `((` x25000 stays linear). A nested `$(( ))` or
+            # `$( )` ends before it. Non-adjacent closers are subshells, not arithmetic.
+            p = start + (text[start] == "$")
+            if match is None:
+                match, stack = {}, []
+                for k in range(lo, eol):
+                    c = text[k]
+                    if c == "(":
+                        stack.append(k)
+                    elif c == ")" and stack:
+                        match[stack.pop()] = k
+            inner = match.get(p + 1)
+            end = inner + 2 if inner is not None and match.get(p) == inner + 1 else -1
         if end < 0:
-            dead[kind] = eol
+            if kind == "[":
+                dead[kind] = eol
             scan = start + 1
             continue
         out.append(text[pos:start])
@@ -928,18 +1040,22 @@ def _blank_test_spans(text):
     return "".join(out), subs
 
 
-def _bash_write_dests(command):
+def _bash_write_dests(command, depth=0):
     """Every destination a Bash command line writes. None stands for a write whose
     destination could not be determined. An empty list means no write was detected."""
-    shell, bodies = _strip_heredocs(command)
-    shell = _neutralize_quotes(shell)
-    shell = _COMMENT.sub("", shell)
+    shell, docs = _scan_shell(command)
     dests = _shell_dests(shell, 0)
 
     # A heredoc script body that writes is exempt only if it names at least one path or
     # filename literal and every such literal is exempt. Otherwise its destination is
     # unknown: open("out.txt","w").write("/tmp/looks-safe") must not pass on the decoy.
-    for body in bodies:
+    for body, line, off in docs:
+        # A heredoc a shell reads as its script is shell text too: `bash <<EOF`.
+        if _shell_fed(line, off):
+            if depth >= _NEST_DEPTH:
+                dests.append(None)
+            else:
+                dests.extend(_bash_write_dests(body, depth + 1))
         if not _SCRIPT_WRITE.search(body):
             continue
         lits = [s for rx in _BODY_LITERALS for s in rx.findall(body)

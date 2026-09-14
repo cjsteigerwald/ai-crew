@@ -469,6 +469,88 @@ echo "== F2: heredoc terminators match bash exactly =="
 brun "F2 ' EOF ' does not end <<EOF"    0 "$N" /repo $'cat <<EOF\n EOF \necho x > src/a.py\nEOF'
 brun "F2 tab-EOF ends <<-EOF"           2 "$N" /repo $'cat <<-EOF\n\tbody\n\tEOF\necho x > src/a.py'
 
+# ---------------------------------------------------------------------------------
+# Last fix round. Each non-guard case gave the wrong exit, or exceeded its time limit,
+# on 2461e2b (the HOSTILE cases are guards, except find -exec).
+echo "== B1: a quote char inside a comment does not hide later lines =="
+brun "B1 ls # don't, then write"        2 "$N" /repo $'ls # don\'t\necho x > src/a.py'
+brun "B1 git log # what's, then cp"     2 "$N" /repo $'git log -3 # what\'s new\ncp a src/b'
+brun "B1 \$'\\'' ANSI-C quote"          2 "$N" /repo $'echo $\'\\\'\' > src/a.py'
+brun "B1 escaped space then # (guard)"  2 "$N" /repo 'echo \ # > src/a.py'
+echo "== M1: find -exec nesting is capped, not a RecursionError =="
+prun "M1 find -exec x1000"              2 '"find . -exec " * 1000 + "cp a src/b \\;"'
+prun "M1 find -exec x50000"             2 '"find . -exec " * 50000 + "cp a src/b \\;"'
+# Generic guard: hostile nesting never trips an internal error (which fails open), and
+# never takes 2s. The exit may be 0 or 2; stderr is checked under DELEGATION_GATE_DEBUG.
+hrun(){ # name python-expression
+  _r=$(python3 - "$GATE" "$N" "$2" <<'PY'
+import json,os,subprocess,sys,time
+gate,tr,expr=sys.argv[1:4]
+env=dict(os.environ, DELEGATION_GATE_DEBUG="1")
+p=json.dumps({"tool_name":"Bash","transcript_path":tr,"cwd":"/repo","tool_input":{"command":eval(expr)}})
+t=time.perf_counter()
+r=subprocess.run([sys.executable,gate],input=p.encode(),env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+el=time.perf_counter()-t
+ok=r.returncode in (0,2) and el<2.0 and b"internal error" not in r.stderr
+print("%s %d %.3f" % ("ok" if ok else "bad", r.returncode, el))
+PY
+)
+  case "$_r" in
+    ok*) echo "  PASS  $1 (${_r#ok })"; pass=$((pass+1)) ;;
+    *)   echo "  FAIL  $1 (${_r:-no result}; want exit 0/2, no internal error, under 2.0s)"; fail=$((fail+1)) ;;
+  esac
+}
+hrun "HOSTILE \$( x25000"               '"$(" * 25000'
+hrun "HOSTILE [[ \$( x8000"             '"[[ $( " * 8000'
+hrun "HOSTILE (( \$( x5000 closed"      '"(( $( " * 5000 + ") ))" * 5000'
+hrun "HOSTILE bash <<A x6000"           '"bash <<A\n" * 6000'
+hrun "HOSTILE find -exec x4000"         '"find . -exec " * 4000'
+hrun "HOSTILE quotes/ANSI-C/comments"   '("\x27\"" * 8000) + ("$\x27\\" * 5000) + (" #\x27\n" * 4000)'
+hrun "HOSTILE \$(( x12500 closed"       '"$(( " * 12500 + "))" * 12500'
+hrun "HOSTILE cat <<A | bash -s x3000"  '"cat <<A | bash -s\n" * 3000'
+echo "== M2: a heredoc opens only at an unquoted, uncommented << =="
+brun "M2 echo \"see <<EOF\""            2 "$N" /repo $'echo "see <<EOF"\necho x > src/a.py'
+brun "M2 echo '<<EOF'"                  2 "$N" /repo $'echo \'<<EOF\'\necho x > src/a.py'
+brun "M2 ls # cat <<EOF"                2 "$N" /repo $'ls # cat <<EOF\necho x > src/a.py'
+brun "M2 echo ok # <<EOF ... EOF"       2 "$N" /repo $'echo ok # <<EOF\necho x > src/a.py\nEOF'
+brun "M2 <<EOF inside a 2-line quote"   2 "$N" /repo $'echo "a\n<<EOF"\necho x > src/a.py'
+brun "M2 cat <<'EOF' > f (guard)"       2 "$N" /repo $'cat <<\'EOF\' > src/a.py\nx\nEOF'
+brun "M2 cat <<\"EOF\" stdout (guard)"  0 "$N" /repo $'cat <<"EOF"\nhello > world\nEOF'
+echo "== m1: curl '-' per option =="
+brun "m1 curl --hsts - (a file)"        2 "$N" /repo 'curl --hsts - https://e.com'
+brun "m1 curl --etag-save - (a file)"   2 "$N" /repo 'curl --etag-save - https://e.com'
+brun "m1 curl --hsts \"\" (in-memory)"  0 "$N" /repo 'curl --hsts "" https://e.com'
+brun "m1 curl -sD - (guard)"            0 "$N" /repo 'curl -sD - https://e.com'
+echo "== m2: (( )) ends at its matching )) =="
+brun "m2 (( \$(echo \$(ls)) > 0 ))"     0 "$N" /repo '(( $(echo $(ls)) > 0 ))'
+brun "m2 (( \$(( 1+1 )) > \$(cat f) ))" 0 "$N" /repo '(( $(( 1 + 1 )) > $(cat src/a.py) ))'
+brun "m2 (( \$(echo \$((1+1))) > 0 ))"  0 "$N" /repo '(( $(echo $((1+1))) > 0 ))'
+echo "== m3: a heredoc fed to a shell is shell text =="
+brun "m3 bash <<'EOF' write"            2 "$N" /repo $'bash <<\'EOF\'\necho x > src/a.py\nEOF'
+brun "m3 cat <<EOF | sh cp"             2 "$N" /repo $'cat <<EOF | sh\ncp a src/b\nEOF'
+brun "m3 sudo bash -s <<EOF touch"      2 "$N" /repo $'sudo bash -s <<EOF\ntouch src/a.py\nEOF'
+brun "m3 bash <<'EOF' ls (guard)"       0 "$N" /repo $'bash <<\'EOF\'\nls -la\nEOF'
+echo "== parity: a write stays gated behind lines that fool a line scanner =="
+# Every write below is gated on its own; prefixing a quote-in-comment, a quoted <<EOF,
+# a commented <<EOF, or an ANSI-C quote must not change that.
+PREFIXES=("ls # don't" 'echo "see <<EOF"' "echo '<<EOF'" "# it's <<EOF" $'echo $\'\\\'\'')
+WRITES=('echo x > src/a.py' 'cp /tmp/x.py src/a.py' "sed -i '' 's/a/b/' src/a.py"
+  'echo x | tee src/a.py' $'cat > f.txt <<EOF\nhello\nEOF'
+  $'python3 - <<PY\nopen("src/a.py", "w").write("x")\nPY' 'touch src/a.py'
+  'curl -o src/a.py https://e.com' 'tar xzf /tmp/a.tgz -C src'
+  "find . -name '*.py' -execdir touch {} +" '[[ -n $(echo x > src/a.py) ]]'
+  'sudo -u root cp a src/b' 'echo x &>>src/a.py' 'git apply /tmp/p.diff'
+  $'bash <<\'EOF\'\necho x > src/a.py\nEOF' 'time -o /repo/time.log ls')
+pi=0
+for pre in "${PREFIXES[@]}"; do
+  pi=$((pi+1)); wi=0
+  for w in "${WRITES[@]}"; do
+    wi=$((wi+1))
+    brun "PFX p$pi w$wi" 2 "$N" /repo "$pre
+$w"
+  done
+done
+
 echo "== D14: fail open on BaseException; a decided deny stays 2 =="
 # Fault injection runs the REAL hook via runpy as __main__, so its actual top-level
 # handler executes (a direct main() call would bypass the contract).
@@ -519,7 +601,7 @@ frun "D14 deny latched despite raising stderr" 2 f_stderr_kbint.py "$WRITE_PAYLO
 frun "D14 allow survives broken stderr"       0 f_stderr_oserror.py "$READ_PAYLOAD"
 
 # Executed-case count: removing or skipping fixtures must not keep the suite green.
-EXPECTED_CASES=226
+EXPECTED_CASES=338
 executed=$((pass+fail))
 echo; echo "EXECUTED: $executed cases (expected $EXPECTED_CASES)"
 if [ "$executed" != "$EXPECTED_CASES" ]; then
