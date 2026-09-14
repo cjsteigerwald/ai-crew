@@ -94,7 +94,8 @@ comment, hiding the redirect); an arithmetic shift written `<<WORD` (`(( a<<b ))
 read as a heredoc opener and hides the lines after it; and a command substitution
 nested deeper than four levels inside `[[ ]]`/`(( ))`, a `find -exec` nested deeper than
 eight, or a shell-fed heredoc nested deeper than eight is not analysed further (it is
-treated as an unknown destination, so gated).
+treated as an unknown destination, so gated); a line with more than 64 heredoc openers
+is likewise treated as an unclassifiable write, so gated.
 
 **Known false blocks:** any heredoc body is scanned for write APIs regardless of the
 command consuming it, so `cat <<'EOF'` that merely displays code containing

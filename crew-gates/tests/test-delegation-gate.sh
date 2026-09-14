@@ -534,6 +534,9 @@ brun "m3 bash - <<EOF touch"            2 "$N" /repo $'bash - <<\'EOF\'\ntouch s
 brun "m3 sh /dev/stdin <<EOF touch"     2 "$N" /repo $'sh /dev/stdin <<\'EOF\'\ntouch src/a.py\nEOF'
 brun "m3 bash -euxo pipefail <<EOF"     2 "$N" /repo $'bash -euxo pipefail <<\'EOF\'\ntouch src/a.py\nEOF'
 brun "m3 bash --norc <<EOF touch"       2 "$N" /repo $'bash --norc <<\'EOF\'\ntouch src/a.py\nEOF'
+brun "m3 bash -oe pipefail <<EOF"       2 "$N" /repo $'bash -oe pipefail <<\'EOF\'\ntouch src/a.py\nEOF'
+brun "m3 bash --rcfile x <<EOF"         2 "$N" /repo $'bash --rcfile x <<\'EOF\'\ntouch src/a.py\nEOF'
+brun "m3 bash --posix run.sh <<EOF"     0 "$N" /repo $'bash --posix run.sh <<\'EOF\'\ntouch src/a.py\nEOF'
 echo "== m4: heredoc openers per line are capped, the excess is gated =="
 prun "m4 cat <<A x10000 (gated, <2s)"   2 '"cat " + "<<A " * 10000 + "\nA\n"'
 echo "== parity: a write stays gated behind lines that fool a line scanner =="
@@ -607,7 +610,7 @@ frun "D14 deny latched despite raising stderr" 2 f_stderr_kbint.py "$WRITE_PAYLO
 frun "D14 allow survives broken stderr"       0 f_stderr_oserror.py "$READ_PAYLOAD"
 
 # Executed-case count: removing or skipping fixtures must not keep the suite green.
-EXPECTED_CASES=343
+EXPECTED_CASES=346
 executed=$((pass+fail))
 echo; echo "EXECUTED: $executed cases (expected $EXPECTED_CASES)"
 if [ "$executed" != "$EXPECTED_CASES" ]; then

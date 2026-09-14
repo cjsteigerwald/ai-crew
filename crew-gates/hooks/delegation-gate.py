@@ -583,8 +583,8 @@ def _stdin_shell(seg):
             if "c" in a[1:]:
                 return False  # -c STRING: the heredoc is stdin to that string's command
             from_stdin = from_stdin or "s" in a[1:]
-            if a[-1] in "oO":
-                k += 1  # -euxo pipefail: the next word is the option's value
+            if "o" in a[1:] or "O" in a[1:]:
+                k += 1  # -euxo pipefail: the next word is the option's value, wherever -o sits in the cluster
         elif a in ("-", "/dev/stdin"):
             return True  # `bash -`, `sh /dev/stdin`: the script is stdin
         elif a != "--":
