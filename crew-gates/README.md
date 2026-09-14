@@ -11,7 +11,7 @@ the main session's Agent dispatches and prompts.
 
 | Hook | Fires on | What it does |
 |---|---|---|
-| `delegation-gate.py` | PreToolUse, `Edit\|Write\|NotebookEdit` | Blocks an edit/write until the transcript carries a classification token since the last genuine user message. |
+| `delegation-gate.py` | PreToolUse, `Edit\|Write\|NotebookEdit\|Bash` | Blocks an edit/write (including a file-writing Bash command) until the transcript carries a classification token since the last genuine user message. |
 | `read-budget-gate.py` | PreToolUse, `Read\|Grep\|Glob\|Bash` | Caps inline bulk reading in the main session (call count + byte total) since the last genuine user message. |
 | `lane-model-gate.py` | PreToolUse, `Agent\|Task` | Denies dispatching the frontier-tier model to any lane except the configured verifier lane, and denies `model: opus` without an `escalate:` reason. |
 | `routing-table.py` | UserPromptSubmit | Injects a compact routing table (lane names, disqualifiers, evidence rules) into context every turn, so the policy doesn't rely on a large doc the model has to remember to read. |
@@ -33,6 +33,17 @@ of:
 Also accepted: a Bash tool call whose command is exactly `:` and whose `description` is
 the token, run on its own with a non-error result, edit made in a later step. This
 recovers sessions where mid-turn assistant text is not persisted at hook time.
+
+Bash is covered too, but only commands that write a file need a classification.
+Read-only commands (`ls`, `git status`, `grep`, `cat file`) always pass, and so does the
+`:` marker. The gate treats these as writes: `>`/`>>` redirects (including heredocs
+that feed one), `tee`, `dd of=`, `sed -i`/`perl -i`/`ruby -i`, `cp`/`mv`/`install`/
+`rsync`/`ln`, and heredoc scripts that call a file-write API. A write is exempt when
+every destination it can resolve (relative paths resolve against the payload `cwd`) is
+under `/tmp/`, `/private/tmp/`, `/var/tmp/`, `/dev/`, or the same agent-bookkeeping
+paths the Edit/Write exemption uses. A write with no resolvable destination is gated.
+This check is a heuristic. It misses writes whose destination is built from a variable,
+writes inside `python3 -c` or `eval`, and helper scripts that write for the command.
 
 ### Read budget (`read-budget-gate.py`)
 

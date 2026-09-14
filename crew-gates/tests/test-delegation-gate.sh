@@ -166,4 +166,96 @@ run "repo-tmp"     2 "{\"tool_name\":\"Edit\",\"transcript_path\":\"$TD/none.jso
 run "real-tmp"     0 "{\"tool_name\":\"Edit\",\"transcript_path\":\"$TD/none.jsonl\",\"tool_input\":{\"file_path\":\"/tmp/scratch.py\"}}"
 run "repo-backups" 2 "{\"tool_name\":\"Edit\",\"transcript_path\":\"$TD/none.jsonl\",\"tool_input\":{\"file_path\":\"/repo/src/_backups/x.py\"}}"
 
+echo "== Bash: only file-writing commands consult the classification =="
+# Payloads are built in python so commands carrying quotes/newlines stay valid JSON, and
+# assigned to a variable so no quoted "..." sits inside $(...) within double quotes.
+bpay(){ # transcript cwd command [extra-json-object]
+  python3 - "$@" <<'PY'
+import json,sys
+p={"tool_name":"Bash","transcript_path":sys.argv[1],"tool_input":{"command":sys.argv[3]}}
+if sys.argv[2]: p["cwd"]=sys.argv[2]
+if len(sys.argv)>4 and sys.argv[4]: p.update(json.loads(sys.argv[4]))
+print(json.dumps(p))
+PY
+}
+brun(){ # name expected_exit transcript cwd command [extra]
+  _p=$(bpay "$3" "$4" "$5" "${6:-}")
+  # An empty payload fails open (exit 0) and would silently pass every allow case.
+  if [ -z "$_p" ]; then echo "  FAIL  $1 (payload builder produced nothing)"; fail=$((fail+1)); return; fi
+  run "$1" "$2" "$_p"
+}
+# marker transcript: Bash ":" with a token description, answered by a non-error result
+python3 - "$TD" <<'PY'
+import json,sys
+td=sys.argv[1]
+open(f"{td}/marker.jsonl","w").write(
+ json.dumps({"type":"user","isSidechain":False,"message":{"role":"user","content":"go"}})+"\n"+
+ json.dumps({"type":"assistant","isSidechain":False,"message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_m1","name":"Bash","input":{"command":":","description":"solo: D1"}}]}})+"\n"+
+ json.dumps({"type":"user","isSidechain":False,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_m1","content":"","is_error":False}]}})+"\n")
+PY
+cat > "$TD/solo1.jsonl" <<'J'
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"write the file"}}
+{"type":"assistant","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":"solo: D1 - single file, ~10 lines."}]}}
+J
+N="$TD/none.jsonl"
+HD='cat > f.txt <<EOF
+hello
+EOF'
+# (a) read-only commands never need a token
+brun "bash ls"                   0 "$N" /repo 'ls -la'
+brun "bash git status"           0 "$N" /repo 'git status'
+brun "bash cat file"             0 "$N" /repo 'cat src/a.py'
+brun "bash 2>&1 / dev-null"      0 "$N" /repo 'grep -rn foo src 2>&1 | head; ls > /dev/null 2>&1'
+brun "bash cp in argument"       0 "$N" /repo 'grep -rn cp src/'
+brun "bash sed -n (not -i)"      0 "$N" /repo "sed -n '1,20p' a.py"
+brun "bash awk quoted >"         0 "$N" /repo "awk '\$1 > 5' data.txt"
+brun "bash heredoc read-only"    0 "$N" /repo 'python3 - <<PY
+print(open("a.py").read())
+PY'
+# (b)(c)(d) writes with no token block
+brun "bash heredoc write"        2 "$N" /repo "$HD"
+brun "bash redirect write"       2 "$N" /repo 'echo x > out.txt'
+brun "bash append write"         2 "$N" /repo 'echo x >> /repo/log.txt'
+brun "bash sed -i"               2 "$N" /repo "sed -i '' 's/a/b/' src/a.py"
+brun "bash perl -pi"             2 "$N" /repo "perl -pi -e 's/a/b/' src/a.py"
+brun "bash tee"                  2 "$N" /repo 'echo x | tee src/a.py'
+brun "bash cp"                   2 "$N" /repo 'cp /tmp/x.py src/a.py'
+brun "bash mv"                   2 "$N" /repo 'mv a.py b.py'
+brun "bash ln"                   2 "$N" /repo 'ln -s a.py b.py'
+brun "bash dd of="               2 "$N" /repo 'dd if=/dev/zero of=disk.img bs=1 count=1'
+brun "bash sudo-wrapped cp"      2 "$N" /repo 'sudo cp a b'
+brun "bash script write"         2 "$N" /repo 'python3 - <<PY
+open("src/a.py", "w").write("x")
+PY'
+brun "bash tmp ../ escape"       2 "$N" /repo 'echo x > /tmp/../repo/src/a.py'
+brun "bash relative, no cwd"     2 "$N" ""    'echo x > out.txt'
+brun "bash variable dest"        2 "$N" /repo 'echo x > $OUT'
+brun "bash marker then write"    2 "$N" /repo ':; echo x > out.txt'
+brun "bash stale token"          2 "$TD/stale.jsonl" /repo 'echo x > out.txt'
+# (e) same writes with a valid classification allow
+brun "bash heredoc + solo:D1"    0 "$TD/solo1.jsonl" /repo "$HD"
+brun "bash redirect + solo:D1"   0 "$TD/solo1.jsonl" /repo 'echo x > out.txt'
+brun "bash sed -i + dispatching" 0 "$TD/dispatch.jsonl" /repo "sed -i '' 's/a/b/' src/a.py"
+brun "bash redirect + marker"    0 "$TD/marker.jsonl" /repo 'echo x > out.txt'
+# (f) the marker itself must never require classification
+brun "bash marker :"             0 "$N" /repo ':'
+brun "bash marker padded"        0 "$N" /repo '  :  '
+# (g) exempt destinations
+brun "bash write /tmp"           0 "$N" /repo 'echo x > /tmp/out.txt'
+brun "bash write scratchpad"     0 "$N" /repo 'cat > /private/tmp/claude-1/sess/scratchpad/n.md <<EOF
+x
+EOF'
+brun "bash relative in tmp cwd"  0 "$N" /private/tmp/claude-1/sess/scratchpad 'echo x > ./out.txt'
+brun "bash tee /dev/stderr"      0 "$N" /repo 'echo x | tee /dev/stderr'
+brun "bash memory path"          0 "$N" /repo 'echo x > /srv/u/.claude/projects/x/memory/foo.md'
+brun "bash mixed exempt+repo"    2 "$N" /repo 'echo x > /tmp/a; echo y > src/b.py'
+# subagent shell writes are never gated
+brun "bash subagent write"       0 "$N" /repo 'echo x > out.txt' '{"agent_id":"a1","agent_type":"claude-crew:claude-implementer-haiku"}'
+# (h) malformed input fails open
+run  "bash garbage stdin"        0 "not json"
+run  "bash non-object payload"   0 "[1,2]"
+brun "bash command not a string" 0 "$N" /repo 'x' '{"tool_input":{"command":42}}'
+brun "bash tool_input not dict"  0 "$N" /repo 'x' '{"tool_input":"echo x > out.txt"}'
+brun "bash write, no transcript" 0 /nope/none.jsonl /repo 'echo x > out.txt'
+
 echo; echo "RESULT: $pass passed, $fail failed"; rm -rf "$TD"; [ "$fail" = 0 ]
