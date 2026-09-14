@@ -307,6 +307,8 @@ def _answered_ok(later, tid):
 # The delimiter word after an unquoted `<<` (the scanner has already refused `<<<`, a
 # herestring): optional `-`, then WORD, 'WORD', "WORD" or \WORD.
 _HEREDOC_DELIM = re.compile(r"(-?)[ \t]*(?:(['\"])([A-Za-z_]\w*)\2|\\?([A-Za-z_]\w*))")
+# Heredoc openers tracked per line; past this the line is unclassifiable (a gated write).
+_HEREDOC_CAP = 64
 # Every redirection operator, input ones included so they can be REMOVED before the
 # command words are tokenized (`cp a b < /dev/null` must not make /dev/null the
 # destination). Longest operators first. The target stops at whitespace and at shell
@@ -455,10 +457,14 @@ def _scan_shell(text):
     (`<<-` strips leading tabs first), and is returned with the neutralized opener line
     and the opener's offset in it. Doing all three in one scan is the point: separate
     passes each misread the others' syntax (an apostrophe in a comment looked like an
-    unterminated quote and discarded every later line)."""
+    unterminated quote and discarded every later line).
+
+    A line with more than _HEREDOC_CAP openers yields one (None, line, None) entry: each
+    tracked opener costs a pass over its line, so an unbounded count was quadratic."""
     out, line, docs, pending = [], [], [], []
     llen, i, n = 0, 0, len(text)
     word_start = True  # the previous unit was unquoted whitespace, or the start
+    overflow = False  # this line has more heredoc openers than are tracked
 
     def emit(piece):
         nonlocal llen
@@ -473,6 +479,9 @@ def _scan_shell(text):
             out.append("\n")
             line, llen, word_start = [], 0, True
             i += 1
+            if overflow:
+                docs.append((None, ltext, None))
+                overflow = False
             for delim, tabs, off in pending:
                 body = []
                 while i < n:
@@ -522,7 +531,10 @@ def _scan_shell(text):
             m = _HEREDOC_DELIM.match(text, i + 2)
             if m:
                 delim = m.group(3) or m.group(4)
-                pending.append((delim, bool(m.group(1)), llen))
+                if len(pending) < _HEREDOC_CAP:
+                    pending.append((delim, bool(m.group(1)), llen))
+                else:
+                    overflow = True
                 emit("<<" + m.group(1) + delim)
                 i = m.end()
                 word_start = False
@@ -535,6 +547,8 @@ def _scan_shell(text):
         word_start = ch in " \t"
         i += 1
     out.append("".join(line))
+    if overflow:
+        docs.append((None, out[-1], None))
     return "".join(out), docs
 
 
@@ -562,12 +576,17 @@ def _stdin_shell(seg):
     while k < len(args):
         a = args[k]
         k += 1
-        if a in ("-o", "+o", "-O", "+O"):
-            k += 1
-        elif a[:1] in "-+" and len(a) > 1 and a != "--":
+        if a.startswith("--") and len(a) > 2:
+            if a in ("--rcfile", "--init-file"):
+                k += 1  # a long option's letters are not a cluster: --norc is not -c
+        elif a[:1] in "-+" and len(a) > 1 and not a.startswith("--"):
             if "c" in a[1:]:
                 return False  # -c STRING: the heredoc is stdin to that string's command
             from_stdin = from_stdin or "s" in a[1:]
+            if a[-1] in "oO":
+                k += 1  # -euxo pipefail: the next word is the option's value
+        elif a in ("-", "/dev/stdin"):
+            return True  # `bash -`, `sh /dev/stdin`: the script is stdin
         elif a != "--":
             return from_stdin  # `bash script.sh <<EOF` reads the body as data
     return True
@@ -1050,6 +1069,9 @@ def _bash_write_dests(command, depth=0):
     # filename literal and every such literal is exempt. Otherwise its destination is
     # unknown: open("out.txt","w").write("/tmp/looks-safe") must not pass on the decoy.
     for body, line, off in docs:
+        if body is None:
+            dests.append(None)  # too many heredocs on one line to classify: gated
+            continue
         # A heredoc a shell reads as its script is shell text too: `bash <<EOF`.
         if _shell_fed(line, off):
             if depth >= _NEST_DEPTH:
