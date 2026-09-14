@@ -2,7 +2,8 @@
 ## MANDATORY: Delegation is the default; solo needs a named disqualifier
 
 Enforced by a hook, not by good intentions: `delegation-gate.py` (PreToolUse on
-Edit|Write|NotebookEdit) blocks an edit until one of these appears after the last
+Edit|Write|NotebookEdit|Bash) blocks an edit — including a Bash command that writes a
+file; read-only Bash is never blocked — until one of these appears after the last
 genuine user message (the window resets on every genuine user message, not once per
 task — task notifications don't reset it). It fails open on error, never fires inside
 subagents, and is disabled per-session with `CLAUDE_DELEGATION_GATE=off`.
