@@ -8,7 +8,7 @@ single most expensive model available.
 
 Unlike `codex-crew`, no companion runtime or forwarding shim is needed:
 Claude subagents are native, and the frontmatter pin is the whole mechanism.
-The plugin is pure agent definitions.
+The plugin is agent definitions plus one enforcement hook (below).
 
 ## Why
 
@@ -59,6 +59,34 @@ split); for search and digest work, `claude-scout` / `claude-reader` are
 the default because they're the cheapest way to keep raw file contents out
 of the orchestrator's context.
 
+## NEEDS_LOOKUP and the recipient hook
+
+Lanes have no web access. When a lane needs an outside fact, its definition
+tells it to send a `NEEDS_LOOKUP: …` line to the orchestrator with
+`SendMessage`, addressed to `main`. `SendMessage` itself can reach other
+agents and sessions, so the plugin ships a `PreToolUse` hook
+(`hooks/sendmessage-recipient-gate.py`, registered in `hooks/hooks.json`) that
+enforces the recipient. Plugin agents ignore `hooks` frontmatter, so the hook is
+plugin-level.
+
+- **Covered agents**: `claude-crew:claude-implementer-haiku`,
+  `claude-crew:claude-implementer-sonnet`, `claude-crew:claude-implementer-opus`,
+  `claude-crew:claude-scout`, `claude-crew:claude-reader`, and
+  `dev-workflow:code-writer` (matched as `plugin:name` or the bare name — never
+  a substring). Enforcement for `code-writer` requires claude-crew to be installed.
+- **Rule**: a covered agent's `SendMessage` is allowed only when `to` is exactly
+  `main` (surrounding whitespace ignored); anything else is denied. Main-session
+  calls and agents of other types are not affected. Message content is not checked.
+- **Caller detection**: a subagent call is one whose hook payload carries both
+  `agent_id` and `agent_type` (the same rule as crew-gates' delegation gate).
+- **Failure**: an unparseable payload is allowed with
+  `sendmessage-recipient-gate: internal error` on stderr; a covered agent's
+  malformed `tool_input` is denied.
+- **Off switch**: `CLAUDE_SENDMESSAGE_GATE=off`.
+- **Debug**: `SENDMESSAGE_GATE_DEBUG=1` appends each `SendMessage` payload, with
+  `message` and `summary` redacted to their length, to
+  `${CLAUDE_CONFIG_DIR:-~/.claude}/state/sendmessage-gate/payloads.jsonl`.
+
 ## Install
 
 ```bash
@@ -72,4 +100,5 @@ claude plugin install claude-crew@cjs-plugins
 
 ## Requirements
 
-None beyond Claude Code itself — no external CLI, no runtime, no Node.
+Claude Code and `python3` (standard library only, for the recipient hook) —
+no external CLI, no Node.

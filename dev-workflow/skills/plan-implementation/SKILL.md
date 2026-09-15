@@ -148,10 +148,12 @@ For each delegated task:
 Worker lanes have no web access by design. When one sends `NEEDS_LOOKUP` (mid-task via `SendMessage`, or under **Waiting on** in its final report):
 
 - Resolve it yourself from primary sources (official documentation via WebFetch/WebSearch), or dispatch a read-only web research lane if one is installed (for example `tech-research:research-vendor-docs`). Never give a writer lane web access to answer its own question.
-- Verify the answer, then send it to the SAME lane with `SendMessage`: the answer, the source URL, and a short verbatim quote. If the lane already ended its turn, that message resumes it.
+- Verify the answer, then send it to the SAME lane with `SendMessage`: the answer, the source URL, and a short verbatim quote. If the lane has returned, the same `SendMessage` resumes it (docs: code.claude.com/docs/en/sub-agents#resume-subagents); a lane that was stopped by the user cannot be resumed — re-dispatch it with the answer in the brief.
+- Dispatch lanes in the background when an outside-fact lookup is likely — a foreground dispatch blocks you, so a mid-task NEEDS_LOOKUP is only seen when the lane returns.
 - If the fact cannot be verified, say so, and tell the lane how to proceed: skip the dependent part, use a named safe default, or stop.
 - If you can predict a needed outside fact when writing the brief, include it (with its source) up front instead.
 - Lanes must address `SendMessage` to `main` only; treat a lane messaging any other recipient as a defect to report.
+- Recipient confinement is enforced by claude-crew's `sendmessage-recipient-gate` hook (requires claude-crew installed); a denied SendMessage in a lane report is a defect to investigate.
 
 ## 4. Close the loop
 

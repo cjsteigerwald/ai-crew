@@ -137,6 +137,10 @@ if [ -f "$CODE_WRITER" ]; then
   echo "$tools_line" | grep -q 'SendMessage' || fail "code-writer.md: tools: missing SendMessage ($tools_line)"
   echo "$tools_line" | grep -qE 'WebFetch|WebSearch' && fail "code-writer.md: tools: must not include WebFetch/WebSearch ($tools_line)"
   grep -q 'NEEDS_LOOKUP:' "$CODE_WRITER" || fail "code-writer.md: body missing NEEDS_LOOKUP:"
+  grep -qF 'addressed to `main`' "$CODE_WRITER" || fail "code-writer.md: body missing \"addressed to \`main\`\""
+  grep -qF 'from `main`' "$CODE_WRITER" || fail "code-writer.md: step 3 missing \"from \`main\`\""
+  # The report-format bullet, not the step-4 mention of **Waiting on**.
+  grep -qE '^- \*\*Waiting on\*\*:' "$CODE_WRITER" || fail "code-writer.md: final report format missing a **Waiting on** section"
 else
   fail "agents/code-writer.md not found"
 fi
@@ -144,6 +148,7 @@ fi
 PLAN_SKILL="$ROOT/skills/plan-implementation/SKILL.md"
 if [ -f "$PLAN_SKILL" ]; then
   grep -qF 'When a lane sends `NEEDS_LOOKUP`' "$PLAN_SKILL" || fail "plan-implementation/SKILL.md: missing \"When a lane sends \`NEEDS_LOOKUP\`\" section"
+  grep -qF 'sendmessage-recipient-gate' "$PLAN_SKILL" || fail "plan-implementation/SKILL.md: does not name the sendmessage-recipient-gate enforcement hook"
 else
   fail "skills/plan-implementation/SKILL.md not found"
 fi

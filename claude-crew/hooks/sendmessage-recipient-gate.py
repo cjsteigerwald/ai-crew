@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""PreToolUse gate on SendMessage: claude-crew lanes may message only `main`.
+
+Purpose: the NEEDS_LOOKUP rule in each covered agent definition tells the lane to send
+its outside-fact questions to the orchestrator (`main`) and nobody else. SendMessage can
+reach other agents and sessions, so prose alone does not confine the recipient. This hook
+is the enforcement.
+
+Rules:
+  - tool_name != "SendMessage"                         -> allow
+  - main-session call (no agent_id + agent_type pair)  -> allow; the orchestrator may
+                                                          message anyone
+  - subagent whose agent_type is NOT a covered lane    -> allow; other plugins' agent
+                                                          messaging is not ours to police
+  - covered lane, tool_input.to.strip() == "main"      -> allow
+  - covered lane, anything else                        -> DENY. That includes another
+    name, "main [ref]", "", a missing or non-string `to`, and a missing/non-object
+    tool_input. A covered lane whose payload is malformed is denied, not waved through.
+
+Covered lanes (agent_type matched EXACTLY as `plugin:name`, or as the bare `name` either
+exactly or as the suffix after a ':' -- the lane-model-gate is_exempt rule; never a
+substring, so `claude-crew:claude-scout-x` is not covered):
+  claude-crew:claude-implementer-haiku / -sonnet / -opus, claude-crew:claude-scout,
+  claude-crew:claude-reader, dev-workflow:code-writer.
+
+Evidence:
+  - Subagent identification copies crew-gates/hooks/delegation-gate.py (Rule 3, main()):
+    a payload captured 2026-09-09 (claude-code 2.1.266, sample of ONE) from a subagent
+    tool call carried BOTH `agent_id` and `agent_type` as non-empty strings, with the
+    PARENT transcript_path; the main-session call carried neither. Both keys are required
+    here too. The `agent_type` format for plugin agents (`plugin:name` vs bare `name`) is
+    not confirmed, so both forms are matched.
+  - Plugin agents ignore `hooks` frontmatter (code.claude.com/docs/en/sub-agents), so this
+    must be a plugin-level hooks/hooks.json. No documented SendMessage recipient
+    restriction exists.
+  - SendMessage input schema: required `to` (recipient name) and `message`; optional
+    `summary`, `notify_when_idle`.
+
+What is NOT enforced: message content; the recipients of non-covered agents; anything if
+the harness stops sending agent_id/agent_type on subagent calls (the covered-lane check
+would then never match and every call would be allowed -- confirm with the debug capture
+below after a harness upgrade).
+
+Fail direction: if stdin is unreadable, not JSON, or not an object, the caller cannot be
+identified, so the gate ALLOWS and prints `sendmessage-recipient-gate: internal error` to
+stderr -- a hook crash must not wedge the main session, and the covered-lane case is the
+only deny path. Once a caller has been identified as a covered lane, an unexpected error
+DENIES instead: there the failure is not "cannot tell who is calling".
+
+Output: deny is the PreToolUse JSON `permissionDecision: "deny"` on stdout with exit 0
+(the lane-model-gate format); allow is exit 0 with no stdout.
+Off switch: CLAUDE_SENDMESSAGE_GATE=off.
+Debug: SENDMESSAGE_GATE_DEBUG=1 appends each payload (message/summary redacted to their
+length) to ${CLAUDE_CONFIG_DIR:-~/.claude}/state/sendmessage-gate/payloads.jsonl.
+"""
+import json
+import os
+import sys
+
+ALLOWED_RECIPIENT = "main"
+COVERED = (
+    "claude-crew:claude-implementer-haiku",
+    "claude-crew:claude-implementer-sonnet",
+    "claude-crew:claude-implementer-opus",
+    "claude-crew:claude-scout",
+    "claude-crew:claude-reader",
+    "dev-workflow:code-writer",
+)
+DENY_REASON = ("sendmessage-recipient-gate: claude-crew lanes may SendMessage only to "
+               "`main` (NEEDS_LOOKUP rule). Address the NEEDS_LOOKUP to `main`; "
+               "got to={!r}.")
+REDACTED_FIELDS = ("message", "summary")
+
+
+def is_covered(agent_type: str) -> bool:
+    """Exact `plugin:name`, or the bare name exactly or as the suffix after ':'.
+    Never a substring or prefix match."""
+    for full in COVERED:
+        name = full.split(":", 1)[1]
+        if agent_type == full or agent_type == name or agent_type.endswith(":" + name):
+            return True
+    return False
+
+
+def deny(to) -> None:
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": DENY_REASON.format(to),
+    }}))
+
+
+def debug_capture(payload) -> None:
+    """Best effort; never affects the verdict."""
+    if not os.environ.get("SENDMESSAGE_GATE_DEBUG"):
+        return
+    try:
+        rec = dict(payload)
+        ti = rec.get("tool_input")
+        if isinstance(ti, dict):
+            ti = dict(ti)
+            for key in REDACTED_FIELDS:
+                if key in ti:
+                    ti[key] = "<redacted len=%d>" % len(str(ti[key]))
+            rec["tool_input"] = ti
+        base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+        out_dir = os.path.join(base, "state", "sendmessage-gate")
+        os.makedirs(out_dir, exist_ok=True)
+        with open(os.path.join(out_dir, "payloads.jsonl"), "a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass
+
+
+def main() -> int:
+    if os.environ.get("CLAUDE_SENDMESSAGE_GATE", "").lower() == "off":
+        return 0
+    payload = json.loads(sys.stdin.read())
+    if not isinstance(payload, dict):
+        raise ValueError("payload not an object")
+    if payload.get("tool_name") != "SendMessage":
+        return 0
+    debug_capture(payload)
+    agent_id = payload.get("agent_id")
+    agent_type = payload.get("agent_type")
+    if not (isinstance(agent_id, str) and agent_id
+            and isinstance(agent_type, str) and agent_type):
+        return 0                            # main session (or unidentifiable): allow
+    if not is_covered(agent_type):
+        return 0
+    try:
+        ti = payload.get("tool_input")
+        to = ti.get("to") if isinstance(ti, dict) else None
+        if isinstance(to, str) and to.strip() == ALLOWED_RECIPIENT:
+            return 0
+        deny(to)
+    except Exception:                       # covered lane identified: fail closed
+        deny("<unreadable>")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as exc:               # caller unidentifiable: never block
+        sys.stderr.write(f"sendmessage-recipient-gate: internal error: {exc}\n")
+        sys.exit(0)
