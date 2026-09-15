@@ -16,6 +16,8 @@ Rules:
   - covered lane, anything else                        -> DENY. That includes another
     name, "main [ref]", "", a missing or non-string `to`, and a missing/non-object
     tool_input. A covered lane whose payload is malformed is denied, not waved through.
+  - covered lane, `to` is `main` but tool_input also carries a `recipient` key whose
+    value is not `main` (same strip rule)            -> DENY
 
 Covered lanes (agent_type matched EXACTLY as `plugin:name`, or as the bare `name` either
 exactly or as the suffix after a ':' -- the lane-model-gate is_exempt rule; never a
@@ -35,6 +37,11 @@ Evidence:
     restriction exists.
   - SendMessage input schema: required `to` (recipient name) and `message`; optional
     `summary`, `notify_when_idle`.
+  - Live capture 2026-09-15 (claude-code 2.1.269, print mode, one background
+    claude-crew:claude-scout, sample of ONE session): agent_type was the full
+    `claude-crew:claude-scout`; tool_input carried `to`, `message`, `summary` plus
+    undocumented `type` ("message"), `recipient` (equal to `to`) and `content` (equal to
+    `message`). A deny on to="nonexistent-peer" blocked the call; to="main" was delivered.
 
 What is NOT enforced: message content; the recipients of non-covered agents; anything if
 the harness stops sending agent_id/agent_type on subagent calls (the covered-lane check
@@ -50,8 +57,8 @@ DENIES instead: there the failure is not "cannot tell who is calling".
 Output: deny is the PreToolUse JSON `permissionDecision: "deny"` on stdout with exit 0
 (the lane-model-gate format); allow is exit 0 with no stdout.
 Off switch: CLAUDE_SENDMESSAGE_GATE=off.
-Debug: SENDMESSAGE_GATE_DEBUG=1 appends each payload (message/summary redacted to their
-length) to ${CLAUDE_CONFIG_DIR:-~/.claude}/state/sendmessage-gate/payloads.jsonl.
+Debug: SENDMESSAGE_GATE_DEBUG=1 appends each payload (every tool_input value except
+to/recipient/type redacted to its length) to ${CLAUDE_CONFIG_DIR:-~/.claude}/state/sendmessage-gate/payloads.jsonl.
 """
 import json
 import os
@@ -69,7 +76,13 @@ COVERED = (
 DENY_REASON = ("sendmessage-recipient-gate: claude-crew lanes may SendMessage only to "
                "`main` (NEEDS_LOOKUP rule). Address the NEEDS_LOOKUP to `main`; "
                "got to={!r}.")
-REDACTED_FIELDS = ("message", "summary")
+# Debug capture keeps only these tool_input values in clear; every other value is replaced
+# by its length. An allowlist, not a denylist: the live payload carried an undocumented
+# `content` copy of `message` that a message/summary denylist wrote out verbatim.
+CLEAR_FIELDS = ("to", "recipient", "type")
+# Undocumented recipient alias observed alongside `to` in the live payload. Which of the
+# two the harness routes on is not established, so when present it must ALSO be `main`.
+RECIPIENT_ALIASES = ("recipient",)
 
 
 def is_covered(agent_type: str) -> bool:
@@ -99,8 +112,8 @@ def debug_capture(payload) -> None:
         ti = rec.get("tool_input")
         if isinstance(ti, dict):
             ti = dict(ti)
-            for key in REDACTED_FIELDS:
-                if key in ti:
+            for key in list(ti):
+                if key not in CLEAR_FIELDS:
                     ti[key] = "<redacted len=%d>" % len(str(ti[key]))
             rec["tool_input"] = ti
         base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
@@ -131,9 +144,16 @@ def main() -> int:
     try:
         ti = payload.get("tool_input")
         to = ti.get("to") if isinstance(ti, dict) else None
-        if isinstance(to, str) and to.strip() == ALLOWED_RECIPIENT:
+        if not (isinstance(to, str) and to.strip() == ALLOWED_RECIPIENT):
+            deny(to)
             return 0
-        deny(to)
+        for alias in RECIPIENT_ALIASES:
+            if alias in ti:
+                value = ti[alias]
+                if not (isinstance(value, str) and value.strip() == ALLOWED_RECIPIENT):
+                    deny(value)
+                    return 0
+        return 0
     except Exception:                       # covered lane identified: fail closed
         deny("<unreadable>")
     return 0

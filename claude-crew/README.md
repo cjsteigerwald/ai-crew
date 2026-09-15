@@ -75,7 +75,8 @@ plugin-level.
   `dev-workflow:code-writer` (matched as `plugin:name` or the bare name — never
   a substring). Enforcement for `code-writer` requires claude-crew to be installed.
 - **Rule**: a covered agent's `SendMessage` is allowed only when `to` is exactly
-  `main` (surrounding whitespace ignored); anything else is denied. Main-session
+  `main` (surrounding whitespace ignored) and any `recipient` field the harness
+  adds is also `main`; anything else is denied. Main-session
   calls and agents of other types are not affected. Message content is not checked.
 - **Caller detection**: a subagent call is one whose hook payload carries both
   `agent_id` and `agent_type` (the same rule as crew-gates' delegation gate).
@@ -84,7 +85,8 @@ plugin-level.
   malformed `tool_input` is denied.
 - **Off switch**: `CLAUDE_SENDMESSAGE_GATE=off`.
 - **Debug**: `SENDMESSAGE_GATE_DEBUG=1` appends each `SendMessage` payload, with
-  `message` and `summary` redacted to their length, to
+  every `tool_input` value except `to`, `recipient`, and `type` redacted to its
+  length, to
   `${CLAUDE_CONFIG_DIR:-~/.claude}/state/sendmessage-gate/payloads.jsonl`.
 
 ## Install

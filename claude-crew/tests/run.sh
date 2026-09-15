@@ -173,6 +173,14 @@ for full in $COVERED; do
   done
 done
 
+# Live-shaped tool_input (2.1.269 capture): harness adds type/recipient/content.
+LIVE="'type': 'message', 'content': 'NEEDS_LOOKUP: q', $MSG, 'summary': 's'"
+check_sm "live shape, to=main recipient=main" allow claude-crew:claude-scout "{'to': 'main', 'recipient': 'main', $LIVE}"
+check_sm "live shape, to=main recipient=other-agent" deny claude-crew:claude-scout "{'to': 'main', 'recipient': 'other-agent', $LIVE}"
+check_sm "live shape, to=other-agent recipient=main" deny claude-crew:claude-scout "{'to': 'other-agent', 'recipient': 'main', $LIVE}"
+check_sm "live shape, to=main recipient non-string" deny claude-crew:claude-scout "{'to': 'main', 'recipient': None, $LIVE}"
+check_sm "non-covered, to=main recipient=other-agent" allow tech-research:research-vendor-docs "{'to': 'main', 'recipient': 'other-agent', $LIVE}"
+
 check_sm "non-covered tech-research:research-vendor-docs to other" allow tech-research:research-vendor-docs "{'to': 'other-agent', $MSG}"
 check_sm "non-covered claude-crew:claude-scout-x to other (no prefix match)" allow claude-crew:claude-scout-x "{'to': 'other-agent', $MSG}"
 check_sm "non-covered other:claude-scout-x to other (no substring match)" allow other:claude-scout-x "{'to': 'other-agent', $MSG}"
@@ -191,10 +199,10 @@ fi
 check_raw "JSON array payload" allow '[1, 2]'
 
 # Debug capture: verdict unchanged, message redacted to its length.
-check_sm "debug on, covered to other" deny claude-crew:claude-reader "{'to': 'other-agent', 'message': 'SECRET-BODY'}" \
+check_sm "debug on, covered to other" deny claude-crew:claude-reader "{'to': 'other-agent', 'recipient': 'other-agent', 'type': 'message', 'message': 'SECRET-BODY', 'content': 'SECRET-BODY', 'summary': 'SECRET-SUM'}" \
   SENDMESSAGE_GATE_DEBUG=1 CLAUDE_CONFIG_DIR="$TD/cfg"
 DBG="$TD/cfg/state/sendmessage-gate/payloads.jsonl"
-if [ -f "$DBG" ] && grep -q '<redacted len=11>' "$DBG" && ! grep -q 'SECRET-BODY' "$DBG"; then
+if [ -f "$DBG" ] && grep -q '<redacted len=11>' "$DBG" && ! grep -q 'SECRET-' "$DBG"; then
   pass_ "debug capture written with message redacted to its length"
 else
   fail_ "debug capture missing or unredacted ($DBG)"
