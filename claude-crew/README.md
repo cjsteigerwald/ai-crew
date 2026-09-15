@@ -8,7 +8,7 @@ single most expensive model available.
 
 Unlike `codex-crew`, no companion runtime or forwarding shim is needed:
 Claude subagents are native, and the frontmatter pin is the whole mechanism.
-The plugin is pure agent definitions.
+The plugin is agent definitions plus one enforcement hook (below).
 
 ## Why
 
@@ -59,6 +59,46 @@ split); for search and digest work, `claude-scout` / `claude-reader` are
 the default because they're the cheapest way to keep raw file contents out
 of the orchestrator's context.
 
+## NEEDS_LOOKUP and the recipient hook
+
+Lanes have no web access. When a lane needs an outside fact, its definition
+tells it to send a `NEEDS_LOOKUP: …` line to the orchestrator with
+`SendMessage`, addressed to `main`. `SendMessage` itself can reach other
+agents and sessions, so the plugin ships a `PreToolUse` hook
+(`hooks/sendmessage-recipient-gate.py`, registered in `hooks/hooks.json`) that
+enforces the recipient. Plugin agents ignore `hooks` frontmatter, so the hook is
+plugin-level.
+
+- **Covered agents**: `claude-crew:claude-implementer-haiku`,
+  `claude-crew:claude-implementer-sonnet`, `claude-crew:claude-implementer-opus`,
+  `claude-crew:claude-scout`, `claude-crew:claude-reader`, and
+  `dev-workflow:code-writer` (matched as `plugin:name`, or the bare name either
+  exactly or as the `:`-suffix of any plugin's agent, `<other-plugin>:<bare name>`
+  — never a substring or prefix). Enforcement for `code-writer` requires claude-crew to be installed.
+- **Rule**: a covered agent's `SendMessage` is allowed only when `to` is exactly
+  `main` (surrounding whitespace ignored) and any `recipient` field the harness
+  adds is also `main`; anything else is denied. Main-session
+  calls and agents of other types are not affected. Message content is not checked.
+- **Caller detection**: the rule applies whenever the payload's `agent_type`
+  names a covered agent, whether `agent_id` is present, missing, null, or empty.
+  A payload whose `agent_type` is missing, empty, or not a string is treated as
+  the main session and is allowed.
+- **Failure**: an unparseable or non-object payload is allowed with
+  `sendmessage-recipient-gate: internal error` on stderr. This is a known
+  boundary: the caller cannot be identified, and failing closed would block
+  `SendMessage` in every session, so such a payload is not confined even if it
+  came from a covered agent. A covered agent's malformed `tool_input` is denied.
+- **Off switch**: `CLAUDE_SENDMESSAGE_GATE=off`.
+- **Debug**: `SENDMESSAGE_GATE_DEBUG=1` appends a sanitized record of each
+  `SendMessage` payload to
+  `${CLAUDE_CONFIG_DIR:-~/.claude}/state/sendmessage-gate/payloads.jsonl`. Only
+  string values of `hook_event_name`, `tool_name`, `agent_type`, and
+  `tool_input`'s `to`, `recipient`, and `type` are kept (truncated to 128
+  characters), plus `agent_id_present` as a bool; every other value, including
+  `session_id`, `transcript_path`, `cwd`, and a non-object `tool_input`, is
+  replaced by a `<redacted:TYPE>` marker. Key names are kept, so the log is not
+  a full-content guarantee.
+
 ## Install
 
 ```bash
@@ -72,4 +112,5 @@ claude plugin install claude-crew@cjs-plugins
 
 ## Requirements
 
-None beyond Claude Code itself — no external CLI, no runtime, no Node.
+Claude Code and `python3` (standard library only, for the recipient hook) —
+no external CLI, no Node.

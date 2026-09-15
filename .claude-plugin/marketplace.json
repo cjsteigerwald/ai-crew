@@ -7,6 +7,7 @@
     {
       "name": "claude-crew",
       "source": "./claude-crew",
+      "version": "0.1.1",
       "description": "Tiered Claude delegate agents (scout/reader/implementer) with pinned Haiku/Sonnet/Opus models, so subagent work stops inheriting the expensive session model"
     },
     {
@@ -41,7 +42,7 @@
     {
       "name": "dev-workflow",
       "source": "./dev-workflow",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "description": "Engineering workflow skills (PR gates, orchestrated plan implementation, incident investigation and write-ups, skill retrospectives, Copilot readiness) plus verifier, adversarial reviewer, worker, and specialist review agents."
     }
   ]

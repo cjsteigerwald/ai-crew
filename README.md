@@ -200,9 +200,10 @@ This repository is **public**. Before adding or editing any plugin:
 
 ## Requirements
 
-**claude-crew** — none beyond Claude Code itself: no external CLI, no runtime,
-no Node. The agents are pure native subagent definitions; the `model:`
-frontmatter pin is the entire mechanism.
+**claude-crew** — Claude Code and `python3` (standard library only, for the
+`SendMessage` recipient hook) — no external CLI, no Node. The agents are native
+subagent definitions; the `model:` frontmatter pin is the entire tiering
+mechanism.
 
 **codex-crew** — the official Codex plugin (`/plugin install codex@openai-codex`),
 the Codex CLI installed and authenticated (`codex login`), and Node.js. Its
