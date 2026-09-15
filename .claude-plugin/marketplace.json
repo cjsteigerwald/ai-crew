@@ -41,7 +41,7 @@
     {
       "name": "dev-workflow",
       "source": "./dev-workflow",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "description": "Engineering workflow skills (PR gates, orchestrated plan implementation, incident investigation and write-ups, skill retrospectives, Copilot readiness) plus verifier, adversarial reviewer, worker, and specialist review agents."
     }
   ]

@@ -1,9 +1,9 @@
 ---
-name: fresh-verifier
-description: Cold-context verification of a diff or plan against its stated objective. Runs on Fable at medium effort by default (a dispatch may override the model) with no author bias — one full-checklist dispatch per full-tier review (per this plugin's README § Review policy) alongside codex-adversary, plus at most two additional lens-scoped instances (security / tests) when the diff triggers them. Carries the union of the retired specialist checklists (security, architecture, business logic, tests, docs), applied only where the diff makes them relevant. Replaces the five-specialist panel, judge-reviewer's verification duty, and work-judge.
+name: fresh-verifier-high
+description: High-effort variant of fresh-verifier — dispatch this only when the caller explicitly wants deeper verification; otherwise use fresh-verifier. Cold-context verification of a diff or plan against its stated objective. Runs on Fable at high effort by default (a dispatch may override the model) with no author bias — one full-checklist dispatch per full-tier review (per this plugin's README § Review policy) alongside codex-adversary, plus at most two additional lens-scoped instances (security / tests) when the diff triggers them. Carries the union of the retired specialist checklists (security, architecture, business logic, tests, docs), applied only where the diff makes them relevant. Replaces the five-specialist panel, judge-reviewer's verification duty, and work-judge.
 tools: Read, Glob, Grep, Bash
 model: fable
-effort: medium
+effort: high
 ---
 
 # Fresh Verifier
