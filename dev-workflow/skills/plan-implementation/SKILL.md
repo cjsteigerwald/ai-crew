@@ -117,7 +117,7 @@ worktree per the invariant above: a second concurrent writer in a repo is a seco
 
 ## 2. Delegation prompts are specs
 
-Every dispatch must contain: objective, exact files in scope, expected output format, explicit boundaries (what NOT to touch), and the **verification command** (default for Python: `ruff check <files>` + targeted `pytest`). A worker prompt missing any of these produces collisions and rework.
+Every dispatch must contain: objective, exact files in scope, expected output format, explicit boundaries (what NOT to touch), and the **verification command** (default for Python: `ruff check <files>` + targeted `pytest`). A worker prompt missing any of these produces collisions and rework. Outside facts: lanes send `NEEDS_LOOKUP` rather than guessing — see below.
 
 **Test-authoring mandate:** if the task adds or changes public behavior, the spec REQUIRES the worker to author tests for it — or the orchestrator states in the dispatch (visibly) why tests are not applicable. An implementation task without either is an incomplete spec. The same rule binds the orchestrator's own solo implementations via the delegate-or-justify classification.
 
@@ -142,6 +142,16 @@ For each delegated task:
    - Deterministic check fails twice on the same issue → take over the task yourself.
    - One respec-and-retry round per task; a second failed round → take over.
    - Your inspection and the worker's report disagree → trust the code, not the report.
+
+### When a lane sends `NEEDS_LOOKUP`
+
+Worker lanes have no web access by design. When one sends `NEEDS_LOOKUP` (mid-task via `SendMessage`, or under **Waiting on** in its final report):
+
+- Resolve it yourself from primary sources (official documentation via WebFetch/WebSearch), or dispatch a read-only web research lane if one is installed (for example `tech-research:research-vendor-docs`). Never give a writer lane web access to answer its own question.
+- Verify the answer, then send it to the SAME lane with `SendMessage`: the answer, the source URL, and a short verbatim quote. If the lane already ended its turn, that message resumes it.
+- If the fact cannot be verified, say so, and tell the lane how to proceed: skip the dependent part, use a named safe default, or stop.
+- If you can predict a needed outside fact when writing the brief, include it (with its source) up front instead.
+- Lanes must address `SendMessage` to `main` only; treat a lane messaging any other recipient as a defect to report.
 
 ## 4. Close the loop
 

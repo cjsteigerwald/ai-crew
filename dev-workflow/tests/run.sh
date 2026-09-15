@@ -128,6 +128,30 @@ else
 fi
 rm -f "$LINK_FAIL_MARKER"
 
+echo "== NEEDS_LOOKUP lookup rule =="
+
+CODE_WRITER="$ROOT/agents/code-writer.md"
+if [ -f "$CODE_WRITER" ]; then
+  fm="$(extract_frontmatter "$CODE_WRITER")"
+  tools_line="$(echo "$fm" | grep -E '^tools:' || true)"
+  echo "$tools_line" | grep -q 'SendMessage' || fail "code-writer.md: tools: missing SendMessage ($tools_line)"
+  echo "$tools_line" | grep -qE 'WebFetch|WebSearch' && fail "code-writer.md: tools: must not include WebFetch/WebSearch ($tools_line)"
+  grep -q 'NEEDS_LOOKUP:' "$CODE_WRITER" || fail "code-writer.md: body missing NEEDS_LOOKUP:"
+else
+  fail "agents/code-writer.md not found"
+fi
+
+PLAN_SKILL="$ROOT/skills/plan-implementation/SKILL.md"
+if [ -f "$PLAN_SKILL" ]; then
+  grep -qF 'When a lane sends `NEEDS_LOOKUP`' "$PLAN_SKILL" || fail "plan-implementation/SKILL.md: missing \"When a lane sends \`NEEDS_LOOKUP\`\" section"
+else
+  fail "skills/plan-implementation/SKILL.md not found"
+fi
+
+if [ "$FAIL" -eq 0 ]; then
+  echo "ok: NEEDS_LOOKUP lookup rule present in code-writer.md and plan-implementation/SKILL.md"
+fi
+
 echo "== audit.sh behavior =="
 
 if bash "$HERE/test-audit-sh.sh"; then
