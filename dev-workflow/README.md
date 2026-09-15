@@ -89,3 +89,6 @@ claude plugin install dev-workflow@cjs-plugins
 installed; every other skill and agent here works standalone. The tiered worker lanes
 named in `plan-implementation` (`claude-scout`, `claude-reader`,
 `claude-implementer-*`) come from the separate `claude-crew` plugin.
+The `NEEDS_LOOKUP` recipient enforcement for `code-writer` (only `main` may be
+messaged) also comes from `claude-crew`'s `sendmessage-recipient-gate` hook;
+without claude-crew installed, that rule is prose only.

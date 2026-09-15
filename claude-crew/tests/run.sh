@@ -186,8 +186,20 @@ check_sm "non-covered claude-crew:claude-scout-x to other (no prefix match)" all
 check_sm "non-covered other:claude-scout-x to other (no substring match)" allow other:claude-scout-x "{'to': 'other-agent', $MSG}"
 check_pj "agent_id only, no agent_type, to other" allow \
   "{'tool_name': 'SendMessage', 'agent_id': 'x1', 'tool_input': {'to': 'other-agent', $MSG}}"
-check_pj "covered with empty agent_id, to other" allow \
+check_pj "covered with empty agent_id, to other" deny \
   "{'tool_name': 'SendMessage', 'agent_id': '', 'agent_type': 'claude-crew:claude-scout', 'tool_input': {'to': 'other-agent', $MSG}}"
+check_pj "covered with null agent_id, to other" deny \
+  "{'tool_name': 'SendMessage', 'agent_id': None, 'agent_type': 'claude-crew:claude-scout', 'tool_input': {'to': 'other-agent', $MSG}}"
+check_pj "covered with missing agent_id, to other" deny \
+  "{'tool_name': 'SendMessage', 'agent_type': 'claude-crew:claude-scout', 'tool_input': {'to': 'other-agent', $MSG}}"
+check_pj "bare covered name with missing agent_id, to other" deny \
+  "{'tool_name': 'SendMessage', 'agent_type': 'code-writer', 'tool_input': {'to': 'other-agent', $MSG}}"
+check_pj "covered with missing agent_id, to main" allow \
+  "{'tool_name': 'SendMessage', 'agent_type': 'claude-crew:claude-scout', 'tool_input': {'to': 'main', $MSG}}"
+check_pj "non-covered with missing agent_id, to other" allow \
+  "{'tool_name': 'SendMessage', 'agent_type': 'tech-research:research-vendor-docs', 'tool_input': {'to': 'other-agent', $MSG}}"
+check_pj "empty agent_type, to other" allow \
+  "{'tool_name': 'SendMessage', 'agent_id': 'x1', 'agent_type': '', 'tool_input': {'to': 'other-agent', $MSG}}"
 check_sm "CLAUDE_SENDMESSAGE_GATE=off, covered to other" allow claude-crew:claude-scout "{'to': 'other-agent', $MSG}" CLAUDE_SENDMESSAGE_GATE=off
 
 check_raw "invalid JSON" allow '{not json'
@@ -198,15 +210,34 @@ else
 fi
 check_raw "JSON array payload" allow '[1, 2]'
 
-# Debug capture: verdict unchanged, message redacted to its length.
-check_sm "debug on, covered to other" deny claude-crew:claude-reader "{'to': 'other-agent', 'recipient': 'other-agent', 'type': 'message', 'message': 'SECRET-BODY', 'content': 'SECRET-BODY', 'summary': 'SECRET-SUM'}" \
+# Debug capture: verdict unchanged, a sanitized record written, no SECRET- anywhere.
+# dbg_ok <cfg-dir> <label> [grep -F pattern that must be present]
+dbg_ok() {
+  local f="$1/state/sendmessage-gate/payloads.jsonl"
+  if [ -f "$f" ] && ! grep -q 'SECRET-' "$f" && { [ -z "${3:-}" ] || grep -qF "$3" "$f"; }; then
+    pass_ "debug capture ($2) written with no SECRET- content"
+  else
+    fail_ "debug capture ($2) missing or unredacted ($f)"
+  fi
+}
+check_pj "debug on, covered to other" deny \
+  "{'tool_name': 'SendMessage', 'hook_event_name': 'PreToolUse', 'agent_id': 'SECRET-AID', 'agent_type': 'claude-crew:claude-reader', 'session_id': 'SECRET-SID', 'transcript_path': '/SECRET-TP', 'cwd': '/SECRET-CWD', 'tool_input': {'to': 'other-agent', 'recipient': 'other-agent', 'type': 'message', 'message': 'SECRET-BODY', 'content': 'SECRET-BODY', 'summary': 'SECRET-SUM'}}" \
   SENDMESSAGE_GATE_DEBUG=1 CLAUDE_CONFIG_DIR="$TD/cfg"
-DBG="$TD/cfg/state/sendmessage-gate/payloads.jsonl"
-if [ -f "$DBG" ] && grep -q '<redacted len=11>' "$DBG" && ! grep -q 'SECRET-' "$DBG"; then
-  pass_ "debug capture written with message redacted to its length"
+dbg_ok "$TD/cfg" "dict tool_input" '"to": "other-agent", "recipient": "other-agent", "type": "message", "message": "<redacted:str len=11>"'
+if grep -qF '"agent_id_present": true' "$TD/cfg/state/sendmessage-gate/payloads.jsonl" 2>/dev/null; then
+  pass_ "debug capture records agent_id presence as a bool"
 else
-  fail_ "debug capture missing or unredacted ($DBG)"
+  fail_ "debug capture missing agent_id_present"
 fi
+check_sm "debug on, string tool_input" deny claude-crew:claude-reader "'SECRET-BODY'" \
+  SENDMESSAGE_GATE_DEBUG=1 CLAUDE_CONFIG_DIR="$TD/cfg-str"
+dbg_ok "$TD/cfg-str" "string tool_input" '"tool_input": "<redacted:str len=11>"'
+check_sm "debug on, list tool_input" deny claude-crew:claude-reader "[{'message': 'SECRET-BODY'}]" \
+  SENDMESSAGE_GATE_DEBUG=1 CLAUDE_CONFIG_DIR="$TD/cfg-list"
+dbg_ok "$TD/cfg-list" "list tool_input" '"tool_input": "<redacted:list>"'
+check_sm "debug on, non-string to" deny claude-crew:claude-reader "{'to': {'message': 'SECRET-BODY'}}" \
+  SENDMESSAGE_GATE_DEBUG=1 CLAUDE_CONFIG_DIR="$TD/cfg-to"
+dbg_ok "$TD/cfg-to" "non-string to" '"to": "<redacted:dict>"'
 
 if [ -z "$DECISION_ONLY" ]; then
   echo
@@ -220,7 +251,7 @@ assert src.count(anchor) == 1
 open(sys.argv[2], "w").write(src.replace(anchor, anchor + "    return 0\n"))
 PY
   mrc=0
-  mout="$(DECISION_ONLY=1 GATE="$MUT" bash "$0" 2>&1)" || mrc=$?
+  mout="$(DECISION_ONLY=1 GATE="$MUT" "$BASH" "$0" 2>&1)" || mrc=$?
   if [ "$mrc" -ne 0 ] && echo "$mout" | grep -q '^  FAIL  claude-crew:claude-scout to other-agent -> expected deny, got allow'; then
     pass_ "always-allow mutant fails the suite ($(echo "$mout" | grep -c '^  FAIL') failures, exit $mrc)"
   else

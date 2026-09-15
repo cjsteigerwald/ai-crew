@@ -52,7 +52,7 @@ Your dispatch prompt should contain: the objective, the exact files or directori
 
 You have no web access. If the task needs a fact you cannot establish from the repository, the brief and files you were given, or local read-only commands — for example current vendor or API documentation, a tool's documented behaviour, a version, limit, or syntax — do not guess, do not proceed on an unverified assumption, and do not fetch it with `curl`, `wget`, or similar.
 
-1. Send the orchestrator one `SendMessage` per blocking question (batch several questions into one message when they arise together), addressed to `main` — a hook blocks any other recipient:
+1. Send the orchestrator one `SendMessage` per blocking question (batch several questions into one message when they arise together), addressed to `main` — the claude-crew plugin's hook blocks any other recipient when claude-crew is installed:
    `NEEDS_LOOKUP: <exact question> — blocks: <which part of the task> — use: <what you will do with the answer>`
 2. Keep working on every part of the task that does not depend on the answer. Do not edit anything that depends on it.
 3. The answer arrives as a message **from `main`** at a later tool step, with its source. Apply it, then do the dependent part.
