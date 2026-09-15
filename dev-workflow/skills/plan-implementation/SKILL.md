@@ -126,7 +126,7 @@ Every dispatch must contain: objective, exact files in scope, expected output fo
 For each delegated task:
 
 1. **Deterministic first** — confirm the worker's verification evidence is real (it must include actual command output). Re-run cheap checks yourself if in doubt.
-2. **Inspect the diff yourself** against the spec — requirement by requirement. You dispatched the work, so stay skeptical: hunt for silently dropped requirements, scope creep, and report claims with no corresponding code. This inspection gates task acceptance; the **cold, unbiased pass** happens at pre-PR time (`dev-workflow:fresh-verifier` + `dev-workflow:codex-adversary`, per this plugin's README § Review policy) — the worker loop does not replace it.
+2. **Inspect the diff yourself** against the spec — requirement by requirement. You dispatched the work, so stay skeptical: hunt for silently dropped requirements, scope creep, and report claims with no corresponding code. This inspection gates task acceptance; the **cold, unbiased pass** happens at pre-PR time (`dev-workflow:fresh-verifier` + `dev-workflow:codex-adversary`, per the `dev-workflow:review-policy` skill) — the worker loop does not replace it.
    ⚠️ **There is no shortcut here — read the hunks.** A tempting substitute for large
    mechanical fan-outs is a deterministic assertion that the transformation happened,
    skipping the diff. Two successive attempts to make that safe both failed review:
@@ -161,7 +161,7 @@ When all plan items are done:
 
 1. Run the repo's quality gates (`ruff check` + `pytest` where Python changed) — a Stop hook may enforce this too, but don't rely on it as the first line.
 2. Report per-task status with evidence (lane, verification output) — audit every progress claim against a tool result from this session; never report unverified work as done.
-3. Apply the tiered review policy (this plugin's README § Review policy) before any `gh pr create` — the worker loop does not replace the pre-PR chain.
+3. Apply the tiered review policy (the `dev-workflow:review-policy` skill) before any `gh pr create` — the worker loop does not replace the pre-PR chain.
 4. Run `skill-retrospective` in CAPTURE mode if the implementation surfaced non-obvious learnings.
 
 ## Adapting this skill to another project

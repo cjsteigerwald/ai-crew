@@ -6,12 +6,12 @@ description: >
   decision, review chain, ticket references, user confirmation, then create and
   verify. Use when about to push work for review or open a PR — "open a PR",
   "ready for review", "push this", "raise a PR", "is this ready to merge",
-  "create the PR" — and when a push has just failed CI. Policy lives in this
-  plugin's README § Review policy; this skill only sequences the gates and
+  "create the PR" — and when a push has just failed CI. Policy lives in the
+  `dev-workflow:review-policy` skill; this skill only sequences the gates and
   cites it. Skip when implementing an approved plan (use plan-implementation),
   when reviewing someone else's PR (use /review), or when the question is
-  which review tier applies rather than how to ship (read the README § Review
-  policy directly).
+  which review tier applies rather than how to ship (load the
+  `dev-workflow:review-policy` skill directly).
 ---
 
 # Opening pull requests
@@ -30,7 +30,7 @@ every rule below is written down somewhere, which is exactly why one gets skippe
 
 - Executing an approved multi-step plan → `[[plan-implementation]]`
 - Reviewing a PR someone else opened → `/review`
-- Deciding *which* tier a change is → read this plugin's README § Review policy directly
+- Deciding *which* tier a change is → load the `dev-workflow:review-policy` skill directly
 
 ## The gates
 
@@ -68,7 +68,7 @@ catches what you miss.
 
 ### 5. Tier decision
 
-Per this plugin's README § Review policy — Exempt / Routine / Full chain. Decide against the **actual
+Per the `dev-workflow:review-policy` skill — Exempt / Routine / Full chain. Decide against the **actual
 diff**, not the plan's stated scope: a Routine-planned change that grew past the thresholds gets the
 full chain now. When torn between Routine and Full, run Full.
 
@@ -131,6 +131,6 @@ before merging, say so in the body and confirm the live environment matches the 
 
 ## References
 
-- This plugin's README § Review policy — tier table, Codex governance
+- The `dev-workflow:review-policy` skill — tier table, Codex governance
 - Your project's commit convention — conventional commits, attribution, ticket references
 - `[[plan-implementation]]` — orchestrating the work this ships

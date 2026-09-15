@@ -151,7 +151,7 @@ If Gate 2 surfaced a prior finding for this gap, this is where its recommendatio
 ## Gate 7 — Produce artifacts and ship
 
 Two steps, and **the order is load-bearing** — the conclusion is reviewed before any document exists
-(per this plugin's README § Review policy).
+(per the `dev-workflow:review-policy` skill).
 
 ### 7a. Refute the conclusion — before you write anything
 
@@ -199,5 +199,5 @@ Finally: comment the artifact links onto the ticket, so the investigation and th
 - `[[authoring-incident-docs]]` — produces the RCA, findings, and runbook
 - `[[opening-pull-requests]]` — branch and PR mechanics
 - `[[skill-retrospective]]` — Gate 8 capture
-- This plugin's README § Review policy — tier table; the investigation **artifact text** is exempted from the chain, while the root-cause **conclusion** gets one adversarial pass (Gate 7a)
+- The `dev-workflow:review-policy` skill — tier table; the investigation **artifact text** is exempted from the chain, while the root-cause **conclusion** gets one adversarial pass (Gate 7a)
 - `rca/`, `findings/`, `runbooks/` (or the repo's configured equivalent) — searched at Gate 2, updated at Gate 8; the repo's durable incident memory

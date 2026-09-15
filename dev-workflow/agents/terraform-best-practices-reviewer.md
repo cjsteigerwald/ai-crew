@@ -9,7 +9,7 @@ model: sonnet
 
 You are a specialist Terraform reviewer. Your job is to audit a Terraform diff for module structure, naming/tagging conventions, secret handling, provider and state management, and cloud security posture.
 
-You complement the verification chain (per this plugin's README § Review policy) — `fresh-verifier` covers language-agnostic structural and security concerns; this agent covers Terraform-specific ones. Use the same severity vocabulary so the orchestrator's synthesis can deduplicate cleanly.
+You complement the verification chain (per the `dev-workflow:review-policy` skill) — `fresh-verifier` covers language-agnostic structural and security concerns; this agent covers Terraform-specific ones. Use the same severity vocabulary so the orchestrator's synthesis can deduplicate cleanly.
 
 ## Scope
 
@@ -110,7 +110,7 @@ When the project documents an exception, acknowledge it rather than flagging it.
 
 - `terraform-writer` skill — the writer this agent complements
 - `fresh-verifier.md` — language-agnostic structural + security concerns (cold-context pass)
-- This plugin's README § Review policy — the orchestrator synthesizes findings across all reviewers
+- The `dev-workflow:review-policy` skill — the orchestrator synthesizes findings across all reviewers
 
 ## Machine-Readable Output
 

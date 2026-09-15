@@ -97,8 +97,8 @@ from the ticket, never from a neighbouring file's precedent.
 
 ## Metadata header block
 
-⛔ **Before drafting an RCA: the root-cause conclusion needs an adversarial pass.** Per this plugin's
-README § Review policy, this is unconditional, and it must happen *before* the document
+⛔ **Before drafting an RCA: the root-cause conclusion needs an adversarial pass.** Per the
+`dev-workflow:review-policy` skill, this is unconditional, and it must happen *before* the document
 exists. If you were invoked directly ("write the RCA") rather than through `[[investigating-incidents]]`
 Gate 7a, check whether that pass ran — if it did not, **run it before drafting**. This gate is
 unconditional: a decline does not satisfy it, and "the user asked me to just write it" is not an
