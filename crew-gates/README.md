@@ -12,7 +12,7 @@ the main session's Agent dispatches and prompts.
 | Hook | Fires on | What it does |
 |---|---|---|
 | `delegation-gate.py` | PreToolUse, `Edit\|Write\|NotebookEdit\|Bash` | Blocks an edit/write (including a file-writing Bash command) until the transcript carries a classification token since the last genuine user message. |
-| `read-budget-gate.py` | PreToolUse, `Read\|Grep\|Glob\|Bash` | Caps inline bulk reading in the main session (call count + byte total) since the last genuine user message. |
+| `read-budget-gate.py` | PreToolUse, `Read\|Grep\|Glob\|Bash` | Caps inline bulk reading in the main session (call count + byte total, plus a one-call overdraft) since the last task boundary — a user message, a slash command, or a `Skill` launch. |
 | `lane-model-gate.py` | PreToolUse, `Agent\|Task` | Denies dispatching the frontier-tier model to any lane except the configured verifier lane, and denies `model: opus` without an `escalate:` reason. |
 | `routing-table.py` | UserPromptSubmit | Injects a compact routing table (lane names, disqualifiers, evidence rules) into context every turn, so the policy doesn't rely on a large doc the model has to remember to read. |
 
@@ -110,9 +110,60 @@ in `file_path`), while Bash destinations are anchored to the real config dir.
 
 ### Read budget (`read-budget-gate.py`)
 
-Default budget: 3 counted read calls or ~20 KB of read output since the last genuine
-user message. A `solo: D<n>` classification in the window raises the tier to 10 calls /
-80 KB — `dispatching` does not, because the lane does the reading, not the orchestrator.
+Default budget: 8 counted read calls or ~35 KB of read output since the last task
+boundary. A `solo: D<n>` classification in the window raises the tier to 25 calls /
+100 KB — `dispatching` does not, because the lane does the reading, not the orchestrator.
+
+The pairs are calibrated against measured local history (193 transcripts, 1070 windows,
+4233 read results classified by the hook's own `is_read_shaped`): per-result size median
+858 chars and mean 1909, with 66% at or under the 1500-char threshold and therefore free;
+per window, counted calls median 1 / p95 5 / p99 11 and read bytes median 2806 / p95
+31638 / p99 60986. Against that corpus the old default (3/20000) interrupted 13.6% of
+windows with the CALL cap binding first, leaving the byte cap vestigial; 8/35000
+interrupts 4.4% with the BYTE cap binding first (4.0% vs 2.0%), which is the intended
+order since bytes are what cost context. Solo at 25/100000 clears the p99 window while
+still being a real ceiling: it binds 0.2% of windows, where 40/150000 bound 0.1% —
+i.e. nothing.
+The corpus is censored (it was produced under the old gate, so blocked and delegated
+reads are absent and true demand is higher), so re-measure before retuning.
+
+**One-call overdraft.** The small-read exemption is decided from a result that does not
+exist yet at PreToolUse time, so at the cap even a 50-byte read used to be blocked before
+it could prove itself small. Exactly one call is therefore allowed past the CALL cap. It
+is charged normally: if it came back large the next call hard-blocks, and if it came back
+small it cost nothing and the overdraft is available again — so at most one oversized
+read slips through per block, and two consecutive large overdrafts are impossible. The
+byte cap has no overdraft. This is also what lets the small local commands that set up an
+(ungated) cloud command through — `command -v tilt`, `cat tilt_config.json`, `tail -40
+<logfile>` — with no second exemption mechanism.
+
+**Known limits of the byte cap.** It is *retrospective*: a result's size is only known
+once it lands, so the cap blocks the NEXT call rather than the one that overshot it. A
+parallel batch is admitted before any of its results land, so a window can exceed the cap
+by up to one full batch, and the raised caps amplify that worst case proportionally.
+Statically exempt Reads (memory files, files under 4 KB, re-reads after an edit) return
+before the byte check, so they are not bounded by it at all. Relatedly, a ledger file
+that fails to parse is recovered by starting its entry list over, which silently discards
+any in-flight reservations — the window's parallel-admission ceiling briefly doubles and
+nothing is printed. All three predate the
+round-4 caps and none is a regression — but do not read the byte cap as a hard ceiling.
+
+**Task boundary.** The window resets on a genuine user message, on a slash-command
+invocation (the harness's `<command-name>…</command-name>` user record), and on a `Skill`
+tool_use. A slash command like `/implement` is explicitly a multi-phase task that runs
+inside one user message, so a per-message budget would starve it. Task notifications
+still do not reset it: the slash-command match is anchored to the start of the record's
+content and harness envelopes are excluded, because a notification is also a user record
+with string content and it carries a subagent's authored text — and the stall notifier
+appends raw background stdout after the envelope — so an unanchored match would let a
+lane be instructed to emit the wrapper and refill the orchestrator's budget. A `Skill`
+launch must also have not errored.
+
+**Deliberate property (user decision):** the model emits `Skill` itself, so it can reset
+its own window at will by launching a skill. This is accepted: the gate is enforcing
+against accidental bulk reading, not against a determined agent. Both caps still bind
+inside each window, and every other boundary is harness-controlled.
+
 Exempt from the call count: small-output reads, memory files, files under 4 KB, and
 re-reads of files just edited successfully in the window (bytes still count). Never
 gated: `git diff`/`git status`/summary-only `git log`, and live cloud CLIs
