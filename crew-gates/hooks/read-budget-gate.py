@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """PreToolUse gate on Read|Grep|Glob|Bash: cap inline bulk reading in the main session.
 
-Contract: in the window since the last genuine user message (the SAME window as
-delegation-gate.py -- task notifications do not reset it), the main session may make at
-most CLAUDE_READ_BUDGET_CALLS counted read calls (default 3) and pull less than
-CLAUDE_READ_BUDGET_BYTES characters of read output (default 20000). A `solo: D<n>`
+Contract: in the window since the last TASK BOUNDARY -- a genuine user message (the
+same rule as delegation-gate.py; task notifications do not reset it), a slash-command
+invocation, or a Skill tool_use -- the main session may make at
+most CLAUDE_READ_BUDGET_CALLS counted read calls (default 8) and pull less than
+CLAUDE_READ_BUDGET_BYTES characters of read output (default 35000). A `solo: D<n>`
 classification in the window (text line or the Bash ":" marker) raises the tier to
-10 calls / 80000 characters. A `dispatching <lane>` token does NOT raise it: dispatching
-means the lane reads, not the orchestrator.
+25 calls / 100000 characters. A `dispatching <lane>` token does NOT raise it: dispatching
+means the lane reads, not the orchestrator. Exactly OVERDRAFT_CALLS (1) call is allowed
+past the CALL cap so that a read small enough to be exempt can prove it -- see the
+OVERDRAFT_CALLS comment. The byte cap has no overdraft.
 
 Rules summary:
   * Read-shaped: Read, Grep, Glob; Bash where ANY pipeline stage is a counted read. The
@@ -28,7 +31,9 @@ Rules summary:
     and reads hidden behind variables/aliases/functions are not detected.
   * Call count: an earlier read-shaped call counts unless it is exempt, its result is
     is_error, or its result is <= SMALL_RESULT_CHARS (bulk-output budget: `grep -c`,
-    short `ls`).
+    short `ls`). The current call is allowed while call_no <= cap + OVERDRAFT_CALLS, so
+    at most one oversized read slips through per block and small reads -- whose size is
+    unknowable before execution -- stop being collateral damage.
   * Exempt from the call count (bytes still count): Read of a memory file
     (~/.claude/projects/*/memory/), Read of a file under 4096 bytes or not a regular
     file, and "re-read after edit" -- Read of a path that a SUCCESSFUL (non-is_error)
@@ -66,10 +71,39 @@ import sys
 import time
 import uuid
 
-DEFAULT_CALLS = 3
-DEFAULT_BYTES = 20000
-SOLO_CALLS = 10
-SOLO_BYTES = 80000
+# Cap calibration (round 4), measured -- not estimated. 193 local transcripts, 1070
+# windows containing a read, 4233 read results classified by this module's own
+# is_read_shaped(): per-result size median 858 chars, mean 1909, p90 4228, p99 17329;
+# 66% of results are at or under SMALL_RESULT_CHARS and so cost no call at all. Per
+# window: counted calls median 1 / p95 5 / p99 11; read bytes median 2806 / p95 31638 /
+# p99 60986.
+#
+# The old pairs made the CALL cap bind first and left the byte cap vestigial -- a real
+# session was blocked at "call 11 of 10" with only 39537 of 80000 bytes used. Measured
+# against the same corpus, the old default (3/20000) interrupted 13.6% of windows with
+# calls binding first; the pairs below interrupt 4.4% with BYTES binding first (4.0% vs
+# 2.0%), which is the intended order: bytes are what actually cost context.
+#
+# Solo is deliberately NOT set where it never binds. At 40/150000 it caught 0.1% of
+# windows -- effectively unlimited, which makes the raised tier meaningless. 25/100000
+# binds 0.2% and still clears the p99 window (11 calls / 60986 chars): a real ceiling
+# that a normal solo stretch never touches.
+#
+# CAVEAT: the corpus was produced by sessions running under the old 3/20000 gate, so it
+# is censored -- blocked and delegated reads are missing and true demand is higher.
+# Re-measure before retuning: /tmp/calib.py in the round-4 session, or re-derive from
+# is_read_shaped over ~/.claude/projects/*/*.jsonl.
+DEFAULT_CALLS = 8
+DEFAULT_BYTES = 35000
+SOLO_CALLS = 25
+SOLO_BYTES = 100000
+# DEFECT 2 (round 4): the small-read exemption is decided from a result that does not
+# exist yet at PreToolUse time, so at the cap even a 50-byte read was blocked before it
+# could prove itself small. One call is allowed past the call cap; it is charged
+# normally, so if it came back large it raises used_calls and the NEXT call hard-blocks,
+# and if it came back small it costs nothing and the overdraft is available again. Two
+# consecutive large overdrafts are therefore impossible. Bytes have no overdraft.
+OVERDRAFT_CALLS = 1
 SMALL_FILE_BYTES = 4096
 SMALL_RESULT_CHARS = 1500  # prior results at or below this do not count as a call
 CHARS_PER_LINE = 120       # estimate for Read offset/limit (lines) -> characters
@@ -130,6 +164,18 @@ RE_MEMORY = re.compile(r"/\.claude/projects/[^/]+/memory/")
 RE_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 RE_HEREDOC = re.compile(r"(?<!<)<<(?!<)(-?)\s*(['\"]?)([A-Za-z_][\w-]*)\2")
 RE_SESSION = re.compile(r"^[\w.-]{1,128}$")
+# DEFECT 4 (round 4): a slash command is a multi-phase TASK (read ticket -> read source
+# -> implement -> verify) that runs inside ONE user message, so a per-message budget
+# starves it. Both invocation shapes are literal in the transcript and were confirmed
+# against 935 local transcripts: the harness injects a `type:"user"` record whose
+# message.content is a plain string wrapping `<command-name>/implement</command-name>`,
+# and a skill launched by the model is an assistant `tool_use` block named "Skill".
+# ANCHORED at the start of the content, deliberately: a task-notification is also a
+# user record with string content, and its <result> element carries a subagent's own
+# authored text VERBATIM. An unanchored search would let a lane be told to emit the
+# wrapper and reset the orchestrator's budget on the completion notification. Every
+# real invocation record begins with the wrapper, so the anchor costs nothing.
+RE_COMMAND_NAME = re.compile(r"^\s*<command-name>\s*[^<>\s][^<>]*</command-name>")
 
 ADVICE = (
     "Bulk reading belongs in a lane: dispatch claude-crew:claude-scout (locate) or "
@@ -443,6 +489,23 @@ def _ledger_path(payload, transcript):
     return base, os.path.join(base, sid + ".json")
 
 
+def _skill_ok(tid, idx, records, content_of):
+    """True unless a LATER tool_result for this Skill tool_use is an error. An absent
+    result means the launch is still in flight -- treated as a boundary, matching the
+    window semantics for the invocation the model just made."""
+    if not isinstance(tid, str) or not tid:
+        return True
+    for rec in records[idx + 1:]:
+        if rec.get("type") != "user" or rec.get("isSidechain"):
+            continue
+        blocks = content_of(rec)
+        for blk in blocks if isinstance(blocks, list) else []:
+            if (isinstance(blk, dict) and blk.get("type") == "tool_result"
+                    and blk.get("tool_use_id") == tid):
+                return blk.get("is_error") is not True
+    return True
+
+
 def _sig(name, inp):
     """Canonical (name, input) signature for matching a generated-id reservation."""
     blob = json.dumps([name, inp], sort_keys=True, separators=(",", ":"), default=str)
@@ -515,15 +578,42 @@ def main():
     if not records:
         inactive(f"no parseable records in {transcript}")
 
-    # Window start: copied from delegation-gate.py main() lines ~313-344 (inline there,
-    # not importable). Semantics MUST stay identical: skip sidechain, non-string content,
-    # isMeta, and promptSource=="system" records carrying a harness prefix.
+    # Window start: boundary 1 is copied from delegation-gate.py main() lines ~313-344
+    # (inline there, not importable) and its semantics MUST stay identical: skip
+    # sidechain, non-string content, isMeta, and promptSource=="system" records carrying
+    # a harness prefix. Boundaries 2 and 3 are a DELIBERATE divergence (DEFECT 4): this
+    # gate's budget is per TASK, and a slash command or a Skill launch starts one.
     start = 0
     for i, rec in enumerate(records):
-        if rec.get("type") != "user" or rec.get("isSidechain"):
+        if rec.get("isSidechain"):
             continue
+        rtype = rec.get("type")
         content = _content(rec)
-        if not isinstance(content, str):
+        # Boundary 2 (DEFECT 4): a slash-command invocation. Recognised regardless of
+        # isMeta/promptSource (a real invocation carries either), but ONLY when the
+        # record opens with the wrapper and does not open with a harness envelope --
+        # belt-and-braces against forged content reaching a user record (see
+        # RE_COMMAND_NAME).
+        if rtype == "user" and isinstance(content, str):
+            stripped = content.lstrip()
+            if (RE_COMMAND_NAME.match(stripped)
+                    and not any(stripped.startswith(h) for h in dg.HARNESS_PREFIXES)):
+                start = i
+                continue
+        # Boundary 3 (DEFECT 4): the model launching a skill via the Skill tool. The
+        # launch must have SUCCEEDED -- an errored/denied Skill call is not a task
+        # boundary (same rule as the solo ":" marker below). NOTE, by explicit user
+        # decision: the model emits this itself, so a skill launch resets the budget at
+        # will. The byte and call caps still bind inside each window; the README records
+        # this as a deliberate property.
+        if rtype == "assistant" and isinstance(content, list):
+            if any(isinstance(b, dict) and b.get("type") == "tool_use"
+                   and b.get("name") == "Skill"
+                   and _skill_ok(b.get("id"), i, records, _content) for b in content):
+                start = i
+            continue
+        # Boundary 1: a genuine user message (identical to delegation-gate.py).
+        if rtype != "user" or not isinstance(content, str):
             continue
         if rec.get("isMeta"):
             continue
@@ -668,7 +758,9 @@ def main():
             entries = [e for e in entries if live(e)]
             inflight = sum(1 for e in entries if e["tool_use_id"] != cur_id)
             call_no = used_calls + inflight + 1
-            ok = call_no <= max_calls and used_bytes < max_bytes
+            # One-call overdraft (DEFECT 2): charged normally, so a large overdraft
+            # pushes used_calls past the cap and the next call hard-blocks.
+            ok = call_no <= max_calls + OVERDRAFT_CALLS and used_bytes < max_bytes
             if ok and not any(e["tool_use_id"] == cur_id for e in entries):
                 entry = {"tool_use_id": cur_id, "bytes_unknown": True, "ts": now}
                 if generated:
@@ -685,10 +777,14 @@ def main():
     if ok:
         allow(f"within budget: call {call_no}/{max_calls}, {used_bytes}/{max_bytes} chars")
 
+    over_bytes = used_bytes >= max_bytes
+    why = (f"{used_bytes} of {max_bytes} characters of read output already used"
+           if over_bytes else
+           f"the {max_calls}-call cap and its {OVERDRAFT_CALLS}-call overdraft are both "
+           f"spent ({used_bytes} of {max_bytes} characters used)")
     block(
         f"BLOCKED by read-budget-gate: this would be read call {call_no} of {max_calls} "
-        f"({tier}; {inflight} in flight); {used_bytes} of {max_bytes} characters of read "
-        f"output already used since the last user message.\n" + ADVICE
+        f"({tier}; {inflight} in flight); {why} since the last task boundary.\n" + ADVICE
     )
 
 

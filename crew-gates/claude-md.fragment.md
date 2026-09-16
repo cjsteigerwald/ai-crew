@@ -43,11 +43,16 @@ also states the test plan — "tests: <what will be authored>" or "tests: n/a �
 Applies to solo and delegated work alike.
 
 **Read budget (second hook):** `read-budget-gate.py` (PreToolUse on Read|Grep|Glob|Bash,
-main session only) blocks bulk reading since the last genuine user message: after 3 read
-calls whose output exceeded ~1.5 KB (parallel calls included), or ~20 KB of read output
-in total; a `Read` of a file over the cap needs `offset`/`limit`. A `solo: D<n>`
-classification raises that to 10 calls / 80 KB; `dispatching` does not — the lane reads,
-not you. Not counted as calls once their result lands: small-output reads (`grep -c`,
+main session only) blocks bulk reading since the last task boundary — a genuine user
+message, a slash-command invocation, or a `Skill` launch (task notifications do not reset
+it): after 8 read calls whose output exceeded ~1.5 KB (parallel calls included), or
+~35 KB of read output in total; a `Read` of a file over the cap needs `offset`/`limit`. A
+`solo: D<n>` classification raises that to 25 calls / 100 KB; `dispatching` does not —
+the lane reads, not you. Exactly ONE call is allowed past the call cap (never past the
+byte cap): it is charged normally, so a large overdraft hard-blocks the next call while a
+small one costs nothing and stays available — which is what keeps a 50-byte read, or the
+`command -v tilt` / `cat tilt_config.json` prep for an ungated cloud command, from being
+collateral damage. Not counted as calls once their result lands: small-output reads (`grep -c`,
 short `ls`) — parallel ones each hold a slot until then, so batch them into one command
 — memory files, files under 4 KB, and re-reads of files successfully edited in the
 window (their bytes still count). Never gated: `git diff`/`git status` (diff inspection
