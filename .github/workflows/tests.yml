@@ -55,8 +55,13 @@ jobs:
       # variable. Everywhere else an absent secret is a FAILURE: a step that
       # succeeds while enforcing nothing is worse than no step at all,
       # because the checks list then says identity classes were verified.
-      # (Verified 2026-09-12: this repository has zero secrets configured,
-      # so the old `exit 0` branch was the live behaviour, not a hypothetical.)
+      # (History: when this guard was written on 2026-09-12 the repository had
+      # zero secrets configured, so the `exit 0` branch it replaced was the
+      # live behaviour, not a hypothetical. SCRUB_DENYLIST_B64 has since been
+      # configured -- verified 2026-09-16 by this job passing on non-fork push
+      # and pull_request runs, which the `exit 1` below makes impossible on an
+      # empty secret. Do not re-derive "the repo has no secrets" from this
+      # comment; check a recent non-fork run instead.)
       - name: Scrub check with the private denylist
         if: ${{ !(github.event.pull_request.head.repo.fork && env.HAS_DENYLIST == 'false') }}
         env:
