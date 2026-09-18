@@ -45,11 +45,12 @@
 #       URL carries no ref, so the install tracks upstream's default-branch
 #       HEAD and the sha may also move WITHOUT a version change — a PASS here,
 #       where it is a FAIL for every other target.
-#     - Their marketplace is OPTIONAL. A missing clone is a WARNING naming the
-#       exact `claude plugin marketplace add` command, and the vendor is skipped
-#       — never a failure, because a user who does not use it must still be able
-#       to update the crew. A clone that IS present but whose catalogue is
-#       unparseable, or lacks the entry, is an ERROR like any other.
+#     - Their marketplace is OPTIONAL. An ABSENT clone path is a WARNING
+#       naming the exact `claude plugin marketplace add` command, and the
+#       vendor is skipped — never a failure, because a user who does not use it
+#       must still be able to update the crew. A clone path that IS present but
+#       whose catalogue is missing, unparseable, or lacks the entry is an ERROR
+#       like any other: a partial clone must not skip an installed vendor.
 #
 # Selective-install contract (a marketplace lists more than a user installs):
 #   - gate and bind cover EVERY plugin in each marketplace.json. That is release
@@ -480,15 +481,18 @@ all_targets() {
 }
 
 # cat_vendor_targets <mkt-idx>: append every catalogue vendor whose marketplace
-# clone is present. An absent one is WARNED about (once per run — update's own
-# verify pass would repeat it) with the command that adds it, and skipped.
+# clone is present. Only an ABSENT clone path means "not added": it is WARNED
+# about (once per run — update's own verify pass would repeat it) with the
+# command that adds it, and skipped. A clone path that exists without its
+# catalogue is a broken or partial clone, and dies: skipping it would let an
+# installed vendor go unverified while verify reports PASS.
 CAT_WARNED=0
 cat_vendor_targets() {
   local m=$1 spec key src mkt clone inst
   for spec in "${CAT_VENDORS[@]}"; do
     key=${spec%%=*}; src=${spec#*=}; mkt=${key#*@}
     clone="$AI_CREW_CAT_VENDOR_DIR/$mkt"
-    if [ ! -f "$clone/.claude-plugin/marketplace.json" ]; then
+    if [ ! -e "$clone" ] && [ ! -L "$clone" ]; then
       if [ "$CAT_WARNED" -eq 0 ]; then
         inst=$(inst_state "$key") || exit 1
         if [ "$inst" = present ]; then
@@ -499,6 +503,8 @@ cat_vendor_targets() {
       fi
       continue
     fi
+    [ -f "$clone/.claude-plugin/marketplace.json" ] \
+      || die "marketplace file not found: $clone/.claude-plugin/marketplace.json — the $mkt clone exists but is broken or partial; re-add it (claude plugin marketplace remove $mkt, then claude plugin marketplace add $src)"
     KEYS+=("$key"); TNAMES+=("${key%%@*}"); TMKTS+=("$mkt")
     MANIFESTS+=("$clone/.claude-plugin/marketplace.json"); HEADCLONES+=("$clone"); TIDX+=("$m"); TCAT+=(1)
   done

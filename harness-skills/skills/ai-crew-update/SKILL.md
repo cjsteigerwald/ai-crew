@@ -87,14 +87,17 @@ checkout and no test suite here, so it is never a configured crew
 marketplace; it differs from codex in two ways:
 
 - **Its marketplace is optional.** If `superpowers-marketplace` has not been
-  added (no clone under `<marketplaces-dir>/superpowers-marketplace`), every
-  subcommand prints a WARNING with the fix —
-  `claude plugin marketplace add obra/superpowers-marketplace` — and skips it.
-  Nothing fails: a user who does not use it can still update the crew. (A
-  missing codex clone, by contrast, is an error.) If the plugin is INSTALLED
-  but its marketplace is missing, the warning says it is NOT updated or
-  verified. A clone that is present but whose catalogue is unparseable or has
-  no single `superpowers` entry is an ERROR.
+  added (nothing at all at `<marketplaces-dir>/superpowers-marketplace`),
+  `status`, `snapshot`, `update` and `verify` print a WARNING with the fix —
+  `claude plugin marketplace add obra/superpowers-marketplace` — and skip it.
+  (`gate`, `bind` and `reconcile` never enumerate vendors, so they print
+  nothing about it.) Nothing fails: a user who does not use it can still update
+  the crew. (A missing codex clone, by contrast, is an error.) If the plugin is
+  INSTALLED but its marketplace is missing, the warning says it is NOT updated
+  or verified. A clone directory that exists but whose catalogue
+  (`.claude-plugin/marketplace.json`) is missing, unparseable, or has no single
+  `superpowers` entry is an ERROR — a broken or partial clone must never let an
+  installed vendor go unchecked.
 - **Its catalogue entry points at an upstream git URL**, so the marketplace
   clone holds no `plugin.json`: `available` is the entry's `.version` in the
   clone's `marketplace.json`, and the installed `gitCommitSha` is the upstream

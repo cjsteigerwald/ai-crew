@@ -857,6 +857,21 @@ t "codex same version, sha moved -> still FAIL" 1 "codex@openai-codex: FAIL — 
 mkfix; mksp 6.3.0 6.3.0
 jqi "$AI_CREW_CAT_VENDOR_DIR/superpowers-marketplace/.claude-plugin/marketplace.json" '.plugins |= map(select(.name != "superpowers"))'
 t "catv catalogue without the entry is an error" 1 "no single 'superpowers' entry" -- S status
+# A clone DIRECTORY without its catalogue is a broken clone, not "not added":
+# skipping it would let an installed vendor go unverified.
+mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound
+rm "$AI_CREW_CAT_VENDOR_DIR/superpowers-marketplace/.claude-plugin/marketplace.json"
+t "catv clone dir without catalogue: status is an error" 1 "marketplace file not found: .*superpowers-marketplace/.claude-plugin/marketplace.json .* broken or partial" -- S status
+t "catv clone dir without catalogue: verify is an error" 1 "broken or partial" -- S verify
+t "catv clone dir without catalogue: verify does not PASS" 0 "" -- bash -c '! "$1" verify 2>&1 | grep -q "verify: PASS"' _ "$SCRIPT"
+t "catv clone dir without catalogue: snapshot is an error" 1 "broken or partial" -- S snapshot
+t "catv clone dir without catalogue: no not-added warning" 0 "" -- bash -c '! "$1" status 2>&1 | grep -q "is not added"' _ "$SCRIPT"
+# ...while an absent clone directory is still only a warning.
+mkfix; mksp 6.3.0 6.3.0; rm -rf "$AI_CREW_CAT_VENDOR_DIR/superpowers-marketplace"
+t "catv clone dir absent (installed): still warn-and-skip" 0 "WARNING: vendor $SP_KEY is installed but marketplace superpowers-marketplace is not added" -- S status
+S snapshot >/dev/null; bound
+t "catv clone dir absent (installed): verify passes without it" 0 "verify: PASS \(3 entries\)" -- S verify
+
 mkfix; mksp 6.3.0 6.3.0
 echo '{corrupt' >"$AI_CREW_CAT_VENDOR_DIR/superpowers-marketplace/.claude-plugin/marketplace.json"
 t "catv unparseable catalogue is an error" 1 "unparseable, or no single 'superpowers' entry" -- S status
