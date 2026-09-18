@@ -24,7 +24,7 @@
     {
       "name": "harness-skills",
       "source": "./harness-skills",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "description": "Crew configuration writer and the ai-crew-update plugin updater/reconciler."
     },
     {

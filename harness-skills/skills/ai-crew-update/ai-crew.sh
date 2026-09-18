@@ -34,6 +34,22 @@
 #   been added yet), never a failure.
 #   The vendor `codex@openai-codex` is enumerated ONCE — with the first
 #   marketplace in the list — because it lives outside every crew marketplace.
+#   So are the CATALOGUE vendors (CAT_VENDORS, today only
+#   `superpowers@superpowers-marketplace`), right after it. They differ from
+#   codex in two ways, both forced by how their marketplace is built:
+#     - Their marketplace entry points at an upstream git URL, so the marketplace
+#       clone holds no plugin.json. `available` is the catalogue entry's
+#       `.version`, and verify's sha rule cannot compare against the clone HEAD
+#       (the installed gitCommitSha is the UPSTREAM repo's commit): a version
+#       change only requires the sha to have MOVED from the snapshot's. The
+#       URL carries no ref, so the install tracks upstream's default-branch
+#       HEAD and the sha may also move WITHOUT a version change — a PASS here,
+#       where it is a FAIL for every other target.
+#     - Their marketplace is OPTIONAL. A missing clone is a WARNING naming the
+#       exact `claude plugin marketplace add` command, and the vendor is skipped
+#       — never a failure, because a user who does not use it must still be able
+#       to update the crew. A clone that IS present but whose catalogue is
+#       unparseable, or lacks the entry, is an ERROR like any other.
 #
 # Selective-install contract (a marketplace lists more than a user installs):
 #   - gate and bind cover EVERY plugin in each marketplace.json. That is release
@@ -78,6 +94,8 @@ MARKETPLACE=cjs-plugins
 VENDOR_KEY=codex@openai-codex
 VENDOR_MARKETPLACE=openai-codex
 VENDOR_NAME=codex
+# Catalogue vendors: "<name>@<marketplace>=<owner/repo it is added from>".
+CAT_VENDORS=("superpowers@superpowers-marketplace=obra/superpowers-marketplace")
 BOUND_KEY=_bound
 SETTINGS_FRAGMENT=settings.fragment.json
 CLAUDE_MD_FRAGMENT=claude-md.fragment.md
@@ -94,6 +112,8 @@ AI_CREW_INSTALLED=${AI_CREW_INSTALLED:-$AI_CREW_CONFIG_DIR/plugins/installed_plu
 AI_CREW_CACHE=${AI_CREW_CACHE:-$AI_CREW_CONFIG_DIR/plugins/cache}
 AI_CREW_VENDOR_CLONE=${AI_CREW_VENDOR_CLONE:-$AI_CREW_CONFIG_DIR/plugins/marketplaces/$VENDOR_MARKETPLACE}
 AI_CREW_VENDOR_MANIFEST=${AI_CREW_VENDOR_MANIFEST:-$AI_CREW_VENDOR_CLONE/plugins/$VENDOR_NAME/.claude-plugin/plugin.json}
+# Parent of every catalogue vendor's marketplace clone (<dir>/<marketplace>).
+AI_CREW_CAT_VENDOR_DIR=${AI_CREW_CAT_VENDOR_DIR:-$AI_CREW_CONFIG_DIR/plugins/marketplaces}
 AI_CREW_SNAPSHOT=${AI_CREW_SNAPSHOT:-$AI_CREW_CONFIG_DIR/plugins/data/ai-crew-update/pre-update.json}
 AI_CREW_RECEIPT=${AI_CREW_RECEIPT:-$(dirname "$AI_CREW_SNAPSHOT")/gate-receipt.json}
 AI_CREW_CREW_CONFIG=${AI_CREW_CREW_CONFIG:-$AI_CREW_CONFIG_DIR/plugins/data/crew/config.json}
@@ -278,6 +298,26 @@ list_plugins() {
   [ "${#NAMES[@]}" -gt 0 ] || die "$file: no plugins enumerated"
 }
 
+# catalogue_version <marketplace.json> <plugin>: prints the .version of the ONE
+# .plugins[] entry named <plugin>, or dies — zero or several entries, or a
+# missing/non-string version, is a catalogue this script cannot read.
+catalogue_version() {
+  [ -f "$1" ] || die "marketplace file not found: $1"
+  jq -e -r --arg n "$2" '[.plugins[]? | select(.name == $n)]
+    | if length == 1 then .[0].version | select(type == "string" and length > 0) else empty end' \
+    "$1" 2>/dev/null \
+    || die "$1: unparseable, or no single '$2' entry with a string .version"
+}
+
+# avail_version <target-idx>: the version the target should be installed at.
+avail_version() {
+  if [ "${TCAT[$1]}" -eq 1 ]; then
+    catalogue_version "${MANIFESTS[$1]}" "${TNAMES[$1]}"
+  else
+    manifest_version "${MANIFESTS[$1]}"
+  fi
+}
+
 # manifest_version <plugin.json>: prints .version or dies.
 manifest_version() {
   [ -f "$1" ] || die "manifest not found: $1"
@@ -412,28 +452,69 @@ inst_field() {
 }
 
 # all_targets: fills KEYS[] / TNAMES[] / TMKTS[] / MANIFESTS[] / HEADCLONES[] /
-# TIDX[] (index into MKT_*) / TINST[] (1 = present in installed_plugins.json)
-# for every plugin of every marketplace, plus the vendor once, attached to the
-# FIRST marketplace. Requires require_installed to have passed.
+# TIDX[] (index into MKT_*) / TINST[] (1 = present in installed_plugins.json) /
+# TCAT[] (1 = catalogue vendor: MANIFESTS names its marketplace.json) for every
+# plugin of every marketplace, plus the vendor and each catalogue vendor whose
+# marketplace is added, once, attached to the FIRST marketplace. Requires
+# require_installed to have passed.
 all_targets() {
   local i m st
-  KEYS=(); TNAMES=(); TMKTS=(); MANIFESTS=(); HEADCLONES=(); TIDX=(); TINST=()
+  KEYS=(); TNAMES=(); TMKTS=(); MANIFESTS=(); HEADCLONES=(); TIDX=(); TINST=(); TCAT=()
   for m in "${!MKT_NAMES[@]}"; do
     list_plugins "${MKT_CLONES[$m]}"
     for i in "${!NAMES[@]}"; do
       KEYS+=("${NAMES[$i]}@${MKT_NAMES[$m]}"); TNAMES+=("${NAMES[$i]}"); TMKTS+=("${MKT_NAMES[$m]}")
       MANIFESTS+=("${MKT_CLONES[$m]}/${SOURCES[$i]#./}/.claude-plugin/plugin.json")
-      HEADCLONES+=("${MKT_CLONES[$m]}"); TIDX+=("$m")
+      HEADCLONES+=("${MKT_CLONES[$m]}"); TIDX+=("$m"); TCAT+=(0)
     done
     if [ "$m" -eq 0 ]; then
       KEYS+=("$VENDOR_KEY"); TNAMES+=("$VENDOR_NAME"); TMKTS+=("$VENDOR_MARKETPLACE")
-      MANIFESTS+=("$AI_CREW_VENDOR_MANIFEST"); HEADCLONES+=("$AI_CREW_VENDOR_CLONE"); TIDX+=("$m")
+      MANIFESTS+=("$AI_CREW_VENDOR_MANIFEST"); HEADCLONES+=("$AI_CREW_VENDOR_CLONE"); TIDX+=("$m"); TCAT+=(0)
+      cat_vendor_targets "$m"
     fi
   done
   for i in "${!KEYS[@]}"; do
     st=$(inst_state "${KEYS[$i]}") || exit 1
     if [ "$st" = present ]; then TINST+=(1); else TINST+=(0); fi
   done
+}
+
+# cat_vendor_targets <mkt-idx>: append every catalogue vendor whose marketplace
+# clone is present. An absent one is WARNED about (once per run — update's own
+# verify pass would repeat it) with the command that adds it, and skipped.
+CAT_WARNED=0
+cat_vendor_targets() {
+  local m=$1 spec key src mkt clone inst
+  for spec in "${CAT_VENDORS[@]}"; do
+    key=${spec%%=*}; src=${spec#*=}; mkt=${key#*@}
+    clone="$AI_CREW_CAT_VENDOR_DIR/$mkt"
+    if [ ! -f "$clone/.claude-plugin/marketplace.json" ]; then
+      if [ "$CAT_WARNED" -eq 0 ]; then
+        inst=$(inst_state "$key") || exit 1
+        if [ "$inst" = present ]; then
+          warn "vendor $key is installed but marketplace $mkt is not added ($clone) — it is NOT updated or verified; fix: claude plugin marketplace add $src"
+        else
+          warn "vendor $key skipped: marketplace $mkt is not added ($clone) — to manage it here: claude plugin marketplace add $src"
+        fi
+      fi
+      continue
+    fi
+    KEYS+=("$key"); TNAMES+=("${key%%@*}"); TMKTS+=("$mkt")
+    MANIFESTS+=("$clone/.claude-plugin/marketplace.json"); HEADCLONES+=("$clone"); TIDX+=("$m"); TCAT+=(1)
+  done
+  CAT_WARNED=1
+}
+
+# is_vendor_mkt <marketplace>: true for the vendor's and every catalogue
+# vendor's marketplace — handled here, so never "unconfigured".
+is_vendor_mkt() {
+  local spec k
+  [ "$1" = "$VENDOR_MARKETPLACE" ] && return 0
+  for spec in "${CAT_VENDORS[@]}"; do
+    k=${spec%%=*}
+    [ "$1" = "${k#*@}" ] && return 0
+  done
+  return 1
 }
 
 # validate_snapshot <file>: top-level object; the one reserved key "_bound" is
@@ -1307,13 +1388,13 @@ recon_scan() {
 
 # unconfigured_marketplaces: marketplace names that appear in
 # installed_plugins.json but in no configured marketplace (and are not the
-# vendor). Informational: this script cannot gate what it was never told about.
+# vendor or a catalogue vendor). Informational: this script cannot gate what it was never told about.
 unconfigured_marketplaces() {
   local out mkt m known
   out=$(jq -r '.plugins | keys[] | select(contains("@")) | sub("^[^@]*@"; "")' "$AI_CREW_INSTALLED" | sort -u)
   while IFS= read -r mkt; do
     [ -n "$mkt" ] || continue
-    [ "$mkt" = "$VENDOR_MARKETPLACE" ] && continue
+    is_vendor_mkt "$mkt" && continue
     known=0
     for m in "${!MKT_NAMES[@]}"; do
       [ "${MKT_NAMES[$m]}" = "$mkt" ] && known=1
@@ -1330,14 +1411,14 @@ cmd_status() {
   for i in "${!KEYS[@]}"; do
     if [ "${TIDX[$i]}" -ne "$prev" ]; then mkt_header "${TIDX[$i]}"; prev=${TIDX[$i]}; fi
     key=${KEYS[$i]}
-    avail=$(manifest_version "${MANIFESTS[$i]}") || exit 1
+    avail=$(avail_version "$i") || exit 1
     if [ "${TINST[$i]}" -eq 0 ]; then
       inst="NOT INSTALLED"; skipped=$((skipped + 1))
     else
       inst=$(inst_field "$key" version) || die "$AI_CREW_INSTALLED: $key has no string .version"
     fi
     label=${TNAMES[$i]}
-    [ "$key" = "$VENDOR_KEY" ] && label="vendor $VENDOR_KEY"
+    { [ "$key" = "$VENDOR_KEY" ] || [ "${TCAT[$i]}" -eq 1 ]; } && label="vendor $key"
     echo "$label  installed=$inst  available=$avail"
   done
   for i in "${!KEYS[@]}"; do
@@ -1818,7 +1899,7 @@ cmd_verify() {
   done
   for i in "${!KEYS[@]}"; do
     key=${KEYS[$i]}; bad=0; snap=${MKT_SNAPSHOTS[${TIDX[$i]}]}
-    want=$(manifest_version "${MANIFESTS[$i]}") || exit 1
+    want=$(avail_version "$i") || exit 1
     if [ "${TINST[$i]}" -eq 0 ]; then
       echo "skip: $key not installed"; continue
     fi
@@ -1856,8 +1937,23 @@ cmd_verify() {
       if [ "$snapver" = "$ver" ]; then
         if [ "$sha" = "$snapsha" ]; then
           echo "$key: PASS $ver — no-op (version unchanged)"
+        elif [ "${TCAT[$i]}" -eq 1 ]; then
+          # An unpinned URL source installs upstream's default-branch HEAD, and
+          # upstream commits land without version bumps: the version is only a
+          # catalogue label, so the sha may move within it.
+          echo "$key: PASS $ver (upstream moved within $ver: $snapsha -> $sha; unpinned URL source)"
         else
           echo "$key: FAIL — sha changed without a version change ($snapsha -> $sha)"; bad=1
+        fi
+      elif [ "${TCAT[$i]}" -eq 1 ]; then
+        # A catalogue vendor installs from an upstream URL, so its sha is that
+        # repo's commit and no local clone can confirm it. The rule weakens to
+        # "a version change must have moved the sha".
+        if [ -n "$snapsha" ] && [ "$sha" = "$snapsha" ]; then
+          echo "$key: FAIL — version changed ${snapver:-<not installed>} -> $ver but gitCommitSha did not move ($sha)"
+          bad=1
+        else
+          echo "$key: PASS ${snapver:-<not installed>} -> $ver (gitCommitSha $sha, upstream — not checked against a clone)"
         fi
       else
         # Only a version change should move gitCommitSha. Compared against
