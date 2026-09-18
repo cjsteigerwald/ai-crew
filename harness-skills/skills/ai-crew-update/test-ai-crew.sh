@@ -74,6 +74,7 @@ EOF
   export AI_CREW_REPO="$repo" AI_CREW_CLONE="$F/clone" AI_CREW_INSTALLED="$F/installed.json" \
     AI_CREW_CACHE="$F/cache" AI_CREW_VENDOR_CLONE="$F/vendor" \
     AI_CREW_VENDOR_MANIFEST="$F/vendor/plugins/codex/.claude-plugin/plugin.json" \
+    AI_CREW_CAT_VENDOR_DIR="$F/catv" \
     AI_CREW_SNAPSHOT="$F/snap/pre.json" AI_CREW_RECEIPT="$F/snap/receipt.json" \
     AI_CREW_SETTINGS="$F/cfg/.claude/settings.json" \
     AI_CREW_CLAUDE_MD="$F/cfg/.claude/CLAUDE.md" \
@@ -115,6 +116,27 @@ mkmkt2() {
   jqi "$AI_CREW_INSTALLED" '.plugins["\($p)@\($n)"] = [{scope:"user", version:$v, installPath:$ip, gitCommitSha:$s}]' \
     --arg p "$plug" --arg n "$name" --arg v "$ver" --arg ip "$F/cache/$name/$plug/$ver" --arg s "$C2SHA"
   export AI_CREW_MARKETPLACES="cjs-plugins=$AI_CREW_REPO;$name=$repo"
+}
+
+# mksp <catalogue-version> [installed-version]: the superpowers-marketplace
+# clone under $AI_CREW_CAT_VENDOR_DIR. Its entry is URL-sourced, exactly like
+# upstream's, so the clone carries NO plugin.json. With a second argument the
+# plugin is also installed, at an UPSTREAM sha (never the clone's HEAD).
+SP_KEY="superpowers@superpowers-marketplace"
+mksp() {
+  local c="$AI_CREW_CAT_VENDOR_DIR/superpowers-marketplace"
+  mkdir -p "$c/.claude-plugin"
+  jq -n --arg v "$1" '{name:"superpowers-marketplace", plugins:[
+      {name:"superpowers", source:{source:"url", url:"https://example.invalid/superpowers.git"}, version:$v, strict:true},
+      {name:"elements-of-style", source:{source:"url", url:"https://example.invalid/eos.git"}, version:"1.0.0"}]}' \
+    >"$c/.claude-plugin/marketplace.json"
+  [ -d "$c/.git" ] || G -C "$c" init -q -b main
+  G -C "$c" add -A && G -C "$c" commit -qm "sp $1"
+  if [ $# -ge 2 ]; then
+    mkcache "$F/cache/superpowers-marketplace/superpowers/$2" "$2"
+    jqi "$AI_CREW_INSTALLED" '.plugins[$k] = [{scope:"user", version:$v, installPath:$ip, gitCommitSha:$s}]' \
+      --arg k "$SP_KEY" --arg v "$2" --arg ip "$F/cache/superpowers-marketplace/superpowers/$2" --arg s "upstream-$2"
+  fi
 }
 
 # mkscrub <exit-code>: a scrub-check.sh in the fixture repo that logs how it was
@@ -399,7 +421,7 @@ jq --arg c "$CFG/plugins/cache" '.plugins |= with_entries(.value[0].installPath 
 # A subshell would swallow the PASS/FAIL counters, so the overrides are cleared
 # per invocation with `env -u` instead.
 CLEAN=(env -u AI_CREW_CLONE -u AI_CREW_INSTALLED -u AI_CREW_CACHE -u AI_CREW_VENDOR_CLONE
-       -u AI_CREW_VENDOR_MANIFEST -u AI_CREW_SNAPSHOT -u AI_CREW_RECEIPT -u AI_CREW_SETTINGS
+       -u AI_CREW_VENDOR_MANIFEST -u AI_CREW_CAT_VENDOR_DIR -u AI_CREW_SNAPSHOT -u AI_CREW_RECEIPT -u AI_CREW_SETTINGS
        -u AI_CREW_CLAUDE_MD -u AI_CREW_CREW_CONFIG -u AI_CREW_KNOWN -u AI_CREW_MARKETPLACES
        -u AI_CREW_DATA_DIR -u AI_CREW_AMBIGUOUS_ACK
        "CLAUDE_CONFIG_DIR=$CFG" "AI_CREW_REPO=$F/repo" "$SCRIPT")
@@ -776,6 +798,83 @@ t "verify vendor stale" 1 "codex@openai-codex: FAIL — installed version '1.0.6
 
 mkfix; S snapshot >/dev/null; bound; echo '{corrupt' >"$AI_CREW_INSTALLED"
 t "verify corrupt installed json" 1 "unparseable" -- S verify
+
+# ---- catalogue vendor (superpowers@superpowers-marketplace)
+# Marketplace NOT added: a warning naming the fix, never a failure — a user who
+# does not use it must still be able to update the crew.
+mkfix
+t "catv absent: status still passes" 0 "^status: 3 catalogued, 3 installed, 0 not installed" -- S status
+t "catv absent: status warns with the add command" 0 "WARNING: vendor $SP_KEY skipped: marketplace superpowers-marketplace is not added .* claude plugin marketplace add obra/superpowers-marketplace" -- S status
+S gate >/dev/null; S snapshot >/dev/null
+t "catv absent: update still succeeds" 0 "all 3 update commands succeeded" -- S update
+t "catv absent: update never calls it" 0 "" -- bash -c '! grep -q superpowers "$1"' _ "$STUB_LOG"
+
+mkfix; jqi "$AI_CREW_INSTALLED" '.plugins[$k] = [{scope:"user", version:"6.3.0", installPath:"/x", gitCommitSha:"y"}]' --arg k "$SP_KEY"
+t "catv absent but installed: warns it is NOT updated" 0 "WARNING: vendor $SP_KEY is installed but marketplace superpowers-marketplace is not added .* NOT updated or verified; fix: claude plugin marketplace add obra/superpowers-marketplace" -- S status
+t "catv absent but installed: not an unconfigured marketplace" 0 "" -- bash -c '! "$1" status 2>&1 | grep -q "unconfigured marketplace: superpowers-marketplace"' _ "$SCRIPT"
+S gate >/dev/null; S snapshot >/dev/null
+t "catv absent but installed: update succeeds without it" 0 "all 3 update commands succeeded" -- S update
+t "catv absent but installed: update warns once" 0 "" -- bash -c '[ "$("$1" update 2>&1 | grep -c "is not added")" -eq 1 ]' _ "$SCRIPT"
+
+# Present and current.
+mkfix; mksp 6.3.0 6.3.0
+t "catv present: status vendor row" 0 "^vendor $SP_KEY  installed=6.3.0  available=6.3.0" -- S status
+t "catv present: counted once" 0 "^status: 4 catalogued, 4 installed, 0 not installed" -- S status
+t "catv present: no warning" 0 "" -- bash -c '! "$1" status 2>&1 | grep -q "WARNING"' _ "$SCRIPT"
+S gate >/dev/null
+t "catv present: snapshot records it" 0 "" -- bash -c '"$1" snapshot >/dev/null && jq -e --arg k "$2" ".[\$k].version == \"6.3.0\"" "$3"' _ "$SCRIPT" "$SP_KEY" "$AI_CREW_SNAPSHOT"
+t "catv present: update covers it" 0 "all 4 update commands succeeded" -- S update
+t "catv present: claude plugin update was called for it" 0 "" -- grep -qx "plugin update $SP_KEY" "$STUB_LOG"
+t "catv present: verify no-op (upstream sha != clone HEAD is fine)" 0 "$SP_KEY: PASS 6.3.0 — no-op" -- S verify
+t "catv present: verify counts it" 0 "verify: PASS \(4 entries\)" -- S verify
+
+mkfix; mksp 6.3.0
+t "catv present, not installed: skip line" 0 "^skip: $SP_KEY not installed" -- S status
+t "catv present, not installed: row reads NOT INSTALLED" 0 "^vendor $SP_KEY  installed=NOT INSTALLED  available=6.3.0" -- S status
+
+# Outdated: the refreshed catalogue is ahead of the install.
+mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound; mksp 6.4.0
+t "catv outdated: status shows the newer available" 0 "^vendor $SP_KEY  installed=6.3.0  available=6.4.0" -- S status
+t "catv outdated: verify fails" 1 "$SP_KEY: FAIL — installed version '6.3.0' != manifest version '6.4.0'" -- S verify
+
+# After an update to the new version: the sha must have MOVED.
+mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound; mksp 6.4.0 6.4.0
+t "catv updated: version changed + sha moved" 0 "$SP_KEY: PASS 6.3.0 -> 6.4.0 \(gitCommitSha upstream-6.4.0" -- S verify
+mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound; mksp 6.4.0 6.4.0
+jqi "$AI_CREW_INSTALLED" '.plugins[$k][0].gitCommitSha = "upstream-6.3.0"' --arg k "$SP_KEY"
+t "catv updated: version changed but sha did not move" 1 "$SP_KEY: FAIL — version changed 6.3.0 -> 6.4.0 but gitCommitSha did not move" -- S verify
+
+# Unpinned URL source: upstream commits land without version bumps, so the sha
+# may move within one version for a catalogue vendor — and ONLY for one.
+mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound
+jqi "$AI_CREW_INSTALLED" '.plugins[$k][0].gitCommitSha = "upstream-later"' --arg k "$SP_KEY"
+t "catv same version, sha moved -> PASS with note" 0 "$SP_KEY: PASS 6.3.0 \(upstream moved within 6.3.0: upstream-6.3.0 -> upstream-later; unpinned URL source\)" -- S verify
+mkfix; S snapshot >/dev/null; bound
+jqi "$AI_CREW_INSTALLED" '.plugins["codex@openai-codex"][0].gitCommitSha = "deadbeef"'
+t "codex same version, sha moved -> still FAIL" 1 "codex@openai-codex: FAIL — sha changed without a version change" -- S verify
+
+# A clone that IS present must be readable: fail closed.
+mkfix; mksp 6.3.0 6.3.0
+jqi "$AI_CREW_CAT_VENDOR_DIR/superpowers-marketplace/.claude-plugin/marketplace.json" '.plugins |= map(select(.name != "superpowers"))'
+t "catv catalogue without the entry is an error" 1 "no single 'superpowers' entry" -- S status
+# A clone DIRECTORY without its catalogue is a broken clone, not "not added":
+# skipping it would let an installed vendor go unverified.
+mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound
+rm "$AI_CREW_CAT_VENDOR_DIR/superpowers-marketplace/.claude-plugin/marketplace.json"
+t "catv clone dir without catalogue: status is an error" 1 "marketplace file not found: .*superpowers-marketplace/.claude-plugin/marketplace.json .* broken or partial" -- S status
+t "catv clone dir without catalogue: verify is an error" 1 "broken or partial" -- S verify
+t "catv clone dir without catalogue: verify does not PASS" 0 "" -- bash -c '! "$1" verify 2>&1 | grep -q "verify: PASS"' _ "$SCRIPT"
+t "catv clone dir without catalogue: snapshot is an error" 1 "broken or partial" -- S snapshot
+t "catv clone dir without catalogue: no not-added warning" 0 "" -- bash -c '! "$1" status 2>&1 | grep -q "is not added"' _ "$SCRIPT"
+# ...while an absent clone directory is still only a warning.
+mkfix; mksp 6.3.0 6.3.0; rm -rf "$AI_CREW_CAT_VENDOR_DIR/superpowers-marketplace"
+t "catv clone dir absent (installed): still warn-and-skip" 0 "WARNING: vendor $SP_KEY is installed but marketplace superpowers-marketplace is not added" -- S status
+S snapshot >/dev/null; bound
+t "catv clone dir absent (installed): verify passes without it" 0 "verify: PASS \(3 entries\)" -- S verify
+
+mkfix; mksp 6.3.0 6.3.0
+echo '{corrupt' >"$AI_CREW_CAT_VENDOR_DIR/superpowers-marketplace/.claude-plugin/marketplace.json"
+t "catv unparseable catalogue is an error" 1 "unparseable, or no single 'superpowers' entry" -- S status
 
 # ---- selective install contract
 # A marketplace may catalogue more plugins than the user installs. gate/bind

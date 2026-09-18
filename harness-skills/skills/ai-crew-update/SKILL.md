@@ -3,7 +3,8 @@ name: ai-crew-update
 description: >
   Updates every installed Claude Code plugin from the configured crew
   marketplaces (read from each marketplace.json, so new plugins are covered
-  automatically) plus the wrapped vendor codex plugin — syncs each local
+  automatically) plus the wrapped vendor codex plugin and the superpowers
+  plugin (when its marketplace is added) — syncs each local
   checkout to origin/main, runs each plugin's local test gate, refreshes the
   marketplace catalogues, installs the new versions, reconciles the user's
   settings.json / CLAUDE.md against what is installed, verifies every install
@@ -19,13 +20,14 @@ description: >
 # ai-crew Update
 
 Update every plugin in every configured crew marketplace, plus the vendor
-`codex@openai-codex` plugin that codex-crew wraps, end to end — then repair the
+`codex@openai-codex` plugin that codex-crew wraps and the third-party
+`superpowers@superpowers-marketplace` plugin, end to end — then repair the
 user's own configuration so the newly installed code is what actually runs.
 
 **The plugin list is never hardcoded.** Every step enumerates each marketplace's
 `.claude-plugin/marketplace.json` → `.plugins[]`. A plugin added to a repo is
-picked up by every step without editing this skill. The vendor plugin is the one
-explicit addition, because it lives outside the crew marketplaces.
+picked up by every step without editing this skill. The vendor plugins are the
+only explicit additions, because they live outside the crew marketplaces.
 
 **Running the script.** All mechanical steps live in `ai-crew.sh` beside this
 file. When this skill runs from an installed plugin, invoke it as
@@ -78,6 +80,29 @@ cannot gate what it was never told about.
 The vendor `codex@openai-codex` is enumerated ONCE, with the first marketplace in
 the list, not once per marketplace.
 
+So is the **catalogue vendor** `superpowers@superpowers-marketplace` (the
+`CAT_VENDORS` list in `ai-crew.sh`), right after it. Other marketplaces'
+plugins may declare it as a cross-marketplace dependency. It has no local
+checkout and no test suite here, so it is never a configured crew
+marketplace; it differs from codex in two ways:
+
+- **Its marketplace is optional.** If `superpowers-marketplace` has not been
+  added (nothing at all at `<marketplaces-dir>/superpowers-marketplace`),
+  `status`, `snapshot`, `update` and `verify` print a WARNING with the fix —
+  `claude plugin marketplace add obra/superpowers-marketplace` — and skip it.
+  (`gate`, `bind` and `reconcile` never enumerate vendors, so they print
+  nothing about it.) Nothing fails: a user who does not use it can still update
+  the crew. (A missing codex clone, by contrast, is an error.) If the plugin is
+  INSTALLED but its marketplace is missing, the warning says it is NOT updated
+  or verified. A clone directory that exists but whose catalogue
+  (`.claude-plugin/marketplace.json`) is missing, unparseable, or has no single
+  `superpowers` entry is an ERROR — a broken or partial clone must never let an
+  installed vendor go unchecked.
+- **Its catalogue entry points at an upstream git URL**, so the marketplace
+  clone holds no `plugin.json`: `available` is the entry's `.version` in the
+  clone's `marketplace.json`, and the installed `gitCommitSha` is the upstream
+  repo's commit, not the clone's HEAD (see step 4, rule 5).
+
 ## Selective-install contract
 
 A marketplace catalogues more plugins than any one user installs. The target set
@@ -126,8 +151,9 @@ TMPDIR. A `SIGKILL` mid-run can leave an `ai-crew.XXXXXX` directory there.
 ```
 It prints a `== marketplace <name> (<repo>)` banner per marketplace, then
 `<name>  installed=<v|NOT INSTALLED>  available=<v>` for each plugin, plus a
-`vendor codex@openai-codex` row, the `skip:` lines for catalogued-but-not-
-installed plugins, the counts line, any unconfigured marketplace, and finally
+`vendor codex@openai-codex` row, a `vendor superpowers@superpowers-marketplace`
+row when that marketplace is added (a WARNING when it is not), the `skip:` lines for catalogued-but-not-
+installed plugins, the counts line (vendor rows included), any unconfigured marketplace, and finally
 `reconcile: needed|clean` (see step 3.5). A plugin missing from
 `installed_plugins.json` is `NOT INSTALLED`. An unreadable or invalid
 `installed_plugins.json`, or a missing manifest, is an ERROR (exit 1). The
@@ -203,11 +229,17 @@ is decided by `claude plugin update` in step 3.
    ```
    claude plugin marketplace update <each configured marketplace>
    claude plugin marketplace update openai-codex
+   claude plugin marketplace update superpowers-marketplace
    "${CLAUDE_PLUGIN_ROOT}/skills/ai-crew-update/ai-crew.sh" bind
    ```
-   Every refresh must succeed. If any exits nonzero, stop. The vendor refresh is
+   Run the `superpowers-marketplace` refresh only when that marketplace is
+   added (`status` printed no "is not added" WARNING); otherwise skip it, or add
+   it first with `claude plugin marketplace add obra/superpowers-marketplace` if
+   the user wants superpowers managed. Every refresh you run must succeed. If
+   any exits nonzero, stop. The vendor refreshes are
    what makes `verify`'s vendor check meaningful: the vendor is checked against
-   the refreshed `openai-codex` marketplace clone. `bind` then confirms the
+   the refreshed `openai-codex` marketplace clone, and superpowers against the
+   refreshed `superpowers-marketplace` catalogue. `bind` then confirms the
    refresh actually pulled the commit you just tested, for EVERY marketplace.
    This is what binds tested code to installed code; skip it and the gate above
    proves nothing. Per marketplace it requires all of the following, printing
@@ -229,7 +261,7 @@ is decided by `claude plugin update` in step 3.
    "${CLAUDE_PLUGIN_ROOT}/skills/ai-crew-update/ai-crew.sh" update
    ```
    `snapshot` writes `{key: {version, gitCommitSha, installPath}}` for every
-   INSTALLED plugin of each marketplace (plus the vendor) to that marketplace's
+   INSTALLED plugin of each marketplace (plus the vendors) to that marketplace's
    snapshot file; catalogued-but-not-installed plugins are reported as `skip:`
    and simply absent. An installed entry missing `version`, `gitCommitSha` or
    `installPath` makes `snapshot` refuse to write.
@@ -253,12 +285,15 @@ is decided by `claude plugin update` in step 3.
      lingering child process cannot keep holding the lock.
 
    It runs `claude plugin update <name>@<marketplace>` for each INSTALLED
-   plugin, then `claude plugin update codex@openai-codex`. A failing update does
+   plugin, then `claude plugin update codex@openai-codex`, then
+   `claude plugin update superpowers@superpowers-marketplace` when it is
+   installed and its marketplace is added. A failing update does
    not stop the run: it continues through the whole list and then exits 1 naming
    every failed key.
    The vendor update is not optional: `codex-crew` wraps the official Codex
    plugin, so updating only the crew plugins leaves the vendor runtime behind.
-   It is a separate entry because it is not in any crew marketplace.
+   It is a separate entry because it is not in any crew marketplace. The same
+   holds for superpowers, which plugins in other marketplaces depend on.
 
 3.5 **Reconcile — make the user's own config point at what was just installed.**
    **Dry run first, every time.** Removing hook entries is the one destructive
@@ -502,7 +537,8 @@ is decided by `claude plugin update` in step 3.
    rule below — and that the user's config is consistent with it. It does
    **not** prove which run produced that state. For the vendor, it proves the
    install matches the refreshed `openai-codex` marketplace clone, not
-   upstream's latest release.
+   upstream's latest release; for superpowers, that it matches the refreshed
+   `superpowers-marketplace` catalogue's version.
 
    First, per marketplace, `verify` requires the snapshot's `_bound` record. If
    it is absent, `update` was never run for that snapshot, and verify fails. It
@@ -510,7 +546,8 @@ is decided by `claude plugin update` in step 3.
    moved after bind; gate proved nothing about the installed code"), or if the
    clone's working tree is dirty ("clone modified after bind").
 
-   Then it checks **each INSTALLED plugin** AND `codex@openai-codex`
+   Then it checks **each INSTALLED plugin** AND `codex@openai-codex` AND
+   `superpowers@superpowers-marketplace` (when its marketplace is added)
    (catalogued-but-not-installed plugins print `skip:` and are not failures).
    Checking only one misses the others silently going stale or failing while
    the run overall reports success. For every entry it requires:
@@ -528,13 +565,32 @@ is decided by `claude plugin update` in step 3.
    5. Only if the version changed from the snapshot should `gitCommitSha`
       have moved. It is compared to that marketplace clone's current HEAD (or
       the `openai-codex` clone for the vendor), not to the local checkout's
-      HEAD.
+      HEAD. For superpowers no clone holds the installed commit (it comes
+      from the upstream URL), so the rule is weaker: a version change must
+      have MOVED `gitCommitSha` away from the snapshot's, and a version
+      change with an unmoved sha is a FAIL. Rule 2's manifest is the
+      catalogue entry's `.version` for superpowers. Its catalogue entry is an
+      unpinned URL (no ref or sha), so the install tracks upstream's
+      default-branch HEAD and the version is only a catalogue label: upstream
+      commits land without version bumps. For superpowers ONLY, a sha that
+      moved with the version unchanged therefore PASSES, with the note
+      `upstream moved within <v>: <old> -> <new>; unpinned URL source`.
+      Codex and the crew plugins keep the strict FAIL (rule 6).
+
+      **Confirming live behaviour.** Whether `claude plugin update` re-fetches
+      within an unchanged version is not established. Once upstream HEAD has
+      moved past the installed sha without a version bump, run
+      `claude plugin update superpowers@superpowers-marketplace` and compare
+      the `gitCommitSha` in `installed_plugins.json` against
+      `git ls-remote https://github.com/obra/superpowers.git HEAD`: equal means
+      update re-fetches within a version; still the old sha means it does not.
    6. **If a repo has new commits but a plugin's version is unchanged,
       `claude plugin update` correctly does nothing and `gitCommitSha` stays
       at the older commit — that is success, not failure.** `verify` reports it
       as `PASS <v> — no-op (version unchanged)`, but only if `gitCommitSha`
       still equals the snapshot's. A SHA that moved without a version change
-      is a FAIL ("sha changed without a version change"). Do not loop back to
+      is a FAIL ("sha changed without a version change") — except for
+      superpowers, below. Do not loop back to
       step 2 just because `gitCommitSha` doesn't equal the local checkout's
       HEAD. That equality only holds when every commit since the last update
       bumped the version, which is not guaranteed.
@@ -619,7 +675,9 @@ is decided by `claude plugin update` in step 3.
   `claude plugin update` by hand, or from running `snapshot` or `gate` and
   rewriting those files mid-run. Nothing binds the vendor to a tested state:
   it has no suite here. `_bound.vendorHead` is recorded for the audit trail
-  only.
+  only. The same goes for superpowers, and no HEAD is recorded for its
+  catalogue at all: the commit it installs is upstream's, which no local clone
+  holds.
 - **`verify` proves state, not provenance.** A passing verify means the
   current install matches the bound manifests. It does not show that this
   run's `update` produced that state rather than an earlier one.
