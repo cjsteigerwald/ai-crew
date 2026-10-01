@@ -4024,10 +4024,12 @@ check_contains "terra lane pins gpt-5.6-terra at xhigh" "$AGENT_DIR/codex-implem
   'crew-codex task --background --model gpt-5.6-terra --effort xhigh --write'
 check_contains "luna lane pins gpt-6-luna at xhigh" "$AGENT_DIR/codex-implementer-luna.md" \
   'crew-codex task --background --model gpt-6-luna --effort xhigh --write'
-check_contains "reviewer read-only task route pins gpt-6-sol at xhigh" "$AGENT_DIR/codex-reviewer.md" \
-  'crew-codex task --background --model gpt-6-sol --effort xhigh "<task text>"'
+check_contains "reviewer read-only task route pins gpt-6-sol at medium" "$AGENT_DIR/codex-reviewer.md" \
+  'crew-codex task --background --model gpt-6-sol --effort medium "<task text>"'
 check_contains "reviewer proof route writes only from the isolated checkout" "$AGENT_DIR/codex-reviewer.md" \
-  'cd <isolated review checkout> && crew-codex task --background --model gpt-6-sol --effort xhigh --write'
+  'cd <isolated review checkout> && crew-codex task --background --model gpt-6-sol --effort medium --write'
+check_contains "reviewer adversarial route defaults to medium" "$AGENT_DIR/codex-reviewer.md" \
+  'if it names none, use `medium`'
 check_contains "astra lane tells the forwarder what to do with a clarifying question" \
   "$AGENT_DIR/codex-implementer-astra.md" 'Do not answer it yourself'
 for f in "$AGENT_DIR"/*.md "$SKILL_FILE" "$HERE/../README.md"; do

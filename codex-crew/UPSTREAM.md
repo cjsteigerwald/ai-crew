@@ -92,7 +92,7 @@ without changing the decision first.
 ### Agent, skill and test text (0.10.0)
 
 Since 0.10.0 the agents, `crew-runtime` skill, README and tests take upstream's
-decisions: GPT-6 Sol and Luna, `xhigh` lane pins (Astra `medium`), Terra only
+decisions: GPT-6 Sol and Luna, `xhigh` implementer pins (Astra `medium`), Terra only
 when a brief names it, the reviewer's isolated regression-proof route and the
 **Review evidence** contract, the retired `mini` alias, and upstream's lane-pin
 test block. Earlier fork decisions that contradicted these — caller-chosen
@@ -103,7 +103,8 @@ are retired. What remains differs only because this fork's runtime differs:
 |---|---|---|---|
 | SUPERSEDED in agent text | exit `4` | exit `5` | Runtime exit codes (see the first table). |
 | Supervision cwd | every call prefixed `cd <sandbox root> && `, plus two manual probes on exit 2 | run every call from the launch directory; `crew-codex` probes sibling state directories on a miss and names the cwd to re-run from | The fork runtime does the probing itself. The reviewer's regression-proof route still launches with `cd <isolated review checkout> && ` because that route must run in the isolated checkout. |
-| Generic adversarial review | `adversarial-review` with no model or effort | `adversarial-review --model gpt-6-sol --effort xhigh`, routed through `lib/review-with-effort.mjs`, with the driver-filename capability probe | Only this runtime can set effort on a review; the agent passes the lane pin explicitly so the review matches the lane. |
+| Generic adversarial review | `adversarial-review` with no model or effort | `adversarial-review --model gpt-6-sol --effort medium`, routed through `lib/review-with-effort.mjs`, with the driver-filename capability probe | Only this runtime can set effort on a review; the agent passes the lane pin explicitly so the review matches the lane. |
+| Reviewer effort | `xhigh` on every route | `medium` on every route (generic adversarial, read-only task, regression proof); a named effort still wins | Owner's decision (2026-10-01): review defaults to `medium` and the orchestrator asks for `high`/`xhigh` when a change warrants it. |
 | Astra `none`/`minimal` | forwarded | treated as `low` | Astra rejects both at the API. |
 | Astra note-taking claim | "keeps notes across windows" | marked UNVERIFIED (experimental, opt-in `config.toml` setting this fork does not set) | Factual correction; not a reason to pick the lane. |
 | GPT-6 Sol/Luna `none`/`minimal` warning | none | `lib/review-with-effort.mjs` warns, like the 5.6 family and Astra | The Codex model registry lists no `none`/`minimal` for either; without a row, the lanes' own default models slipped past the guard. |
@@ -124,7 +125,7 @@ Do not expect a port to touch them, and do not let one regress them:
 - runtime-level review effort: every `adversarial-review` routes to the
   driver, `--effort` or not, so a review never inherits the codex config's
   `model_reasoning_effort` (a bare `crew-codex adversarial-review` with no
-  `--effort` runs at `medium`; the reviewer agent passes its `xhigh` pin). The `task` path
+  `--effort` runs at `medium`; the reviewer agent also defaults to `medium`). The `task` path
   is unchanged (the companion parses `--effort` there itself).
 - dispatch stamping (`<job>.dispatch.json`)
 - the archive sanitizer, the `.sanitized` provenance sentinel, and `sanitize-archive`

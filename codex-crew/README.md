@@ -29,7 +29,7 @@ each agent's description carries the selection criteria:
 | `codex-implementer-sol` | gpt-6-sol (workhorse) | xhigh | write | Default for real implementation, routine or intricate, when the evidence is bounded |
 | `codex-implementer-terra` | gpt-5.6-terra (no GPT-6 successor) | xhigh | write | Only when the brief names Terra. Not cheaper than GPT-6 Sol |
 | `codex-implementer-luna` | gpt-6-luna (affordable) | xhigh | write | Mechanical, repetitive, parallelizable chores with an exact recipe; fan out freely |
-| `codex-reviewer` | gpt-6-sol | xhigh | read-only; isolated test proof when authorized | Diff/branch reviews, adversarial reviews, independent diagnosis |
+| `codex-reviewer` | gpt-6-sol | medium | read-only; isolated test proof when authorized | Diff/branch reviews, adversarial reviews, independent diagnosis |
 
 List price per million tokens (input / output): Astra $10 / $50, GPT-6 Sol
 $2 / $10, GPT-5.6 Terra $2 / $12, GPT-6 Luna $0.10 / $0.50. Per token Astra is

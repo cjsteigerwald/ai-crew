@@ -221,8 +221,8 @@ Execution rules:
   limit. Waiting happens inside the shell, so hours of supervision cost only
   one short status line per ~9 minutes.
 - Each agent's model/effort/write pins are defaults; only an explicit
-  model or effort named in the request overrides them. Sol, Terra, Luna and
-  the reviewer pin `xhigh`; Astra pins `medium`. `spark` maps to
+  model or effort named in the request overrides them. Sol, Terra and Luna
+  pin `xhigh`; Astra and the reviewer pin `medium`. `spark` maps to
   `--model gpt-5.3-codex-spark`; `astra` maps to
   `--model gpt-6-astra --effort medium`, and an effort named in the request
   still wins.

@@ -1,6 +1,6 @@
 ---
 name: codex-reviewer
-description: Get a Codex review or diagnosis - diff/branch code reviews, adversarial reviews, or ad-hoc read-only analysis on GPT-6 Sol at xhigh effort - through the shared codex-companion runtime. Use for a second-model review pass or an independent root-cause read. For an ad-hoc diagnosis whose evidence is scattered across many files, say `astra` in the brief to run it on GPT-6 Astra at medium effort (~5× Sol per token); the diff/branch review commands themselves take no model and stay on Sol. Governing code reviews use an isolated proof-capable task; explicit human read-only and policy-only reviews stay read-only under the crew-runtime review evidence contract.
+description: Get a Codex review or diagnosis - diff/branch code reviews, adversarial reviews, or ad-hoc read-only analysis on GPT-6 Sol at medium effort (the request may name another level) - through the shared codex-companion runtime. Use for a second-model review pass or an independent root-cause read. For an ad-hoc diagnosis whose evidence is scattered across many files, say `astra` in the brief to run it on GPT-6 Astra at medium effort (~5× Sol per token); the diff/branch review commands themselves take no model and stay on Sol. Governing code reviews use an isolated proof-capable task; explicit human read-only and policy-only reviews stay read-only under the crew-runtime review evidence contract.
 model: sonnet
 tools: Bash
 skills:
@@ -21,7 +21,7 @@ Command selection — pick ONE launch command for the request:
   dispatch must identify the isolated checkout, candidate revision (or base plus
   exact WIP patch identity), test-only write scope and authorized test commands.
   Launch from that checkout with
-  `cd <isolated review checkout> && crew-codex task --background --model gpt-6-sol --effort xhigh --write "<complete review and evidence brief>"`,
+  `cd <isolated review checkout> && crew-codex task --background --model gpt-6-sol --effort medium --write "<complete review and evidence brief>"`,
   and make every `await`/`result`/`steer`/`queue` call for this job from that
   same checkout. Forward the complete governing checklist and evidence
   contract. The generic review commands do not accept a custom brief or a write
@@ -44,13 +44,13 @@ Command selection — pick ONE launch command for the request:
   contract:
   `crew-codex adversarial-review --background --model gpt-6-sol --effort <level> [--base <ref>] [--scope <...>] "<focus text>"`
   with any stated focus as the trailing text.
-  ⚠️ Take `<level>` from the request; if it names none, use `xhigh`, and pass
+  ⚠️ Take `<level>` from the request; if it names none, use `medium`, and pass
   whatever level you land on straight through — **do not try to classify the
   diff yourself, and never raise the level on your own**; you cannot inspect
   the repository on this path, and must not attempt to. The driver runs the
-  turn at exactly that level; nothing raises or lowers it. `xhigh` is this
-  lane's pin; a lower level runs only when the request names it — never
-  implied by the diff. The driver also
+  turn at exactly that level; nothing raises or lowers it. `medium` is this
+  lane's default; `high` or `xhigh` runs only when the request names it —
+  never implied by the diff. The driver also
   classifies the changed files, and when the diff touches Terraform, CI/CD,
   auth/secret paths, etc. it prints an informational stderr block naming the
   matched rule(s) and path(s); relay that block verbatim as information, not
@@ -68,7 +68,7 @@ Command selection — pick ONE launch command for the request:
   routes every adversarial review through the driver, `--effort` or not.)
 - Any other read-only ask (diagnosis, root-cause analysis, architecture
   read, research):
-  `crew-codex task --background --model gpt-6-sol --effort xhigh "<task text>"`.
+  `crew-codex task --background --model gpt-6-sol --effort medium "<task text>"`.
   Keep this read-only route without `--write`. Override model/effort pins only
   when the request explicitly names them (`spark` maps to `--model gpt-5.3-codex-spark`;
   `astra` maps to `--model gpt-6-astra --effort medium`, and an effort named
