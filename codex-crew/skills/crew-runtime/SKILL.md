@@ -6,9 +6,63 @@ user-invocable: false
 
 # Crew Runtime
 
-Use this skill only inside `codex-crew` agents (`codex-implementer-astra`,
-`codex-implementer-sol`, `codex-implementer-terra`, `codex-implementer-luna`,
-`codex-reviewer`).
+The primary session reads this contract to dispatch and supervise `codex-crew`
+agents. The worker execution rules apply inside `codex-implementer-astra`,
+`codex-implementer-sol`, `codex-implementer-terra`, `codex-implementer-luna` and
+`codex-reviewer`; reading it does not make the primary a forwarding worker.
+Claude → Grok inject is
+[grok-crew-runtime](../../../grok-crew/skills/grok-crew-runtime/SKILL.md).
+
+## Review evidence
+
+The primary supplies the governing review skill/checklist, accepted human scope,
+base and candidate revisions (or, for uncommitted work, the base plus exact patch
+identity applied to the isolated checkout). Reviewer findings may challenge the primary’s brief
+or implementation assumptions; a bounded re-review retains applicable standards
+for new or changed code and substantive new findings.
+
+For a governing code review that permits regression proof, provision the
+proof-capable isolated task at dispatch; do not wait for the read-only reviewer
+to return an unsupported hypothesis. The reviewer owns any focused regression
+test and run needed to establish a behavioral finding. Set up a separate clean
+checkout pinned to the candidate (including the identified WIP patch when
+applicable) and include its absolute path, permitted test/fixture paths and test
+commands in the dispatch. The primary may prepare isolation and consolidate the
+result; it does not write the reviewer’s proof. The reviewer may write only that
+proof and necessary test fixtures, not production code, shared worktree files,
+or runtime configuration. Use existing test conventions and the smallest test
+that discriminates the claimed failure. Keep production code at the pinned
+revision; run the test against that unchanged candidate and report the actual
+assertion failure, not a build/setup error as a reproduction.
+
+Use `codex-reviewer`’s `task --write` route for this isolated proof. Launch and all
+supervision calls use that same isolated checkout as cwd. Never pass `--write` to
+`review` or `adversarial-review`. The companion maps `task --write` to
+`workspace-write`; it does not enforce a test-file allowlist. Brief path fences
+are agent instructions, not filesystem security. A shared parent root grants too
+much workspace access for this mode; use the isolated checkout root and preserve
+host permission restrictions. If explicit human instructions prohibit writes or
+execution, honor them and report the behavioral finding as unverified with the
+missing capability. Never change permissions or request repeated authorization
+for evidence work already allowed by the governing review task.
+
+The review return distinguishes:
+
+- **Proven behavioral defect**: pinned candidate, regression patch/path, exact
+  command, expected behavior and observed assertion failure. Retain the proof for
+  the implementer’s repair and later green run; do not silently apply it to the
+  delivery branch.
+- **Static finding**: source and governing criterion support duplication, wrong
+  layering or another inspectable violation; no artificial failing test required.
+- **Unverified behavioral concern**: hypothesis and precise missing evidence,
+  permission or environment. Neither a confirmed defect nor a passing check.
+
+Stop reproducing once the focused test establishes the claimed defect. The
+implementer owns the repair; the reviewer rechecks affected findings against the
+new revision. Existing findings unsupported by their attempted reproduction are
+retracted or revised, not preserved by weakening the test.
+
+## Runtime
 
 Primary helper — `crew-codex`, on PATH while the plugin is enabled:
 
@@ -167,10 +221,11 @@ Execution rules:
   limit. Waiting happens inside the shell, so hours of supervision cost only
   one short status line per ~9 minutes.
 - Each agent's model/effort/write pins are defaults; only an explicit
-  model or effort named in the request overrides them. `spark` maps to
-  `--model gpt-5.3-codex-spark`; `astra` maps to `--model gpt-6-astra`
-  (effort still comes from the request, or this lane's `medium` default
-  when the request names none).
+  model or effort named in the request overrides them. Sol, Terra, Luna and
+  the reviewer pin `xhigh`; Astra pins `medium`. `spark` maps to
+  `--model gpt-5.3-codex-spark`; `astra` maps to
+  `--model gpt-6-astra --effort medium`, and an effort named in the request
+  still wins.
 - `cancel`, `redirect` and cross-job triage belong to the main thread
   (`/codex:status`, `/codex:cancel`); a crew agent only awaits the one job it
   launched, or the successor a redirect hands it via exit 5.
@@ -279,8 +334,9 @@ sanitizer to what is already on disk, for jobs archived by an earlier version.
 It never deletes an archived job, rewrites only when the sanitized bytes differ,
 and a second pass is byte-for-byte a no-op.
 
-One generation above the 5.6 ladder: **gpt-6-astra** = frontier flagship,
-reserved for the hardest work — cross-cutting changes whose evidence is
+Model ladder (Codex CLI 0.159.3): **gpt-6-astra** = frontier flagship,
+registry default effort `medium`, reserved for the hardest work —
+cross-cutting changes whose evidence is
 scattered across many files or subsystems, multi-hour jobs that will outlive
 a context window, debugging that Sol already needed a second round on, or
 logic spanning retries, ownership and persisted state. Astra's cross-window
@@ -290,21 +346,25 @@ is experimental and opt-in per OpenAI's own announcement, requiring a
 active for any dispatch made here, and not on its own a reason to pick this
 lane.
 
-GPT-5.6 family ladder (per OpenAI's own model registry): **sol** = flagship
-frontier coding tier, **terra** = balanced everyday mid tier, **luna** =
-fast/affordable low tier. Other known models (Codex CLI 0.144.0): gpt-5.5,
-gpt-5.4, gpt-5.4-mini, gpt-5.3-codex-spark. All listed models accept up to
-`xhigh`; the companion runtime rejects the registry's higher `max`/`ultra`
-efforts — `xhigh` is the ceiling through this plugin, and `crew-codex`'s effort
-driver keeps that same ceiling rather than widening it.
+**gpt-6-sol** = workhorse under Astra and the default implementer pin;
+**gpt-6-luna** = fast/affordable low tier; **gpt-5.6-terra** = still listed,
+but there is no GPT-6 Terra and it is not cheaper than GPT-6 Sol, so choose
+it only when the brief names Terra. Also listed: gpt-6.1-sol, gpt-5.6-sol,
+gpt-5.6-luna, gpt-5.5, and gpt-5.3-codex-spark (ultra-fast, not in the API).
+GPT-5.4 Mini was retired on 2026-08-31 in favour of Luna and is no longer
+listed. These models accept up to `xhigh` (Luna's ceiling is `max`; Astra and
+Sol also list `ultra`). The companion runtime still rejects `max`/`ultra`, so
+`xhigh` is the ceiling through this plugin, and `crew-codex`'s effort driver
+keeps that same ceiling rather than widening it.
 
 The practical **floor** is narrower than the validator's: the GPT-5.6 family
-(sol/terra/luna) *and* gpt-6-astra return a 400 on `reasoning.effort` for
+(sol/terra/luna), gpt-6-astra *and* gpt-6-sol/luna return a 400 on `reasoning.effort` for
 `none` and `minimal`, so the usable ladder there is `low|medium|high|xhigh`.
 Both values are still accepted by the validator — it mirrors the runtime's
 contract, not one family's — but on the `adversarial-review --effort` driver
 path `crew-codex` warns on stderr before dispatching when `none`/`minimal` is
-paired with a `gpt-5.6*` model, `gpt-6-astra`, or no `--model` at all (the
+paired with a `gpt-5.6*` model, `gpt-6-astra`, `gpt-6-sol`/`gpt-6-luna`, or
+no `--model` at all (the
 config default is a 5.6 model) — see `modelRejectsMinimalEfforts()` in
 `lib/review-with-effort.mjs`. It warns, never blocks: the dispatch still goes
 out and then fails at the API, not in the wrapper. That warning is scoped to
@@ -313,5 +373,5 @@ at all and fails straight at the API.
 `codex-implementer-astra.md` is the only agent file that pre-empts this: it
 instructs its lane to treat a request for `none` or `minimal` as `low` before
 ever dispatching, so an Astra job launched through that agent never reaches
-the 400. Other lanes forward the caller's requested effort as given and let
-the warning (or the API failure) surface.
+the 400. Other lanes pin `xhigh` and forward an explicitly requested effort
+as given, letting the warning (or the API failure) surface.

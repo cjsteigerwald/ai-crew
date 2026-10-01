@@ -6,47 +6,57 @@ official `codex@openai-codex` plugin's companion runtime (background jobs,
 `/codex:status` / `/codex:result` / `/codex:cancel`, session-end cleanup)
 instead of reimplementing it.
 
+This plugin is Codex-only. Claude → Grok inject is
+[grok-crew](../grok-crew/) — a different channel; Grok's native
+`send_subagent_message` does not move a finding from Claude into a Grok
+job Claude launched.
+
+Reviewer evidence uses the [runtime review contract](skills/crew-runtime/SKILL.md#review-evidence):
+reviewers can write and run focused regression tests in an isolated checkout at
+the pinned candidate, while production and shared worktrees remain unchanged.
+`task --write` supplies this mode; ordinary review commands remain read-only.
+Explicit human read-only restrictions still apply.
+
 ## Agents
 
-Implementation is tiered across the GPT-5.6 ladder, plus one frontier tier
-above it on GPT-6 Astra for the hardest work — the orchestrator picks the tier
-per task; each agent's description carries the selection criteria:
+Implementation is tiered across the GPT-6 family, plus GPT-5.6 Terra because
+OpenAI did not ship a GPT-6 Terra. The orchestrator picks the tier per task;
+each agent's description carries the selection criteria:
 
 | Agent | Model | Effort | Posture | Choose when |
 |---|---|---|---|---|
-| `codex-implementer-astra` | gpt-6-astra (frontier, one generation above the 5.6 ladder) | caller-chosen, default `medium` | write | Cross-cutting changes whose evidence is scattered across many files or subsystems, multi-hour jobs that will outlive a context window, debugging that Sol already needed a second round on, or logic spanning retries/ownership/persisted state |
-| `codex-implementer-sol` | gpt-5.6-sol (flagship) | caller-chosen, default `medium` | write | Novel/intricate logic, cross-cutting multi-file changes, concurrency/money-path correctness, gnarly debugging — anything where mid-tier output would need rework |
-| `codex-implementer-terra` | gpt-5.6-terra (balanced) | caller-chosen, default `medium` | write | Routine, well-specified implementation with clear spec and existing patterns; the default when a task is real work but not hard |
-| `codex-implementer-luna` | gpt-5.6-luna (affordable) | caller-chosen, default `low` | write | Mechanical, repetitive, parallelizable chores with an exact recipe; fan out freely |
-| `codex-reviewer` | gpt-5.6-sol | caller-chosen, default `medium` | read-only | Diff/branch reviews, adversarial reviews, independent diagnosis |
+| `codex-implementer-astra` | gpt-6-astra (frontier flagship) | medium | write | The hardest work: evidence scattered across many files or subsystems, multi-hour jobs that outlive a context window, debugging Sol already needed a second round on, logic spanning retries/ownership/persisted state |
+| `codex-implementer-sol` | gpt-6-sol (workhorse) | xhigh | write | Default for real implementation, routine or intricate, when the evidence is bounded |
+| `codex-implementer-terra` | gpt-5.6-terra (no GPT-6 successor) | xhigh | write | Only when the brief names Terra. Not cheaper than GPT-6 Sol |
+| `codex-implementer-luna` | gpt-6-luna (affordable) | xhigh | write | Mechanical, repetitive, parallelizable chores with an exact recipe; fan out freely |
+| `codex-reviewer` | gpt-6-sol | xhigh | read-only; isolated test proof when authorized | Diff/branch reviews, adversarial reviews, independent diagnosis |
 
-All efforts above are caller-chosen; the lane default is used only when a
-dispatch names none — no lane is pinned to a fixed effort.
+List price per million tokens (input / output): Astra $10 / $50, GPT-6 Sol
+$2 / $10, GPT-5.6 Terra $2 / $12, GPT-6 Luna $0.10 / $0.50. Per token Astra is
+5× Sol and 100× Luna. Terra is not a savings tier against GPT-6 Sol. Pins are
+defaults — a dispatch brief that explicitly names a model or effort overrides
+them (`spark` → `gpt-5.3-codex-spark`; `astra` → `gpt-6-astra` at medium unless
+the brief also names an effort). GPT-5.4 Mini was retired on 2026-08-31, so
+its `mini` alias is gone; Luna is its replacement. Codex CLI 0.159.3 still
+lists `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`; this plugin pins Sol
+and Luna to the GPT-6 ids.
 
-**Why Astra defaults to `medium`.** Medium is Astra's own registry default and
-lands on the cost/quality sweet spot; raise to `high` or `xhigh` in the
-dispatch only for a hard architectural call or a debugging loop that has
-already resisted medium. GPT-6 Astra's cross-window note-taking — retaining
-notes instead of compressing them as a context window fills — is, per
-OpenAI's own announcement, experimental, opt-in, and only *planned* to become
-default later; it must be enabled in `config.toml`, and this fork neither
-enables nor documents that setting. **UNVERIFIED**: whether the feature is
-active for any dispatch made through this fork has not been checked against
-a live config. Treat multi-hour jobs as belonging on this lane on the
-strength of Astra's own reasoning depth over a long-running detached job, not
-on this unconfirmed persistence feature. Because Astra asks a clarifying
-question instead of guessing when more input would change the result, and a
-detached background job has nobody there to answer it, an Astra brief must be
-self-contained — state the decisions and assumptions up front rather than
-leaving them for Astra to infer.
-
-List pricing per million tokens, input/output (September 2026): Astra
-$10/$50, Sol $4/$20, Terra $2/$12, Luna $0.20/$1.20.
-
-Rough cost ratio per token (input list price): Astra ≈ 2.5× Sol ≈ 5× Terra ≈
-50× Luna; Sol ≈ 2× Terra ≈ 20× Luna; Terra ≈ 10× Luna. Pins are defaults — a
-dispatch brief that explicitly names a model or effort overrides them
-(`spark` → `gpt-5.3-codex-spark`, `mini` → `gpt-5.4-mini`).
+**Why Astra runs at medium.** Medium is Astra's own registry default and
+lands on the cost/quality sweet spot; name `high` or `xhigh` in the dispatch
+only for a hard architectural call or a debugging loop that has already
+resisted medium. GPT-6 Astra's cross-window note-taking — retaining notes
+instead of compressing them as a context window fills — is, per OpenAI's own
+announcement, experimental, opt-in, and only *planned* to become default
+later; it must be enabled in `config.toml`, and this fork neither enables nor
+documents that setting. **UNVERIFIED**: whether the feature is active for any
+dispatch made through this fork has not been checked against a live config.
+Treat multi-hour jobs as belonging on this lane on the strength of Astra's own
+reasoning depth over a long-running detached job, not on this unconfirmed
+persistence feature. Because Astra asks a clarifying question instead of
+guessing when more input would change the result, and a detached background
+job has nobody there to answer it, an Astra brief must be self-contained —
+state the decisions and assumptions up front rather than leaving them for
+Astra to infer.
 
 ## Requirements
 
@@ -374,9 +384,10 @@ same output schema and same job-record shape, so `status`, `await`, `result` and
   **`xhigh` stays the ceiling** — the registry's `max`/`ultra` tiers are refused,
   because the driver bypasses the vendor validator and nothing has proven the
   app-server accepts them. The practical **floor** is narrower still: the
-  GPT-5.6 family *and* `gpt-6-astra` 400 on `reasoning.effort` for `none` and
-  `minimal`, so those two are accepted but warned about on stderr when paired
-  with a `gpt-5.6*` model, `gpt-6-astra`, or no `--model` at all — the warning
+  GPT-5.6 family, `gpt-6-astra` *and* `gpt-6-sol`/`gpt-6-luna` 400 on
+  `reasoning.effort` for `none` and `minimal`, so those two are accepted but
+  warned about on stderr when paired with a `gpt-5.6*` model, `gpt-6-astra`,
+  `gpt-6-sol`/`gpt-6-luna`, or no `--model` at all — the warning
   never blocks the dispatch, and the job then fails at the API instead.
 - These imports are internal vendor modules that merely happen to be exported,
   so an upstream rename can break them. If any import or symbol is missing the

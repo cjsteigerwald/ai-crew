@@ -124,9 +124,9 @@ Flag crew-codex adds on top of the companion:
                                 job record, which vendor review records lack.
 
 Validator ceiling is xhigh — the registry's max/ultra tiers are refused here.
-Practical FLOOR on the gpt-5.6 family (sol/terra/luna) and on gpt-6-astra is
-low: those models return a 400 on reasoning.effort for 'none' and 'minimal',
-so those two are accepted (other model families may take them) but warned
+Practical FLOOR on the gpt-5.6 family (sol/terra/luna), gpt-6-astra and
+gpt-6-sol/luna is low: those models return a 400 on reasoning.effort for
+'none' and 'minimal', so those two are accepted (other model families may take them) but warned
 about, and the job fails at the API rather than in the wrapper.
 
 EFFORT IS THE CALLER'S. The turn runs at exactly the --effort you pass; WITHOUT

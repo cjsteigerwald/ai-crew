@@ -69,6 +69,14 @@ const MINIMAL_EFFORT_REJECTING_MODELS = [
     pattern: /^gpt-6-astra/i,
     label: "gpt-6-astra",
     ladder: "The usable ladder on gpt-6-astra is low|medium|high|xhigh."
+  },
+  {
+    // Sol and Luna moved to GPT-6 when this fork followed upstream v0.8.2. The
+    // Codex model registry lists no `none`/`minimal` for either (nor for
+    // gpt-6.1-sol), so they get the same warning.
+    pattern: /^gpt-6(\.\d+)?-(sol|luna)/i,
+    label: "GPT-6 Sol/Luna",
+    ladder: "The usable ladder on gpt-6-sol/luna is low|medium|high|xhigh."
   }
 ];
 
