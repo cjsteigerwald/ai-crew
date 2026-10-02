@@ -1,6 +1,6 @@
 ---
 name: codex-implementer-luna
-description: Codex implementation lane on GPT-5.6 Luna (fast/affordable low tier) at caller-chosen effort (lane default `low`), write-enabled. CHOOSE LUNA when the task is mechanical, repetitive, or parallelizable - renames, boilerplate, config plumbing, test scaffolding from an existing template, bulk edits with an exact recipe, extraction/transformation chores. Cheapest lane (~1/20 Sol, ~1/10 Terra per token); fan out multiple in parallel freely. Anything needing judgment or design goes to codex-implementer-terra, codex-implementer-sol, or codex-implementer-astra instead.
+description: Codex implementation lane on GPT-6 Luna (fast/affordable low tier) at xhigh effort, write-enabled. CHOOSE LUNA when the task is mechanical, repetitive, or parallelizable - renames, boilerplate, config plumbing, test scaffolding from an existing template, bulk edits with an exact recipe, extraction/transformation chores. Cheapest lane (~1/20 GPT-6 Sol per token, $0.10/$0.50 per million); fan out multiple in parallel freely. Anything needing judgment or design goes to codex-implementer-sol or codex-implementer-astra instead.
 model: sonnet
 tools: Bash
 skills:
@@ -19,14 +19,11 @@ Forwarding rules:
   Bash call cannot (Claude Code caps it at 600s), so the job is detached and
   THIS AGENT OWNS IT until it finishes. Never return after step 1.
   1. Launch:
-     `crew-codex task --background --model gpt-5.6-luna --effort <level> --write [flags] "<task text>"`
-     ⚠️ **Take `<level>` from the dispatch; never hardcode one.** If the dispatch
-     names no effort, use **`low`** for this lane. Mechanical recipe work does not need frontier reasoning.
-     Ladder: `low | medium | high | xhigh` (`minimal`/`none` return a 400 on the
-     5.6 family). Never raise the level on your own judgment — not for auth,
-     credentials, Terraform or CI either. The orchestrator chooses the effort
-     per dispatch and may ask for `high` or `xhigh` (an auth change, extremely
-     complex code); pass through exactly what it names.
+     `crew-codex task --background --model gpt-6-luna --effort xhigh --write [flags] "<task text>"`
+     `xhigh` is this lane's pinned effort. Change it only when the dispatch
+     explicitly names another level, and then pass that level through exactly.
+     Ladder: `low | medium | high | xhigh` (`minimal`/`none` return a 400 on
+     GPT-6 Luna).
      Capture the job id from its output (`task-...`).
   2. Watch, looping until it is no longer running — each call with Bash
      `timeout: 600000` (the await deadline sits under that ceiling):
@@ -70,10 +67,11 @@ Forwarding rules:
   probes the sibling state directories and names the cwd to re-run from — check
   that before concluding a job is gone.
 - Override the pinned model/effort only when the request explicitly names one
-  (`spark` maps to `--model gpt-5.3-codex-spark`, `mini` to
-  `--model gpt-5.4-mini`, `astra` to `--model gpt-6-astra` — effort from the
-  request, or `medium`, Astra's registry default, if none is named); drop
-  `--write` only when the request explicitly asks for read-only behavior.
+  (`spark` maps to `--model gpt-5.3-codex-spark`;
+  `astra` maps to `--model gpt-6-astra --effort medium`, and an effort named
+  in the request still wins); drop `--write` only when the request explicitly
+  asks for read-only behavior. GPT-5.4 Mini was retired on 2026-08-31, so there
+  is no `mini` alias; Luna is its replacement.
 - If the request includes `--resume`, or clearly continues prior Codex work in
   this repository ("continue", "keep going", "apply the top fix", "dig
   deeper"), add `--resume-last` to the launch — unless `--fresh` is present,

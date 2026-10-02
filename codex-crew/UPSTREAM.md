@@ -1,7 +1,10 @@
 # Upstream sync record
 
 `codex-crew` began as a vendored snapshot of [`sidkik/claude-plugins`](https://github.com/sidkik/claude-plugins)
-and has since diverged substantially. This file exists because the last port had
+and has since diverged substantially in its runtime. Since 0.10.0 it **follows
+upstream** for every agent, skill, README and test decision, and diverges only
+where the fork's runtime (`bin/crew-codex`, `lib/`) differs — see
+[Deliberate divergences](#deliberate-divergences). This file exists because the last port had
 to be reconstructed by archaeology: nothing recorded where the fork stood, so
 working out what was already here cost more than applying the changes did.
 
@@ -12,9 +15,9 @@ working out what was already here cost more than applying the changes did.
 | | |
 |---|---|
 | Upstream repo | `sidkik/claude-plugins` (marketplace `sidkik-plugins`) |
-| Synced to | **v0.7.0**, commit `4a68b5e` |
-| Synced on | 2026-09-09 (ported from upstream 2026-09-08) |
-| This plugin's version | **0.8.0** |
+| Synced to | upstream codex-crew **0.8.2**, commit `a57e81b` |
+| Synced on | 2026-10-01 |
+| This plugin's version | **0.10.0** |
 
 Upstream is **not** wired up for you. Git remotes are per-clone: they are never
 committed and never travel with the repo, so every fresh checkout of this fork
@@ -30,7 +33,7 @@ git remote add upstream https://github.com/sidkik/claude-plugins.git
 git remote get-url upstream   # must print https://github.com/sidkik/claude-plugins.git
 
 git fetch upstream --tags
-git diff 4a68b5e upstream/main -- codex-crew/
+git diff a57e81b upstream/main -- codex-crew/
 ```
 
 Two failure modes share one signature, which is why the check above reads the
@@ -38,8 +41,8 @@ URL. If the remote is missing, `git fetch upstream` aborts with
 `fatal: 'upstream' does not appear to be a git repository` (exit 128). If it
 exists but points at an unrelated repo, `git remote add` errors with
 `error: remote upstream already exists.` (exit 3), a pasted block runs straight
-past it, and the fetch then succeeds — but `4a68b5e` is reachable only from
-upstream's history, so the diff aborts with `fatal: bad revision '4a68b5e'`
+past it, and the fetch then succeeds — but `a57e81b` is reachable only from
+upstream's history, so the diff aborts with `fatal: bad revision 'a57e81b'`
 (exit 128) in that case too. Identical message, opposite causes; neither ever
 returns a misleadingly empty diff.
 
@@ -51,8 +54,8 @@ catches it.
 ## Version numbers do not line up, and never will
 
 Both projects independently reached `0.6.0` with **completely different code**.
-This fork jumped to `0.7.0` to get clear of the collision. Now at `0.8.0` after
-porting upstream v0.7.0. Never assume a shared version number means shared code —
+This fork jumped to `0.7.0` to get clear of the collision. It reached `0.8.0`
+porting upstream v0.7.0, and `0.10.0` following upstream 0.8.2. Never assume a shared version number means shared code —
 compare against the commit in the table above, never against a tag name.
 
 ## Deliberate divergences
@@ -86,15 +89,25 @@ without changing the decision first.
 | bash 3.2 test coverage (case B32) | — | B32 drives `sanitize-archive` and `reap --brokers` through `/bin/bash` and records an explicit SKIP where `/bin/bash` is not 3.x | ai-crew has no CI, so the bash 3.2 gate is the local suite run on a Mac, where `/bin/bash` is 3.2 and B32 always runs. A Linux-only run passing does **not** cover bash 3.2. Deferred follow-up: a macOS CI job that asserts `/bin/bash` is 3.x. |
 | `patch --revert` on a `stale` install | any non-`applied` state prints "nothing to revert", exit 0 | `appliable` → no-op, exit 0; `stale` → exit 1 on stderr, nothing changed, points at the `*.crew-orig` backups | A half-applied install (one target patched) reads as `stale`; reporting it clean left the patched hunks in place while telling the operator there was nothing to undo. |
 
-### Divergences from upstream v0.7.0
+### Agent, skill and test text (0.10.0)
 
-**Caller-chosen effort is retained; upstream's fixed `xhigh` pins are NOT adopted.** Upstream has long defaulted every lane (sol, terra, luna, reviewer) to a hardcoded `xhigh` — at the *previous* sync point (`965b419`), upstream's `codex-implementer-sol.md:3` already read "at xhigh effort", so v0.7.0 did not convert anything; those diff rows are context-only. Caller-chosen per-dispatch effort has only ever existed in this fork — it is fork-only, not a capability upstream removed. Upstream's agents also still let an explicitly requested effort override the `xhigh` pin, so upstream's `xhigh` is a strong *default*, not a fixed effort; "adopting the pins would delete a capability" would therefore have overstated the difference. This fork keeps per-lane defaults that a dispatch can override because the user explicitly asked for effort to stay a per-job decision, and because the fork's `lib/review-with-effort.mjs` driver exists specifically to make effort a per-dispatch decision on the review path.
+Since 0.10.0 the agents, `crew-runtime` skill, README and tests take upstream's
+decisions: GPT-6 Sol and Luna, `xhigh` implementer pins (Astra `medium`), Terra only
+when a brief names it, the reviewer's isolated regression-proof route and the
+**Review evidence** contract, the retired `mini` alias, and upstream's lane-pin
+test block. Earlier fork decisions that contradicted these — caller-chosen
+lane effort with `medium`/`low` defaults, and not porting the lane-pin tests —
+are retired. What remains differs only because this fork's runtime differs:
 
-**Upstream's lane-pin test block was not ported.** Upstream's suite (`check_contains ... 'crew-codex task --background --model gpt-5.6-sol --effort xhigh --write'`, and the matching lines for terra/luna/reviewer) asserts that each agent file's *default launch string* is hardcoded to `xhigh` — it greps the static launch line in each agent's markdown; it never dispatches a job or exercises a caller-supplied effort. Upstream's own agents still let an explicit request override that default (see above), so the test only pins what ships when no effort is named, not what happens when one is. This fork deliberately does not pin that default launch string (see above), so porting the test block would assert something the fork intentionally does not do; it stays unported until the pin decision itself changes.
-
-**Lane defaults lowered to `medium`.** `codex-implementer-sol` and `codex-reviewer` previously defaulted to `high`; both now default to `medium`. `terra` stays `medium`, `luna` stays `low`. Superseded 2026-09-10: nothing raises the effort for auth/credentials, Terraform or CI any more — the orchestrator picks the effort per dispatch, and an adversarial review given none runs at `medium`.
-
-**Astra was ported into the fork's idiom, not copied verbatim.** Upstream's `agents/codex-implementer-astra.md` documents exit code **4** for SUPERSEDED and prefixes every command with `cd <sandbox root> && `. This fork uses exit code **5** for SUPERSEDED and the "run from the directory you launched from; `crew-codex` probes sibling state directories on a miss" idiom. Copying upstream's file verbatim would have shipped a wrong exit code.
+| Area | Upstream | Here | Why |
+|---|---|---|---|
+| SUPERSEDED in agent text | exit `4` | exit `5` | Runtime exit codes (see the first table). |
+| Supervision cwd | every call prefixed `cd <sandbox root> && `, plus two manual probes on exit 2 | run every call from the launch directory; `crew-codex` probes sibling state directories on a miss and names the cwd to re-run from | The fork runtime does the probing itself. The reviewer's regression-proof route still launches with `cd <isolated review checkout> && ` because that route must run in the isolated checkout. |
+| Generic adversarial review | `adversarial-review` with no model or effort | `adversarial-review --model gpt-6-sol --effort medium`, routed through `lib/review-with-effort.mjs`, with the driver-filename capability probe | Only this runtime can set effort on a review; the agent passes the lane pin explicitly so the review matches the lane. |
+| Reviewer effort | `xhigh` on every route | `medium` on every route (generic adversarial, read-only task, regression proof); a named effort still wins | Owner's decision (2026-10-01): review defaults to `medium` and the orchestrator asks for `high`/`xhigh` when a change warrants it. |
+| Astra `none`/`minimal` | forwarded | treated as `low` | Astra rejects both at the API. |
+| Astra note-taking claim | "keeps notes across windows" | marked UNVERIFIED (experimental, opt-in `config.toml` setting this fork does not set) | Factual correction; not a reason to pick the lane. |
+| GPT-6 Sol/Luna `none`/`minimal` warning | none | `lib/review-with-effort.mjs` warns, like the 5.6 family and Astra | The Codex model registry lists no `none`/`minimal` for either; without a row, the lanes' own default models slipped past the guard. |
 
 ## Fork-only features (upstream has none of these)
 
@@ -109,9 +122,10 @@ Do not expect a port to touch them, and do not let one regress them:
   paths) on stderr and in the job record. Informational only since
   2026-09-10 — it used to RAISE a match to `xhigh`; that floor and
   `CREW_CODEX_SENSITIVITY_OVERRIDE` are gone. Upstream has nothing like it.
-- caller-chosen review effort with a `medium` default: every
-  `adversarial-review` routes to the driver, `--effort` or not, so a review
-  never inherits the codex config's `model_reasoning_effort`. The `task` path
+- runtime-level review effort: every `adversarial-review` routes to the
+  driver, `--effort` or not, so a review never inherits the codex config's
+  `model_reasoning_effort` (a bare `crew-codex adversarial-review` with no
+  `--effort` runs at `medium`; the reviewer agent also defaults to `medium`). The `task` path
   is unchanged (the companion parses `--effort` there itself).
 - dispatch stamping (`<job>.dispatch.json`)
 - the archive sanitizer, the `.sanitized` provenance sentinel, and `sanitize-archive`
@@ -157,10 +171,8 @@ Do not expect a port to touch them, and do not let one regress them:
 
 ## Open questions
 
-- **UNVERIFIED**: upstream claims `gpt-5.4-mini` was retired 2026-08-31.
-  `codex-crew/README.md` and `codex-crew/skills/crew-runtime/SKILL.md` still
-  offer it (the `mini` → `gpt-5.4-mini` alias). This claim has not been checked
-  against the actual model registry or a live dispatch, and the `mini`
-  references are deliberately left in place — removing them on an unverified
-  retirement claim risks breaking a lane that still works. Verify against a
-  live Codex CLI/API call before acting on this.
+- **RESOLVED 2026-10-01**: `gpt-5.4-mini` is retired. Codex CLI 0.159.3's model
+  registry no longer lists it, so the `mini` alias is removed from the agents,
+  README and skill, and the suite asserts it stays gone.
+- **Not yet adopted**: the registry also lists `gpt-6.1-sol`. Neither upstream
+  nor this fork pins it; the effort-floor warning already covers it.

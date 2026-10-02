@@ -13,7 +13,13 @@
     {
       "name": "codex-crew",
       "source": "./codex-crew",
-      "description": "Codex (GPT-family) delegate agents with pinned models \u2014 implementer lanes (luna/terra/sol/astra) and a read-only reviewer \u2014 riding the official Codex plugin's companion runtime, with in-flight job control (steer/queue/redirect), a per-job broker so concurrency never strands a job, per-dispatch reasoning effort on adversarial reviews, and a redacting archive that outlives session cleanup"
+      "description": "Codex (GPT-family) delegate agents with pinned models \u2014 implementer lanes (luna/terra/sol/astra) and a reviewer with an isolated regression-proof route \u2014 riding the official Codex plugin's companion runtime, with in-flight job control (steer/queue/redirect), a per-job broker so concurrency never strands a job, per-dispatch reasoning effort on adversarial reviews, and a redacting archive that outlives session cleanup"
+    },
+    {
+      "name": "grok-crew",
+      "source": "./grok-crew",
+      "version": "0.2.0",
+      "description": "Delegate bounded review, investigation and implementation from Claude Code or Codex to the Grok CLI."
     },
     {
       "name": "crew-gates",

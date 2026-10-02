@@ -1,0 +1,20 @@
+{
+  "name": "grok-crew",
+  "version": "0.2.0",
+  "description": "Delegate bounded review, investigation and implementation from Claude Code or Codex to the Grok CLI.",
+  "author": {
+    "name": "Sidkik"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Grok Crew",
+    "shortDescription": "Delegate bounded work to Grok.",
+    "longDescription": "Launch the installed Grok CLI from Claude Code or Codex, collect evidence and resume known sessions.",
+    "developerName": "Sidkik",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": [
+      "Ask Grok to review this change."
+    ]
+  }
+}

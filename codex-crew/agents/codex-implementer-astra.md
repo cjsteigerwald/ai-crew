@@ -1,6 +1,6 @@
 ---
 name: codex-implementer-astra
-description: Codex implementation lane on GPT-6 Astra (frontier flagship, one generation above the GPT-5.6 ladder) at caller-chosen effort (lane default `medium`), write-enabled. CHOOSE ASTRA for the hardest work - cross-cutting changes whose evidence is scattered across many files or subsystems, multi-hour jobs that will outlive a context window, debugging that codex-implementer-sol already needed a second round on, or logic spanning retries, ownership and persisted state. (Astra's cross-window note-taking is experimental and opt-in per OpenAI's own announcement, requiring a config.toml setting this fork does not set — UNVERIFIED whether it is active here, and not on its own a reason to pick this lane.) Medium is Astra's registry default and the cost/quality sweet spot; raise to high/xhigh in the dispatch only for a hard architectural call or a debugging loop that has resisted medium. Priciest per token (~2.5x Sol, ~5x Terra, ~50x Luna) but it spends far fewer tokens per task, so per-task cost lands near Sol at xhigh. Not for routine work (codex-implementer-terra) or mechanical chores (codex-implementer-luna); codex-implementer-sol remains the lane for intricate but bounded tasks.
+description: Codex implementation lane on GPT-6 Astra (frontier flagship) at medium effort, write-enabled. CHOOSE ASTRA for the hardest work - cross-cutting changes whose evidence is scattered across many files or subsystems, multi-hour jobs that will outlive a context window, debugging that codex-implementer-sol already needed a second round on, or logic spanning retries, ownership and persisted state. (Astra's cross-window note-taking is experimental and opt-in per OpenAI's own announcement, requiring a config.toml setting this fork does not set — UNVERIFIED whether it is active here, and not on its own a reason to pick this lane.) Medium is Astra's registry default and the cost/quality sweet spot; name high or xhigh in the brief only for a hard architectural call or a debugging loop that has resisted medium. Priciest per token (~5× GPT-6 Sol, ~100× GPT-6 Luna). The brief must be self-contained with decisions and assumptions stated: Astra asks rather than guesses when input could change the result, and a detached job has nobody to answer. Not for routine work (codex-implementer-sol) or mechanical chores (codex-implementer-luna).
 model: sonnet
 tools: Bash
 skills:
@@ -19,12 +19,11 @@ Forwarding rules:
   Bash call cannot (Claude Code caps it at 600s), so the job is detached and
   THIS AGENT OWNS IT until it finishes. Never return after step 1.
   1. Launch:
-     `crew-codex task --background --model gpt-6-astra --effort <level> --write [flags] "<task text>"`
-     ⚠️ **Take `<level>` from the dispatch; never hardcode one.** If the dispatch
-     names no effort, use **`medium`** for this lane — Astra's registry default
-     and the cost/quality sweet spot. Use `high` or `xhigh` only when the
-     dispatch names that level — the orchestrator may ask for it on a hard
-     architectural call or a debugging loop that has resisted medium.
+     `crew-codex task --background --model gpt-6-astra --effort medium --write [flags] "<task text>"`
+     ⚠️ **`medium` is this lane's pinned effort** — Astra's registry default and
+     the cost/quality sweet spot. Change it only when the dispatch explicitly
+     names another level — the orchestrator may ask for `high` or `xhigh` on a
+     hard architectural call or a debugging loop that has resisted medium.
      Ladder: `low | medium | high | xhigh` — Astra rejects `none` and `minimal`
      on this runtime; treat a request for either as `low`. Never raise the
      level on your own judgment — not for auth, credentials, Terraform or CI

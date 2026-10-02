@@ -6,7 +6,8 @@ delegate-agent packs:
 | Plugin | Models | What it gives you |
 |---|---|---|
 | **claude-crew** | Haiku / Sonnet / Opus | Tiered Claude delegate agents (scout / reader / implementer lanes) so delegated subagent work stops inheriting the expensive session model |
-| **codex-crew** | GPT-family (luna / terra / sol / astra) | Codex implementer lanes and a read-only reviewer, for cross-model implementation and adversarial review |
+| **codex-crew** | GPT-family (luna / terra / sol / astra) | Codex implementer lanes and a reviewer that can prove behavioral findings with its own regression test in an isolated checkout, for cross-model implementation and adversarial review |
+| **grok-crew** | Grok (via the `grok` CLI) | A delegation skill that launches, supervises and resumes Grok reviews, investigations and authorized edits from Claude Code or Codex |
 | **crew-gates** | N/A | PreToolUse gates that make an orchestrator delegate to cheaper lanes: delegation-gate, read-budget-gate, lane-model-gate, plus a per-prompt routing table |
 | **harness-skills** | N/A | Crew configuration writer and the ai-crew-update plugin updater/reconciler. |
 | **tech-research** | Varied | Interrogative, evidence-tiered research protocol for technology and vendor decisions, with seven specialised research agents |
@@ -208,3 +209,8 @@ mechanism.
 **codex-crew** — the official Codex plugin (`/plugin install codex@openai-codex`),
 the Codex CLI installed and authenticated (`codex login`), and Node.js. Its
 `bin/crew-codex` wrapper must also be on `PATH`.
+
+**grok-crew** — the Grok CLI installed and authenticated (`grok`), plus Bash.
+GNU `timeout` (`gtimeout` from Homebrew `coreutils` on macOS) only when a job
+needs a hard deadline. It ships no binaries; see
+[`grok-crew/README.md`](grok-crew/README.md).

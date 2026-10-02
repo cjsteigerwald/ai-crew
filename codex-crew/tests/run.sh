@@ -2972,6 +2972,21 @@ check_absent "the 5.6 warning does not mention astra" "$out" "astra"
 out="$(run_effort adversarial-review --effort high --model gpt-5.6-terra "focus")" && rc=0 || rc=$?
 check_absent "high on gpt-5.6-terra warns about nothing" "$out" "rejected by"
 
+# --- Case 59b: the guard covers the GPT-6 Sol and Luna lanes -----------------
+# Sol and Luna are pinned to GPT-6, whose registry entries list no none/minimal
+# either. Without a row the agents' own default models slipped past the guard.
+for m in gpt-6-sol gpt-6-luna gpt-6.1-sol; do
+  out="$(run_effort adversarial-review --effort none --model "$m" "focus")" && rc=0 || rc=$?
+  check "none on $m warns locally" 0 "rejected by GPT-6 Sol/Luna" "$rc" "$out"
+  check "none on $m still dispatches" 0 "RENDERED Adversarial Review" "$rc" "$out"
+done
+out="$(run_effort adversarial-review --effort xhigh --model gpt-6-sol "focus")" && rc=0 || rc=$?
+if grep -q "RENDERED Adversarial Review" <<<"$out" && ! grep -q "rejected by" <<<"$out"; then
+  echo "PASS: xhigh on gpt-6-sol dispatches and warns about nothing"; pass=$((pass + 1))
+else
+  echo "FAIL: xhigh on gpt-6-sol warned spuriously or did not dispatch (out: $out)"; fail=$((fail + 1))
+fi
+
 # Case 54z: reap must MERGE into a fresh read of state.json, never write back
 # the snapshot it classified from. This is the difference between "another
 # session's job survives the sweep" and "it silently disappears from the
@@ -3995,6 +4010,35 @@ printf '{"id":"task-lone1-fff1","status":"cancelled","threadId":"thread-Y","crea
 out="$(CLAUDE_CONFIG_DIR="$TMP/sup" CLAUDE_PLUGIN_DATA="$TMP/sup/data" CREW_CODEX_ARCHIVE_DIR="$TMP/sup/arc" \
   CREW_CODEX_POLL_SECS=0 bash "$CREW" await task-lone1-fff1 --for 5 2>&1)" && rc=0 || rc=$?
 check "lone cancelled job stays a failure" 1 "DONE cancelled" "$rc" "$out"
+
+# --- lane pins: each agent launches with its own model and effort ------------
+# Ported from upstream (sidkik/claude-plugins v0.8.2). The Astra lane defaults
+# to medium (its registry default and the cost/quality sweet spot); Sol and Luna
+# are GPT-6 at xhigh, Terra stays gpt-5.6-terra at xhigh. A drifted pin silently
+# changes what every dispatch costs, so each launch line is asserted verbatim.
+check_contains "astra lane pins gpt-6-astra at medium" "$AGENT_DIR/codex-implementer-astra.md" \
+  'crew-codex task --background --model gpt-6-astra --effort medium --write'
+check_contains "sol lane pins gpt-6-sol at xhigh" "$AGENT_DIR/codex-implementer-sol.md" \
+  'crew-codex task --background --model gpt-6-sol --effort xhigh --write'
+check_contains "terra lane pins gpt-5.6-terra at xhigh" "$AGENT_DIR/codex-implementer-terra.md" \
+  'crew-codex task --background --model gpt-5.6-terra --effort xhigh --write'
+check_contains "luna lane pins gpt-6-luna at xhigh" "$AGENT_DIR/codex-implementer-luna.md" \
+  'crew-codex task --background --model gpt-6-luna --effort xhigh --write'
+check_contains "reviewer read-only task route pins gpt-6-sol at medium" "$AGENT_DIR/codex-reviewer.md" \
+  'crew-codex task --background --model gpt-6-sol --effort medium "<task text>"'
+check_contains "reviewer proof route writes only from the isolated checkout" "$AGENT_DIR/codex-reviewer.md" \
+  'cd <isolated review checkout> && crew-codex task --background --model gpt-6-sol --effort medium --write'
+check_contains "reviewer adversarial route defaults to medium" "$AGENT_DIR/codex-reviewer.md" \
+  'if it names none, use `medium`'
+check_contains "astra lane tells the forwarder what to do with a clarifying question" \
+  "$AGENT_DIR/codex-implementer-astra.md" 'Do not answer it yourself'
+for f in "$AGENT_DIR"/*.md "$SKILL_FILE" "$HERE/../README.md"; do
+  if grep -q 'gpt-5\.4-mini' "$f"; then
+    echo "FAIL: $(basename "$f") still offers the retired gpt-5.4-mini"; fail=$((fail + 1))
+  else
+    echo "PASS: $(basename "$f") no longer offers gpt-5.4-mini"; pass=$((pass + 1))
+  fi
+done
 
 # Case 31: the prompts tell agents how to handle a redirect
 for f in "$AGENT_DIR"/*.md "$SKILL_FILE"; do
