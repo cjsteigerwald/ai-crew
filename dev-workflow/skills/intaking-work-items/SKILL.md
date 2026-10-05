@@ -38,27 +38,45 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
 
 - **Announce once**, at the start: the user can say "skip <step or question>" or "cancel" at any
   point. Every `AskUserQuestion` in step 3 and every checkpoint in step 6 includes a **Skip**
-  option; "Other" lets them type cancel.
+  option; "Other" lets them type cancel. Gates owned by a chained skill (e.g. brainstorming's
+  spec review) have no Skip button — the user can still type skip or cancel there, and the same
+  rules apply.
 - **Skip a gap question or checklist row:** an explicit user deferral, so it satisfies the HARD
   GATE for that row. Log it in the decision log and the deferred table as
   `Skipped by user — <date>`, with the gap it leaves open. Skipping never turns a row into Present.
   A skipped AC stays visible: the doc lists it under Deferred, and the PR body names it as not
   delivered / unverified.
 - **Skip a whole step** (fetch extras, gap analysis, requirements doc, writeback, brainstorming,
-  writing-plans, plan-implementation, PR): allowed. Record it in the doc if one exists, say in one
-  line what the skip loses, then move to the next step. Skipping gap analysis means no gate ran:
-  the doc must say "requirements not gap-checked".
-- **Step 0 is the exception.** This skill can't waive the repo's own start procedure or gates. State
-  the repo rule and that skipping it means acting outside the repo's process; proceed only on an
-  explicit second confirmation, and record it in the doc.
-- **Cancel:** stop immediately. Make no further tool call that writes or posts anything — never
-  post to Jira or GitHub on cancel, and invoke no chained skill. If a requirements doc already
-  exists, leave it with a first line `> Status: CANCELLED at step <n> on <date> — incomplete`, or
-  delete it if the user asks. Report in a few lines what was done, what was written locally, and
-  that nothing is pending.
-- **Resume:** if `docs/specs/<KEY>-requirements.md` already exists when intake starts, read it,
-  show its status and gap/decision state, and offer to resume from the first incomplete step
-  instead of starting over.
+  writing-plans, plan-implementation, PR): allowed, **with a warning, and it does not block the
+  chain**. Warn once, in one line, about what the skip loses, record it, then continue to the next
+  step. Skipping gap analysis means no gate ran: the doc says "requirements not gap-checked".
+  - **Skipped requirements doc → still write a stub doc** at `docs/specs/<KEY>-requirements.md`:
+    Status, source link, "requirements not gap-checked" (if so), the skipped steps, and every
+    deferred or skipped AC — so no deferral is ever lost. Only if the user explicitly says "no doc
+    at all" does that same information go into the PR body instead.
+  - **Every skipped step is stated downstream:** in the plan's **Spec** line and in the PR body,
+    e.g. "Intake: gap analysis skipped — requirements not gap-checked".
+- **Step 0 is the exception.** The skill itself never waives the repo's own start procedure or
+  gates. Only the **user** can override it: state the repo rule and that skipping it means acting
+  outside the repo's process, and proceed only on an explicit second confirmation, recorded in the
+  doc.
+- **Cancel:** stop immediately. Make no further tool call that posts anywhere and no local write,
+  except the single edit that marks an existing requirements doc CANCELLED — a first line
+  `> Status: CANCELLED at step <n> on <date> — incomplete` — or the deletion of that doc if the
+  user asks. Never create a doc on cancel. If the marker edit fails, say so.
+  Never post to Jira or GitHub on cancel, and invoke no chained skill. Report in a few lines what
+  was done, what was written locally, and that nothing is pending.
+- **Resume:** if `docs/specs/<KEY>-requirements.md` already exists when intake starts, read it and
+  show its status and gap/decision state. Then **always refetch and diff against the snapshot**:
+  - Run step 1 again for the primary item and its equivalents, and diff against the doc: the
+    description, AC, comments since the `Fetched:` date, links, and status.
+  - Reopen every checklist row the changes touch, and any approval that depended on those rows
+    (requirements OK, design, plan). Resume from the earliest reopened step, or from the first
+    incomplete step if nothing changed. Update `Fetched:`.
+  - If freshness can't be verified (the fetch fails), say so and block downstream stages until
+    the user explicitly skips the check — the skip rules above apply.
+  - Resuming a CANCELLED doc resets its Status to `Draft`, removes the CANCELLED first line, and
+    logs the resume in the decision log.
 
 ## 0. Repo procedure first
 
@@ -69,7 +87,8 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
 - Respect repo rules about **when a GitHub issue may exist** — some repos forbid creating it until the
   Jira ticket enters a sprint. Intake never creates an issue or ticket on its own; at most it notes
   that one is missing and points at the repo's rule.
-- "Skip" here needs the second confirmation in **Controls** — the only step that does.
+- This skill never skips or waives step 0 on its own. The **user** may override it, but only with
+  the second confirmation described in **Controls** — the only step that needs one.
 
 ## 1. Resolve and fetch
 
@@ -84,7 +103,8 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
 Write every GitHub reference fully qualified (`owner/repo#12`) from here on — a bare `#12` changes
 meaning the moment it leaves this repo.
 
-If `docs/specs/<KEY>-requirements.md` already exists, offer to resume (see **Controls**) before fetching.
+If `docs/specs/<KEY>-requirements.md` already exists, this is a resume: fetch anyway, then diff
+against the doc's snapshot (see **Controls**) before resuming.
 
 **Jira** — Atlassian MCP `getJiraIssue`. Collect: summary, description, any acceptance-criteria
 field, comments, status, sprint, story points, parent/epic, issue links, remote links.
@@ -101,13 +121,17 @@ URLs in the Jira remote links, issue links, parent) and classify it as exactly o
 
 | Class | Means | Its requirements and AC |
 |---|---|---|
-| **Equivalent** | The same work tracked in the other tracker | Merge into this doc |
+| **Equivalent** | The same work tracked in the other tracker, with identity evidence (below) | Merge into this doc |
 | **Parent / epic** | The larger goal this item serves | Context for story and scope only |
 | **Dependency / blocker** | Work that must land first, or that this blocks | A Dependencies row — never this item's AC |
-| **Related context** | Mentioned, similar, or historical | Cite if useful; nothing merges |
+| **Related context** | Mentioned, similar, historical — and any remote link without identity evidence | Cite if useful; nothing merges |
 
-- **Equivalent needs evidence**: an explicit mirror/remote link between the two, or the same title
-  and the same scope. If it is unclear, ask the user — don't merge on a hunch.
+- **Equivalent needs evidence** of identity: the link type, the link text, or the item itself
+  explicitly asserts same-work — "mirrors", "tracked in", a tracker-sync "GitHub issue" link type,
+  or the same key in the title — or the user confirms it.
+- **A generic remote link is not identity evidence.** A plain URL in remote links or a "see also"
+  mention is **Related context** until the user says otherwise. If unclear, ask — don't merge on a
+  hunch.
 - A dependency's AC never becomes this item's AC.
 - Writeback targets (step 5) are limited to the primary item and confirmed equivalents.
 
@@ -143,7 +167,9 @@ Present the result as one table, then the questions you will ask, in order.
 - Re-rate the table after each answer.
 - **Gate:** no design, plan, or code until **zero rows are Vague or Missing and zero contradictions
   are unresolved**, except items the user explicitly marks *out of scope*, *deferred*, or skips —
-  record which, and the user's words (skips as `Skipped by user — <date>`).
+  record which, and the user's words (skips as `Skipped by user — <date>`). **The gate binds
+  unless the user skipped the whole step** (gap analysis or this step): then warn once, record
+  "requirements not gap-checked", and continue per **Controls**.
 - **Fast path:** if every row is already Present and there are no contradictions, say so with the
   evidence column and go to step 4. The gate still ran; it just had nothing to block.
 
@@ -152,8 +178,10 @@ If the user asked only "is this ticket ready?", stop here with the table and the
 ## 4. Write the requirements doc
 
 - Write `docs/specs/<KEY>-requirements.md` in the **target** repo from [template.md](template.md).
-- Set the doc's **Status** line: `Draft` while gaps are open, `Ready` once the step-3 gate passes,
-  `Cancelled` on cancel. Record any skipped step and what it lost.
+- Set the doc's **Status** line: `Draft` while gaps are open, `Ready` once the step-3 gate passes.
+  `Cancelled` is set only by the single cancel-marker edit in **Controls**. Record any skipped step
+  and what it lost.
+- If the user skips this step, write the stub doc described in **Controls** instead.
 - Every AC gets a stable number (`AC-1`, `AC-2`, …) — downstream plans and PRs cite them.
 - Record source links and the fetched date: the doc is a snapshot, and the ticket will drift.
 - No secrets, tokens, or credential values — names, IDs, and status codes only.
@@ -183,12 +211,18 @@ Stop after each stage and get an explicit go before invoking the next; each chec
 go / **Skip** / cancel (see **Controls**). If a chained skill is not installed, say so and do that
 step by hand to the same standard. After cancel, no chained skill is invoked.
 
-1. **Design — `superpowers:brainstorming`.** Hand it the requirements doc path and say plainly:
-   *requirements and AC are settled; brainstorm the design and approach only — do not re-open
-   scope or AC.* Its "write back your understanding" step should be a short summary of the doc for
-   the user to confirm, not a second interview. Brainstorming picks a path itself, and on two of
-   them it chains onward on its own — so give it these instructions up front, with the plan
-   instructions from stage 2:
+1. **Design — `superpowers:brainstorming`.** What you hand it depends on what intake produced:
+   - **Gate passed:** the requirements doc path, and say plainly: *requirements and AC are settled;
+     brainstorm the design and approach only — do not re-open scope or AC.*
+   - **Gap analysis or the requirements doc was skipped:** the ticket link, the stub doc (or, with
+     "no doc at all", the skip summary), and the note *requirements not gap-checked — treat AC as
+     unverified*. Do not tell it requirements are settled.
+
+   Its "write back your understanding" step should be a short summary of the doc for the user to
+   confirm, not a second interview. Brainstorming picks a path itself, and on two of them it chains
+   onward on its own — so give it these instructions up front, with the plan instructions from
+   stage 2, plus intake's controls: *if the user types skip or cancel at any of your gates, stop
+   and return to intake — on cancel, write and post nothing further.*
    - **Architectural** → it writes a design doc (default
      `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`; ask it to link the requirements doc),
      runs its own spec-review gate, then invokes writing-plans itself. That is allowed: **its
@@ -203,14 +237,16 @@ step by hand to the same standard. After cancel, no chained skill is invoked.
 2. **Plan.**
    - **(a) Architectural — `superpowers:writing-plans`.** Every task cites the AC numbers it
      satisfies, and every AC is covered by at least one task; the plan's **Spec** line lists both
-     the design doc and the requirements doc. Tell it up front that execution will be
+     the design doc and the requirements doc, plus every skipped intake step (e.g. "Intake: gap
+     analysis skipped — requirements not gap-checked"). Tell it up front that execution will be
      `dev-workflow:plan-implementation`, so its handoff asks only for plan review. Its plan header
      hardcodes a *REQUIRED SUB-SKILL* line naming other executors: have that line in the saved plan
      replaced with `dev-workflow:plan-implementation`, then verify the saved file carries no
      contradictory executor directive —
      `grep -nE 'subagent-driven-development|executing-plans' <plan-file>` must print nothing.
    - **(b) Bounded — intake writes a short task list.** Each task maps to the AC numbers it
-     satisfies, every AC is covered, and the list goes to the user for approval. That approved
+     satisfies, every AC is covered, any skipped intake step is stated at the top, and the list
+     goes to the user for approval. That approved
      list is the plan stage 3 executes. Don't skip it even for small changes: it is what makes the
      AC traceable into the PR.
 3. **Implement — `[[plan-implementation]]`**, only after the user approves the plan from stage 2.
@@ -221,7 +257,9 @@ step by hand to the same standard. After cancel, no chained skill is invoked.
    GitHub → `**Ticket:** [owner/repo#12](<issue-url>)`, followed by `Refs owner/repo#12` (use a
    closing keyword only if the repo allows a merge to close the issue).
    The PR body says which AC numbers it delivers and which are deferred or skipped (not delivered /
-   unverified).
+   unverified), and states every skipped intake step — e.g. "Intake: gap analysis skipped —
+   requirements not gap-checked". If the user chose "no doc at all", the PR body also carries the
+   stub doc's content.
 
 ## Gotchas
 

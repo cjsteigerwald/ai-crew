@@ -33,11 +33,18 @@ this shape:
   proposal for step 3, not a Present.
 - **Vague** — the area is addressed but cannot be checked or acted on as written.
 - **Missing** — not addressed in any fetched source (description, fields, comments, links).
-- A row the user rules out of scope or defers stays in the table with that status and the user's words.
+- A row the user rules out of scope, defers, or skips stays in the table with that status and the
+  user's words.
 - **Contradictions block the gate.** Row 13 lists each conflict with both statements and where
   each lives. Every area a conflict touches is at best **Vague** — never Present — until the user
   resolves or defers it; the decision log records both statements and the resolution.
+- **Row 13's own rating:** **Present** = the sources were cross-checked and no conflicts were
+  found, or every conflict was resolved; **Vague** = at least one conflict is unresolved;
+  **Missing** = the sources were not cross-checked.
 - Only the primary item and confirmed **equivalent** linked items supply requirements and AC. A
   parent, dependency, or related item informs rows 1, 2 and 7 but never row 6.
+- **A generic remote link is not identity evidence.** An item counts as equivalent only if the link
+  type, the link text, or the item itself asserts same-work ("mirrors", "tracked in", a sync link
+  type, the same key in the title), or the user confirms it. Otherwise it is related context.
 - Rows 7 and 12 can be **blockers** rather than gaps: an unmet gate is reported and stops the work;
   it is not something a clarifying answer can close.

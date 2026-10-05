@@ -9,7 +9,7 @@ never leave `TBD`. No secrets, tokens, or credential values anywhere in the doc.
 
 **Source:** [<KEY>](<ticket URL>)<, [owner/repo#N](<issue URL>) if a confirmed equivalent exists>
 **Linked items:** <key or owner/repo#N — equivalent / parent / dependency / related — evidence for the class>
-**Fetched:** <YYYY-MM-DD> — ticket status `<status>`, sprint `<sprint or none>`, estimate `<value or none>`
+**Fetched:** <YYYY-MM-DD, required — resume diffs comments and changes against this date> — ticket status `<status>`, sprint `<sprint or none>`, estimate `<value or none>`
 **Intake by:** <name> with the `dev-workflow:intaking-work-items` skill
 **Status:** <Draft | Ready | Cancelled> — <last completed step; skipped steps and what each lost, e.g. "gap analysis skipped — requirements not gap-checked">
 
@@ -78,6 +78,10 @@ Each AC is testable as written and names how it is verified. Plans and PRs cite 
 | <gap or AC> | deferred / out of scope | user-deferred | "<quote>" | <what stays unknown> | <ticket key, or none> |
 | <gap or AC> | Skipped by user — <YYYY-MM-DD> | skipped | "<quote>" | <what stays unknown> | <ticket key, or none> |
 ```
+
+**Stub doc** (the requirements-doc step was skipped): keep only the header lines — Source,
+Fetched, Status with "requirements not gap-checked" if gap analysis was skipped, and the skipped
+steps — plus the **Deferred and out-of-scope items** table with every deferred or skipped AC.
 
 On cancel, the doc's first line becomes
 `> Status: CANCELLED at step <n> on <YYYY-MM-DD> — incomplete` and the **Status** field reads

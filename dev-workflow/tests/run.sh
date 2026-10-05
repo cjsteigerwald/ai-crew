@@ -288,6 +288,15 @@ if [ -f "$INTAKE_SKILL" ]; then
   grep -qF 'post to Jira or GitHub on cancel' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the no-post-on-cancel rule"
   grep -qF 'Status: CANCELLED' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: missing the 'Status: CANCELLED' marker"
   grep -qF 'user-deferred' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: deferred table missing the user-deferred / skipped source column"
+  grep -qF 'A generic remote link is not identity evidence' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the generic-remote-link rule"
+  grep -qF 'A generic remote link is not identity evidence' "$INTAKE_DIR/checklist.md" || ifail "intaking-work-items/checklist.md: missing the generic-remote-link rule"
+  grep -qF 'always refetch and diff against the snapshot' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the resume refetch/diff rule"
+  grep -qF 'except the single edit that marks an existing requirements doc CANCELLED' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the cancel-marker exception"
+  grep -qF 'Never create a doc on cancel' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the no-doc-on-cancel rule"
+  grep -qF 'Every skipped step is stated downstream' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the skipped-step-in-plan/PR rule"
+  grep -qF 'Intake: gap analysis skipped — requirements not gap-checked' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the 'requirements not gap-checked' plan/PR line"
+  grep -qF 'still write a stub doc' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the stub-doc rule"
+  grep -qF 'unless the user skipped the whole step' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: gate text missing the whole-step-skip exception"
 
   # Public-repo hygiene: no organisation-specific ticket project or skill
   # names in this skill (they don't resolve from a public checkout).
