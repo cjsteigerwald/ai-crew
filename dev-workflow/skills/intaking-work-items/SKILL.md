@@ -46,10 +46,21 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
   `Skipped by user — <date>`, with the gap it leaves open. Skipping never turns a row into Present.
   A skipped AC stays visible: the doc lists it under Deferred, and the PR body names it as not
   delivered / unverified.
+  - **A row 7/12 blocker that is a repo gate** (an unmet gate, or not in a sprint when the repo
+    requires one) is not a gap: skipping it is a step-0 override and needs the second
+    confirmation below.
 - **Skip a whole step** (fetch extras, gap analysis, requirements doc, writeback, brainstorming,
   writing-plans, plan-implementation, PR): allowed, **with a warning, and it does not block the
   chain**. Warn once, in one line, about what the skip loses, record it, then continue to the next
   step. Skipping gap analysis means no gate ran: the doc says "requirements not gap-checked".
+  - **Step 3 skipped after step 2 ran:** copy the final gap table into the doc's
+    **Gap table at skip** section, and add each open row to Deferred as
+    `Skipped by user — step 3 skipped`, so the specific open rows stay visible downstream and in
+    the PR.
+  - **Plan skipped** (writing-plans or the bounded task list): warn once and record it, then get an
+    explicit go-ahead for implementation. Implement directly against the AC list (the ticket's own
+    AC with a stub or no doc — see step 6) to the same verification standard, without
+    plan-implementation's approved-plan prerequisite. The PR body states "Intake: plan skipped".
   - **Skipped requirements doc → still write a stub doc** at `docs/specs/<KEY>-requirements.md`:
     Status, source link, "requirements not gap-checked" (if so), the skipped steps, and every
     deferred or skipped AC — so no deferral is ever lost. Only if the user explicitly says "no doc
@@ -61,13 +72,15 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
   outside the repo's process, and proceed only on an explicit second confirmation, recorded in the
   doc.
 - **Cancel:** stop immediately. Make no further tool call that posts anywhere and no local write,
-  except the single edit that marks an existing requirements doc CANCELLED — a first line
-  `> Status: CANCELLED at step <n> on <date> — incomplete` — or the deletion of that doc if the
-  user asks. Never create a doc on cancel. If the marker edit fails, say so.
+  except the single edit that marks an existing requirements doc CANCELLED — the single
+  cancel-marker edit (first line plus the Status field): first line
+  `> Status: CANCELLED at step <n> on <date> — incomplete`, Status `Cancelled` — or the deletion
+  of that doc if the user asks. Never create a doc on cancel. If the marker edit fails, say so.
   Never post to Jira or GitHub on cancel, and invoke no chained skill. Report in a few lines what
   was done, what was written locally, and that nothing is pending.
 - **Resume:** if `docs/specs/<KEY>-requirements.md` already exists when intake starts, read it and
-  show its status and gap/decision state. Then **always refetch and diff against the snapshot**:
+  show its status and gap/decision state, then ask: **resume, or start over** with a fresh doc. On
+  resume, **always refetch and diff against the snapshot**:
   - Run step 1 again for the primary item and its equivalents, and diff against the doc: the
     description, AC, comments since the `Fetched:` date, links, and status.
   - Reopen every checklist row the changes touch, and any approval that depended on those rows
@@ -75,8 +88,9 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
     incomplete step if nothing changed. Update `Fetched:`.
   - If freshness can't be verified (the fetch fails), say so and block downstream stages until
     the user explicitly skips the check — the skip rules above apply.
-  - Resuming a CANCELLED doc resets its Status to `Draft`, removes the CANCELLED first line, and
-    logs the resume in the decision log.
+  - A CANCELLED doc is never revived silently: ask first (resume it, or start over with a fresh
+    doc). Resuming it resets Status to `Draft`, removes the CANCELLED first line, and logs the
+    resume in the decision log.
 
 ## 0. Repo procedure first
 
@@ -179,8 +193,8 @@ If the user asked only "is this ticket ready?", stop here with the table and the
 
 - Write `docs/specs/<KEY>-requirements.md` in the **target** repo from [template.md](template.md).
 - Set the doc's **Status** line: `Draft` while gaps are open, `Ready` once the step-3 gate passes.
-  `Cancelled` is set only by the single cancel-marker edit in **Controls**. Record any skipped step
-  and what it lost.
+  `Cancelled` is set only by the single cancel-marker edit (first line plus the Status field) in
+  **Controls**. Record any skipped step and what it lost.
 - If the user skips this step, write the stub doc described in **Controls** instead.
 - Every AC gets a stable number (`AC-1`, `AC-2`, …) — downstream plans and PRs cite them.
 - Record source links and the fetched date: the doc is a snapshot, and the ticket will drift.
@@ -226,15 +240,19 @@ step by hand to the same standard. After cancel, no chained skill is invoked.
    - **Architectural** → it writes a design doc (default
      `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`; ask it to link the requirements doc),
      runs its own spec-review gate, then invokes writing-plans itself. That is allowed: **its
-     spec-review gate is this stage's checkpoint**, and the stage-2 instructions must reach
-     writing-plans through it.
+     spec-review gate is this stage's checkpoint**, and the stage-2 instructions **and intake's
+     skip/cancel controls** must reach writing-plans through it. At that gate, "skip" means the
+     design is accepted unreviewed: record it ("Intake: design review skipped") and continue to
+     stage 2. "cancel" follows **Controls**.
    - **Bounded** → it presents an in-chat design, and after approval its default is to implement
      directly. Instruct it instead: **after design approval, STOP and return to intake** — do not
      implement. Intake then runs stage 2b.
    - **Spike** → the output is a recommendation; come back to step 3 if it changes requirements.
    - If design surfaces a genuine requirements gap, stop, return to step 3 for that row, and update
      the requirements doc and its decision log. Don't patch requirements inside the design.
-2. **Plan.**
+2. **Plan.** Tasks cite `AC-n` from the requirements doc. With a stub or no doc, they cite the
+   ticket's own AC, numbered in the order the ticket lists them; if the ticket has none, they cite
+   "no AC — unverified".
    - **(a) Architectural — `superpowers:writing-plans`.** Every task cites the AC numbers it
      satisfies, and every AC is covered by at least one task; the plan's **Spec** line lists both
      the design doc and the requirements doc, plus every skipped intake step (e.g. "Intake: gap
@@ -246,12 +264,17 @@ step by hand to the same standard. After cancel, no chained skill is invoked.
      `grep -nE 'subagent-driven-development|executing-plans' <plan-file>` must print nothing.
    - **(b) Bounded — intake writes a short task list.** Each task maps to the AC numbers it
      satisfies, every AC is covered, any skipped intake step is stated at the top, and the list
-     goes to the user for approval. That approved
-     list is the plan stage 3 executes. Don't skip it even for small changes: it is what makes the
-     AC traceable into the PR.
-3. **Implement — `[[plan-implementation]]`**, only after the user approves the plan from stage 2.
-   A single small edit doesn't need the orchestrator — do it directly to the same standard (tests,
-   verification evidence per AC).
+     goes to the user for approval. That approved list is the plan stage 3 executes. Don't skip it
+     even for small changes — it is what makes the AC traceable into the PR — unless the user
+     explicitly skips the plan (see below).
+   - **Plan skipped by the user** (either path): follow the plan-skip rule in **Controls** — warn
+     once, record it, get an explicit go-ahead, and go to stage 3 without a plan.
+3. **Implement — `[[plan-implementation]]`**, only after the user approves the plan from stage 2 —
+   **except when the user skipped the plan**: then, after the explicit go-ahead, implement directly
+   against the AC list (or the ticket's AC) without plan-implementation's approved-plan
+   prerequisite, and the PR body states "Intake: plan skipped". A single small edit doesn't need
+   the orchestrator either. Either way, work to the same standard (tests, verification evidence per
+   AC).
 4. **Ship — `[[opening-pull-requests]]`.** The ticket question for its gate 7 is already answered
    here. The PR body's first line is the ticket link: Jira → `**Ticket:** [PROJ-571](<jira-url>)`;
    GitHub → `**Ticket:** [owner/repo#12](<issue-url>)`, followed by `Refs owner/repo#12` (use a

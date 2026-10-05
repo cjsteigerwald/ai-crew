@@ -297,6 +297,11 @@ if [ -f "$INTAKE_SKILL" ]; then
   grep -qF 'Intake: gap analysis skipped — requirements not gap-checked' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the 'requirements not gap-checked' plan/PR line"
   grep -qF 'still write a stub doc' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the stub-doc rule"
   grep -qF 'unless the user skipped the whole step' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: gate text missing the whole-step-skip exception"
+  grep -qF 'Intake: plan skipped' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the 'Intake: plan skipped' PR line"
+  grep -qF 'except when the user skipped the plan' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: stage-3 prerequisite missing the plan-skip exception"
+  grep -qF 'A row 7/12 blocker that is a repo gate' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the row-7/12 repo-gate second-confirmation rule"
+  grep -qF 'Gap table at skip' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the 'Gap table at skip' rule"
+  grep -qF '## Gap table at skip' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: missing the 'Gap table at skip' section"
 
   # Public-repo hygiene: no organisation-specific ticket project or skill
   # names in this skill (they don't resolve from a public checkout).
