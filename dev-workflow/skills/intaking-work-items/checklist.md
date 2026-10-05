@@ -25,6 +25,7 @@ this shape:
 | 10 | **Risks** | Known failure modes, blast radius, rollback path for anything that touches running systems | Production-touching change with no rollback or risk line |
 | 11 | **Open questions in comments** | Every question raised in the comment thread has an answer | A comment question with no reply, or a reply that changed scope without updating the description |
 | 12 | **Sizing and sprint status** | Estimate set per the team's convention; sprint/milestone matches the intent to start now | Unestimated; not in a sprint while the repo requires one before work starts |
+| 13 | **Contradictions** | No conflict between any two sources: Jira vs GitHub equivalent, description vs comments, a field vs the body | Description says "retain 30 days", a later comment says "90 days"; AC field and description list different AC |
 
 ## Rating rules
 
@@ -33,5 +34,10 @@ this shape:
 - **Vague** — the area is addressed but cannot be checked or acted on as written.
 - **Missing** — not addressed in any fetched source (description, fields, comments, links).
 - A row the user rules out of scope or defers stays in the table with that status and the user's words.
+- **Contradictions block the gate.** Row 13 lists each conflict with both statements and where
+  each lives. Every area a conflict touches is at best **Vague** — never Present — until the user
+  resolves or defers it; the decision log records both statements and the resolution.
+- Only the primary item and confirmed **equivalent** linked items supply requirements and AC. A
+  parent, dependency, or related item informs rows 1, 2 and 7 but never row 6.
 - Rows 7 and 12 can be **blockers** rather than gaps: an unmet gate is reported and stops the work;
   it is not something a clarifying answer can close.

@@ -7,9 +7,11 @@ never leave `TBD`. No secrets, tokens, or credential values anywhere in the doc.
 ```markdown
 # <KEY>: <ticket summary>
 
-**Source:** [<KEY>](<ticket URL>)<, [owner/repo#N](<issue URL>) if both exist>
+**Source:** [<KEY>](<ticket URL>)<, [owner/repo#N](<issue URL>) if a confirmed equivalent exists>
+**Linked items:** <key or owner/repo#N — equivalent / parent / dependency / related — evidence for the class>
 **Fetched:** <YYYY-MM-DD> — ticket status `<status>`, sprint `<sprint or none>`, estimate `<value or none>`
 **Intake by:** <name> with the `dev-workflow:intaking-work-items` skill
+**Status:** <Draft | Ready | Cancelled> — <last completed step; skipped steps and what each lost, e.g. "gap analysis skipped — requirements not gap-checked">
 
 > Snapshot of the ticket on the fetched date plus the decisions below. If the ticket changes,
 > re-run intake for the changed rows rather than editing this doc by memory.
@@ -67,10 +69,16 @@ Each AC is testable as written and names how it is verified. Plans and PRs cite 
 | # | Question | Answer | Who / date |
 |---|---|---|---|
 | 1 | <question asked during intake> | <answer as given> | <name, YYYY-MM-DD> |
+| 2 | Contradiction: "<statement A>" (<source A>) vs "<statement B>" (<source B>) | <resolution, or deferred> | <name, YYYY-MM-DD> |
 
 ## Deferred and out-of-scope items
 
-| Item | Status | User's words | Follow-up |
-|---|---|---|---|
-| <gap or AC> | deferred / out of scope | "<quote>" | <ticket key, or none> |
+| Item | Status | Source | User's words | Gap left open | Follow-up |
+|---|---|---|---|---|---|
+| <gap or AC> | deferred / out of scope | user-deferred | "<quote>" | <what stays unknown> | <ticket key, or none> |
+| <gap or AC> | Skipped by user — <YYYY-MM-DD> | skipped | "<quote>" | <what stays unknown> | <ticket key, or none> |
 ```
+
+On cancel, the doc's first line becomes
+`> Status: CANCELLED at step <n> on <YYYY-MM-DD> — incomplete` and the **Status** field reads
+`Cancelled`.

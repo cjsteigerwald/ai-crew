@@ -239,12 +239,18 @@ echo "== intaking-work-items skill =="
 
 INTAKE_DIR="$ROOT/skills/intaking-work-items"
 INTAKE_SKILL="$INTAKE_DIR/SKILL.md"
-INTAKE_FAIL_BEFORE="$FAIL"
+# Local counter: fail() only ever sets FAIL=1, so comparing FAIL before and
+# after this block cannot see an intake failure that follows an earlier one.
+INTAKE_FAILS=0
+ifail() {
+  INTAKE_FAILS=$((INTAKE_FAILS + 1))
+  fail "$1"
+}
 desc_len=0
 lines=0
 if [ -f "$INTAKE_SKILL" ]; then
   fm="$(extract_frontmatter "$INTAKE_SKILL")"
-  echo "$fm" | grep -qE '^name:[[:space:]]*intaking-work-items[[:space:]]*$' || fail "intaking-work-items/SKILL.md: frontmatter name is not 'intaking-work-items'"
+  echo "$fm" | grep -qE '^name:[[:space:]]*intaking-work-items[[:space:]]*$' || ifail "intaking-work-items/SKILL.md: frontmatter name is not 'intaking-work-items'"
 
   # Description length: the folded '>' block after 'description:', joined
   # with single spaces the way YAML folds it. Skill descriptions cap at 1024.
@@ -254,31 +260,46 @@ if [ -f "$INTAKE_SKILL" ]; then
     indesc { sub(/^[[:space:]]+/, ""); printf "%s%s", sep, $0; sep=" " }
   ')"
   desc_len="$(printf '%s' "$desc" | wc -c | tr -d ' ')"
-  [ "$desc_len" -gt 0 ] || fail "intaking-work-items/SKILL.md: could not read the description"
-  [ "$desc_len" -le 1024 ] || fail "intaking-work-items/SKILL.md: description is $desc_len chars (max 1024)"
+  [ "$desc_len" -gt 0 ] || ifail "intaking-work-items/SKILL.md: could not read the description"
+  [ "$desc_len" -le 1024 ] || ifail "intaking-work-items/SKILL.md: description is $desc_len chars (max 1024)"
 
   lines="$(wc -l < "$INTAKE_SKILL" | tr -d ' ')"
-  [ "$lines" -lt 500 ] || fail "intaking-work-items/SKILL.md: $lines lines (keep under 500; push detail into supporting files)"
+  [ "$lines" -lt 500 ] || ifail "intaking-work-items/SKILL.md: $lines lines (keep under 500; push detail into supporting files)"
 
   # Supporting files exist and are linked one level deep from SKILL.md.
   for support in checklist.md template.md; do
-    [ -f "$INTAKE_DIR/$support" ] || fail "intaking-work-items/$support not found"
-    grep -qF "]($support)" "$INTAKE_SKILL" || fail "intaking-work-items/SKILL.md: does not link $support"
+    [ -f "$INTAKE_DIR/$support" ] || ifail "intaking-work-items/$support not found"
+    grep -qF "]($support)" "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: does not link $support"
   done
 
   # The AC gate and the per-action writeback confirmation are the skill's
   # load-bearing rules — pin their presence.
-  grep -qF 'HARD GATE' "$INTAKE_SKILL" || fail "intaking-work-items/SKILL.md: missing the HARD GATE on gap closure"
-  grep -qF 'Never silently invent AC' "$INTAKE_SKILL" || fail "intaking-work-items/SKILL.md: missing the no-invented-AC rule"
-  grep -qF 'docs/specs/<KEY>-requirements.md' "$INTAKE_SKILL" || fail "intaking-work-items/SKILL.md: missing the requirements doc path"
-  grep -qF 'confirm each action' "$INTAKE_SKILL" || fail "intaking-work-items/SKILL.md: missing per-action writeback confirmation"
+  grep -qF 'HARD GATE' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the HARD GATE on gap closure"
+  grep -qF 'Never silently invent AC' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the no-invented-AC rule"
+  grep -qF 'docs/specs/<KEY>-requirements.md' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the requirements doc path"
+  grep -qF 'confirm each action' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing per-action writeback confirmation"
+  grep -qF 'Contradictions block the gate' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the contradiction-blocks-the-gate rule"
+  grep -qF 'Contradictions block the gate' "$INTAKE_DIR/checklist.md" || ifail "intaking-work-items/checklist.md: missing the contradiction rating rule"
+  grep -qF 'classify before you merge' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the linked-item classification rule"
+  grep -qF 'Equivalent needs evidence' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the evidence rule for equivalent items"
+  grep -qF '## Controls: skip and cancel' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the 'Controls: skip and cancel' section"
+  grep -qF 'Skipped by user' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the 'Skipped by user' deferral record"
+  grep -qF 'Status: CANCELLED' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the 'Status: CANCELLED' doc marker"
+  grep -qF 'post to Jira or GitHub on cancel' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the no-post-on-cancel rule"
+  grep -qF 'Status: CANCELLED' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: missing the 'Status: CANCELLED' marker"
+  grep -qF 'user-deferred' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: deferred table missing the user-deferred / skipped source column"
+
+  # Public-repo hygiene: no organisation-specific ticket project or skill
+  # names in this skill (they don't resolve from a public checkout).
+  ces_hits="$(grep -rniwE 'ces' "$INTAKE_DIR" 2>/dev/null || true)"
+  [ -z "$ces_hits" ] || ifail "intaking-work-items/: organisation-specific term 'ces' found: $ces_hits"
 else
-  fail "skills/intaking-work-items/SKILL.md not found"
+  ifail "skills/intaking-work-items/SKILL.md not found"
 fi
 
-grep -qF '| `intaking-work-items` |' "$ROOT/README.md" || fail "README.md: Skills table missing a row starting with '| \`intaking-work-items\`'"
+grep -qF '| `intaking-work-items` |' "$ROOT/README.md" || ifail "README.md: Skills table missing a row starting with '| \`intaking-work-items\`'"
 
-if [ "$FAIL" -eq "$INTAKE_FAIL_BEFORE" ]; then
+if [ "$INTAKE_FAILS" -eq 0 ]; then
   echo "ok: intaking-work-items skill present (description $desc_len chars, SKILL.md $lines lines), supporting files linked, gate rules pinned"
 fi
 

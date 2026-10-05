@@ -9,8 +9,8 @@ description: >
   and PR with a user checkpoint between each. Use when starting work on an
   existing ticket — "start work on PROJ-571", "pick up issue #12", "bring in
   this ticket", "work on owner/repo#N", a pasted Jira or GitHub issue URL, or
-  "is this ticket ready". Skip when creating a new ticket (use a
-  ticket-creation skill such as creating-ces-tickets), root-causing an incident
+  "is this ticket ready". Skip when creating a new ticket (use your
+  workspace's ticket-creation skill or process), root-causing an incident
   (investigating-incidents), executing an already-approved plan
   (plan-implementation), or just shipping finished work (opening-pull-requests).
 ---
@@ -29,10 +29,36 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
 
 ## When *Not* to Use This Skill
 
-- Filing a new ticket → a ticket-creation skill (e.g. `creating-ces-tickets`)
+- Filing a new ticket → your workspace's ticket-creation skill or process
 - Root-causing a failure or alert → `[[investigating-incidents]]`
 - A plan already exists and the user approved it → `[[plan-implementation]]`
 - The work is done and only needs to ship → `[[opening-pull-requests]]`
+
+## Controls: skip and cancel
+
+- **Announce once**, at the start: the user can say "skip <step or question>" or "cancel" at any
+  point. Every `AskUserQuestion` in step 3 and every checkpoint in step 6 includes a **Skip**
+  option; "Other" lets them type cancel.
+- **Skip a gap question or checklist row:** an explicit user deferral, so it satisfies the HARD
+  GATE for that row. Log it in the decision log and the deferred table as
+  `Skipped by user — <date>`, with the gap it leaves open. Skipping never turns a row into Present.
+  A skipped AC stays visible: the doc lists it under Deferred, and the PR body names it as not
+  delivered / unverified.
+- **Skip a whole step** (fetch extras, gap analysis, requirements doc, writeback, brainstorming,
+  writing-plans, plan-implementation, PR): allowed. Record it in the doc if one exists, say in one
+  line what the skip loses, then move to the next step. Skipping gap analysis means no gate ran:
+  the doc must say "requirements not gap-checked".
+- **Step 0 is the exception.** This skill can't waive the repo's own start procedure or gates. State
+  the repo rule and that skipping it means acting outside the repo's process; proceed only on an
+  explicit second confirmation, and record it in the doc.
+- **Cancel:** stop immediately. Make no further tool call that writes or posts anything — never
+  post to Jira or GitHub on cancel, and invoke no chained skill. If a requirements doc already
+  exists, leave it with a first line `> Status: CANCELLED at step <n> on <date> — incomplete`, or
+  delete it if the user asks. Report in a few lines what was done, what was written locally, and
+  that nothing is pending.
+- **Resume:** if `docs/specs/<KEY>-requirements.md` already exists when intake starts, read it,
+  show its status and gap/decision state, and offer to resume from the first incomplete step
+  instead of starting over.
 
 ## 0. Repo procedure first
 
@@ -43,6 +69,7 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
 - Respect repo rules about **when a GitHub issue may exist** — some repos forbid creating it until the
   Jira ticket enters a sprint. Intake never creates an issue or ticket on its own; at most it notes
   that one is missing and points at the repo's rule.
+- "Skip" here needs the second confirmation in **Controls** — the only step that does.
 
 ## 1. Resolve and fetch
 
@@ -52,25 +79,40 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
 |---|---|---|
 | `PROJ-571`, or a Jira `/browse/PROJ-571` URL | Jira | `PROJ-571` |
 | `https://github.com/owner/repo/issues/12`, `owner/repo#12` | GitHub | `repo-12` |
-| `#12` | GitHub, repo from `git remote -v` (confirm `gh repo set-default` first) | `repo-12` |
+| `#12` | GitHub, current repo — read it with `gh repo set-default --view` or `gh repo view --json nameWithOwner` and confirm it against `git remote -v` | `repo-12` |
 
 Write every GitHub reference fully qualified (`owner/repo#12`) from here on — a bare `#12` changes
 meaning the moment it leaves this repo.
 
+If `docs/specs/<KEY>-requirements.md` already exists, offer to resume (see **Controls**) before fetching.
+
 **Jira** — Atlassian MCP `getJiraIssue`. Collect: summary, description, any acceptance-criteria
 field, comments, status, sprint, story points, parent/epic, issue links, remote links.
-- If a Jira conventions skill is installed (e.g. `jira-conventions`), load it first: it carries the
-  site's cloud ID, the story-points and sprint custom-field IDs, where AC actually live, and the MCP's
-  projection quirks. Don't guess custom-field IDs — they are instance-specific.
+- Load a Jira conventions skill, if installed, first: it carries the site's cloud ID, the
+  story-points and sprint custom-field IDs, where AC actually live, and the MCP's projection quirks.
+  Don't guess custom-field IDs — they are instance-specific.
 
 **GitHub** — `gh issue view <N> --comments --repo owner/repo`, plus linked PRs: `gh api
 repos/owner/repo/issues/<N>/timeline` and keep the `cross-referenced` events whose source is a PR.
 
-**Cross-link** — look for a Jira key in the GitHub title/body and GitHub URLs in the Jira remote
-links. When both exist, fetch both: they are one work item with two views, and they disagree often.
+**Linked items — classify before you merge.** A reference to another ticket does not make it the
+same work item. Fetch each linked or cross-referenced item (Jira key in the GitHub title/body, GitHub
+URLs in the Jira remote links, issue links, parent) and classify it as exactly one of:
 
-**Optional context** — if an Atlassian/notes bridge skill is installed (e.g.
-`atlassian-obsidian-bridge`), use it for linked Confluence pages and prior notes. Cite what you used.
+| Class | Means | Its requirements and AC |
+|---|---|---|
+| **Equivalent** | The same work tracked in the other tracker | Merge into this doc |
+| **Parent / epic** | The larger goal this item serves | Context for story and scope only |
+| **Dependency / blocker** | Work that must land first, or that this blocks | A Dependencies row — never this item's AC |
+| **Related context** | Mentioned, similar, or historical | Cite if useful; nothing merges |
+
+- **Equivalent needs evidence**: an explicit mirror/remote link between the two, or the same title
+  and the same scope. If it is unclear, ask the user — don't merge on a hunch.
+- A dependency's AC never becomes this item's AC.
+- Writeback targets (step 5) are limited to the primary item and confirmed equivalents.
+
+**Optional context** — use a Confluence/notes bridge skill, if installed, for linked pages and
+prior notes. Cite what you used.
 
 ## 2. Gap analysis
 
@@ -83,26 +125,35 @@ Present the result as one table, then the questions you will ask, in order.
 - An AC is **Present** only if it is testable as written — Given/When/Then, or a command plus its
   expected output. "Works correctly", "is fast", "handles errors" are **Vague**.
 - Questions already asked in the ticket's comments and never answered are their own gaps.
+- **Contradictions block the gate.** Any conflict between sources — Jira vs GitHub, description vs
+  comments, a field vs the body (e.g. "retain 30 days" vs "retain 90 days") — is listed in the
+  table's Contradictions row with both statements and where each lives. The affected area cannot be
+  rated Present until the user resolves or defers the conflict.
 - Don't rate from memory of similar tickets; rate what this ticket says.
 
 ## 3. Close the gaps — HARD GATE
 
 - Ask **one question per message**. Prefer `AskUserQuestion` with 2–4 concrete options, your
-  recommendation first and labelled as such. Open-ended only when options would be invented.
+  recommendation first and labelled as such, plus a **Skip** option (see **Controls**). Open-ended
+  only when options would be invented.
 - You **may propose draft AC**, phrased testably, as an option. The user must accept, edit, or reject
   each one. **Never silently invent AC** and never upgrade your own draft to Present without a yes.
-- Log every exchange as `Q → A (date)` — it becomes the decision log in step 4.
+- Log every exchange as `Q → A (date)` — it becomes the decision log in step 4. For a
+  contradiction, log both source statements (with where each lives) and the resolution.
 - Re-rate the table after each answer.
-- **Gate:** no design, plan, or code until **zero rows are Vague or Missing**, except rows the user
-  explicitly marks *out of scope* or *deferred* — record which, and the user's words.
-- **Fast path:** if every row is already Present, say so with the evidence column and go to step 4.
-  The gate still ran; it just had nothing to block.
+- **Gate:** no design, plan, or code until **zero rows are Vague or Missing and zero contradictions
+  are unresolved**, except items the user explicitly marks *out of scope*, *deferred*, or skips —
+  record which, and the user's words (skips as `Skipped by user — <date>`).
+- **Fast path:** if every row is already Present and there are no contradictions, say so with the
+  evidence column and go to step 4. The gate still ran; it just had nothing to block.
 
 If the user asked only "is this ticket ready?", stop here with the table and the open questions.
 
 ## 4. Write the requirements doc
 
 - Write `docs/specs/<KEY>-requirements.md` in the **target** repo from [template.md](template.md).
+- Set the doc's **Status** line: `Draft` while gaps are open, `Ready` once the step-3 gate passes,
+  `Cancelled` on cancel. Record any skipped step and what it lost.
 - Every AC gets a stable number (`AC-1`, `AC-2`, …) — downstream plans and PRs cite them.
 - Record source links and the fetched date: the doc is a snapshot, and the ticket will drift.
 - No secrets, tokens, or credential values — names, IDs, and status codes only.
@@ -116,39 +167,61 @@ The ticket is outward-facing; every write is the user's call, every time.
 - Offer, don't apply. For each proposed write, show the **exact** payload: the comment body or the
   field and its new value, and the target (`PROJ-571` or `owner/repo#12`).
 - Apply only on an explicit yes **for that action**. A yes to one write is not a yes to the next.
+- Targets are limited to the primary item and confirmed equivalents (step 1) — never a parent,
+  dependency, or related item.
 - Jira: MCP `addCommentToJiraIssue` / `editJiraIssue` (follow the conventions skill for field
   formats). GitHub: `gh issue comment <N> --repo owner/repo --body-file -` / `gh issue edit`.
 - Typical offers: a comment linking the requirements doc and the decision log; agreed AC written to
-  the ticket's AC field; a Jira↔GitHub cross-link that is missing. Declining all of them is fine.
+  the ticket's AC field; a Jira↔GitHub cross-link that is missing. Declining or skipping all of
+  them is fine. On cancel, nothing is posted — not even an already-drafted payload.
 - After an applied write, re-read the ticket and confirm it landed — a success response alone proves
   little on some fields.
 
 ## 6. Chain — a user checkpoint between each skill
 
-Stop after each stage and get an explicit go before invoking the next. If a chained skill is not
-installed, say so and do that step by hand to the same standard.
+Stop after each stage and get an explicit go before invoking the next; each checkpoint offers
+go / **Skip** / cancel (see **Controls**). If a chained skill is not installed, say so and do that
+step by hand to the same standard. After cancel, no chained skill is invoked.
 
 1. **Design — `superpowers:brainstorming`.** Hand it the requirements doc path and say plainly:
    *requirements and AC are settled; brainstorm the design and approach only — do not re-open
    scope or AC.* Its "write back your understanding" step should be a short summary of the doc for
-   the user to confirm, not a second interview.
-   - Brainstorming picks a path itself. **Architectural** → it writes a design doc (default
-     `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`) and hands off to writing-plans; ask it to
-     link the requirements doc from the design doc. **Bounded** → it presents an in-chat design and
-     writes no spec or plan; that approved design plus the AC list is the plan, so skip stage 2.
-     **Spike** → the output is a recommendation; come back to step 3 if it changes requirements.
+   the user to confirm, not a second interview. Brainstorming picks a path itself, and on two of
+   them it chains onward on its own — so give it these instructions up front, with the plan
+   instructions from stage 2:
+   - **Architectural** → it writes a design doc (default
+     `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`; ask it to link the requirements doc),
+     runs its own spec-review gate, then invokes writing-plans itself. That is allowed: **its
+     spec-review gate is this stage's checkpoint**, and the stage-2 instructions must reach
+     writing-plans through it.
+   - **Bounded** → it presents an in-chat design, and after approval its default is to implement
+     directly. Instruct it instead: **after design approval, STOP and return to intake** — do not
+     implement. Intake then runs stage 2b.
+   - **Spike** → the output is a recommendation; come back to step 3 if it changes requirements.
    - If design surfaces a genuine requirements gap, stop, return to step 3 for that row, and update
      the requirements doc and its decision log. Don't patch requirements inside the design.
-2. **Plan — `superpowers:writing-plans`** (architectural path). Ask that every task cite the AC
-   numbers it satisfies and that every AC is covered by at least one task; list both doc paths in the
-   plan's **Spec** line. Tell it up front that execution will be `dev-workflow:plan-implementation`,
-   so its handoff asks only for plan review — not to choose an executor.
-3. **Implement — `[[plan-implementation]]`**, only after the user approves the plan (or, on the
-   bounded path, the in-chat design). A single small edit doesn't need the orchestrator — just do it.
+2. **Plan.**
+   - **(a) Architectural — `superpowers:writing-plans`.** Every task cites the AC numbers it
+     satisfies, and every AC is covered by at least one task; the plan's **Spec** line lists both
+     the design doc and the requirements doc. Tell it up front that execution will be
+     `dev-workflow:plan-implementation`, so its handoff asks only for plan review. Its plan header
+     hardcodes a *REQUIRED SUB-SKILL* line naming other executors: have that line in the saved plan
+     replaced with `dev-workflow:plan-implementation`, then verify the saved file carries no
+     contradictory executor directive —
+     `grep -nE 'subagent-driven-development|executing-plans' <plan-file>` must print nothing.
+   - **(b) Bounded — intake writes a short task list.** Each task maps to the AC numbers it
+     satisfies, every AC is covered, and the list goes to the user for approval. That approved
+     list is the plan stage 3 executes. Don't skip it even for small changes: it is what makes the
+     AC traceable into the PR.
+3. **Implement — `[[plan-implementation]]`**, only after the user approves the plan from stage 2.
+   A single small edit doesn't need the orchestrator — do it directly to the same standard (tests,
+   verification evidence per AC).
 4. **Ship — `[[opening-pull-requests]]`.** The ticket question for its gate 7 is already answered
-   here: Jira → `**Ticket:** [PROJ-571](<jira-url>)` first line; GitHub →
-   `Refs owner/repo#12` (use the closing keyword only if the repo allows a merge to close the issue).
-   The PR body says which AC numbers it delivers and which are deferred.
+   here. The PR body's first line is the ticket link: Jira → `**Ticket:** [PROJ-571](<jira-url>)`;
+   GitHub → `**Ticket:** [owner/repo#12](<issue-url>)`, followed by `Refs owner/repo#12` (use a
+   closing keyword only if the repo allows a merge to close the issue).
+   The PR body says which AC numbers it delivers and which are deferred or skipped (not delivered /
+   unverified).
 
 ## Gotchas
 
