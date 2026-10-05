@@ -1,7 +1,7 @@
 # dev-workflow
 
-Engineering workflow skills — PR gates, orchestrated plan implementation,
-incident investigation and write-ups, skill retrospectives, and Copilot
+Engineering workflow skills — ticket intake, PR gates, orchestrated plan
+implementation, incident investigation and write-ups, skill retrospectives, and Copilot
 readiness — plus the review agents those skills dispatch: a cold-context
 verifier, an adversarial cross-model reviewer, a general-purpose worker, and
 two domain specialists.
@@ -10,6 +10,7 @@ two domain specialists.
 
 | Skill | Purpose |
 |---|---|
+| `intaking-work-items` | Takes a Jira ticket or GitHub issue to ready-to-build: fetch context, gap-analyze story/scope/requirements/AC, block on clarifying questions, write `docs/specs/<KEY>-requirements.md`, offer confirmed writebacks, then chain design → plan → implement → PR. |
 | `opening-pull-requests` | The ordered gate sequence before and during PR creation: branch hygiene, sync, lint/test, CI mirror, review-tier decision, review chain, ticket references, confirm, create, verify. |
 | `plan-implementation` | Orchestrated implementation of an approved plan through tiered worker lanes — decompose, route, spec, verify, close. |
 | `authoring-incident-docs` | Produces RCA, findings, and runbook artifacts with correct placement, metadata, and section structure. |

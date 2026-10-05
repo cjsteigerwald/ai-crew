@@ -235,6 +235,53 @@ if [ "$FAIL" -eq 0 ]; then
   echo "ok: review-policy skill present with the moved tier table, evidence rule, and content pin; no lingering README citations"
 fi
 
+echo "== intaking-work-items skill =="
+
+INTAKE_DIR="$ROOT/skills/intaking-work-items"
+INTAKE_SKILL="$INTAKE_DIR/SKILL.md"
+INTAKE_FAIL_BEFORE="$FAIL"
+desc_len=0
+lines=0
+if [ -f "$INTAKE_SKILL" ]; then
+  fm="$(extract_frontmatter "$INTAKE_SKILL")"
+  echo "$fm" | grep -qE '^name:[[:space:]]*intaking-work-items[[:space:]]*$' || fail "intaking-work-items/SKILL.md: frontmatter name is not 'intaking-work-items'"
+
+  # Description length: the folded '>' block after 'description:', joined
+  # with single spaces the way YAML folds it. Skill descriptions cap at 1024.
+  desc="$(echo "$fm" | awk '
+    /^description:/ { indesc=1; next }
+    indesc && /^[^[:space:]]/ { exit }
+    indesc { sub(/^[[:space:]]+/, ""); printf "%s%s", sep, $0; sep=" " }
+  ')"
+  desc_len="$(printf '%s' "$desc" | wc -c | tr -d ' ')"
+  [ "$desc_len" -gt 0 ] || fail "intaking-work-items/SKILL.md: could not read the description"
+  [ "$desc_len" -le 1024 ] || fail "intaking-work-items/SKILL.md: description is $desc_len chars (max 1024)"
+
+  lines="$(wc -l < "$INTAKE_SKILL" | tr -d ' ')"
+  [ "$lines" -lt 500 ] || fail "intaking-work-items/SKILL.md: $lines lines (keep under 500; push detail into supporting files)"
+
+  # Supporting files exist and are linked one level deep from SKILL.md.
+  for support in checklist.md template.md; do
+    [ -f "$INTAKE_DIR/$support" ] || fail "intaking-work-items/$support not found"
+    grep -qF "]($support)" "$INTAKE_SKILL" || fail "intaking-work-items/SKILL.md: does not link $support"
+  done
+
+  # The AC gate and the per-action writeback confirmation are the skill's
+  # load-bearing rules — pin their presence.
+  grep -qF 'HARD GATE' "$INTAKE_SKILL" || fail "intaking-work-items/SKILL.md: missing the HARD GATE on gap closure"
+  grep -qF 'Never silently invent AC' "$INTAKE_SKILL" || fail "intaking-work-items/SKILL.md: missing the no-invented-AC rule"
+  grep -qF 'docs/specs/<KEY>-requirements.md' "$INTAKE_SKILL" || fail "intaking-work-items/SKILL.md: missing the requirements doc path"
+  grep -qF 'confirm each action' "$INTAKE_SKILL" || fail "intaking-work-items/SKILL.md: missing per-action writeback confirmation"
+else
+  fail "skills/intaking-work-items/SKILL.md not found"
+fi
+
+grep -qF '| `intaking-work-items` |' "$ROOT/README.md" || fail "README.md: Skills table missing a row starting with '| \`intaking-work-items\`'"
+
+if [ "$FAIL" -eq "$INTAKE_FAIL_BEFORE" ]; then
+  echo "ok: intaking-work-items skill present (description $desc_len chars, SKILL.md $lines lines), supporting files linked, gate rules pinned"
+fi
+
 echo "== Result =="
 if [ "$FAIL" -ne 0 ]; then
   echo "FAILED"
