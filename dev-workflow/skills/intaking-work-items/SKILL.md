@@ -62,8 +62,9 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
     AC with a stub or no doc — see step 6) to the same verification standard, without
     plan-implementation's approved-plan prerequisite. The PR body states "Intake: plan skipped".
   - **Skipped requirements doc → still write a stub doc** at `docs/specs/<KEY>-requirements.md`:
-    Status, source link, "requirements not gap-checked" (if so), the skipped steps, and every
-    deferred or skipped AC — so no deferral is ever lost. Only if the user explicitly says "no doc
+    Status, source link, "requirements not gap-checked" (if so), the skipped steps, the
+    **Gap table at skip** (if step 2 ran), and every deferred or skipped AC — so no deferral is
+    ever lost. Only if the user explicitly says "no doc
     at all" does that same information go into the PR body instead.
   - **Every skipped step is stated downstream:** in the plan's **Spec** line and in the PR body,
     e.g. "Intake: gap analysis skipped — requirements not gap-checked".
@@ -235,8 +236,10 @@ step by hand to the same standard. After cancel, no chained skill is invoked.
    Its "write back your understanding" step should be a short summary of the doc for the user to
    confirm, not a second interview. Brainstorming picks a path itself, and on two of them it chains
    onward on its own — so give it these instructions up front, with the plan instructions from
-   stage 2, plus intake's controls: *if the user types skip or cancel at any of your gates, stop
-   and return to intake — on cancel, write and post nothing further.*
+   stage 2, plus intake's controls: *on cancel, stop and return to intake and write or post nothing
+   further; on skip at your spec-review gate, record "Intake: design review skipped" and proceed
+   (to writing-plans on the architectural path); on skip at any other gate of yours, return to
+   intake.*
    - **Architectural** → it writes a design doc (default
      `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`; ask it to link the requirements doc),
      runs its own spec-review gate, then invokes writing-plans itself. That is allowed: **its

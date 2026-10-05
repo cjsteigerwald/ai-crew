@@ -82,12 +82,14 @@ Each AC is testable as written and names how it is verified. Plans and PRs cite 
 ## Gap table at skip
 
 <Only if step 3 was skipped after step 2 ran: the final gap table, row by row with its rating and
-reason, as it stood when the user skipped. Otherwise "None — step 3 completed".>
+reason, as it stood when the user skipped. Otherwise "None — step 3 completed, or gap analysis
+skipped".>
 ```
 
 **Stub doc** (the requirements-doc step was skipped): keep only the header lines — Source,
 Fetched, Status with "requirements not gap-checked" if gap analysis was skipped, and the skipped
-steps — plus the **Deferred and out-of-scope items** table with every deferred or skipped AC.
+steps — plus the **Deferred and out-of-scope items** table with every deferred or skipped AC, and
+the **Gap table at skip** section.
 
 On cancel, the single cancel-marker edit (first line plus the Status field) makes the doc's first
 line `> Status: CANCELLED at step <n> on <YYYY-MM-DD> — incomplete` and sets the **Status** field
