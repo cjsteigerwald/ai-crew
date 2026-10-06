@@ -302,6 +302,9 @@ if [ -f "$INTAKE_SKILL" ]; then
   grep -qF 'A row 7/12 blocker that is a repo gate' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the row-7/12 repo-gate second-confirmation rule"
   grep -qF 'Gap table at skip' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the 'Gap table at skip' rule"
   grep -qF '## Gap table at skip' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: missing the 'Gap table at skip' section"
+  grep -qF 'cover only active AC' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the 'cover only active AC' settled-AC rule"
+  grep -qF 'Acceptance criteria (settled)' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: stub doc missing the 'Acceptance criteria (settled)' section"
+  grep -qF '## Acceptance criteria (settled)' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: stub note missing the 'Acceptance criteria (settled)' section"
 
   # Public-repo hygiene: no organisation-specific ticket project or skill
   # names in this skill (they don't resolve from a public checkout).

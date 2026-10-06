@@ -88,8 +88,17 @@ skipped".>
 
 **Stub doc** (the requirements-doc step was skipped): keep only the header lines — Source,
 Fetched, Status with "requirements not gap-checked" if gap analysis was skipped, and the skipped
-steps — plus the **Deferred and out-of-scope items** table with every deferred or skipped AC, and
-the **Gap table at skip** section.
+steps — plus the **Deferred and out-of-scope items** table with every deferred or skipped AC, the
+**Gap table at skip** section, and, whenever step 3 ran, an **Acceptance criteria (settled)**
+section in this form:
+
+    ## Acceptance criteria (settled)
+
+    - **AC-1** — active — <final text as agreed in step 3>
+    - **AC-2** — deferred — <final text> — "<user's words>"
+    - **AC-3** — skipped — <final text, or original ticket text if never refined>
+
+Plans, plan-skip implementation, and the PR body use this list and cover only active AC.
 
 On cancel, the single cancel-marker edit (first line plus the Status field) makes the doc's first
 line `> Status: CANCELLED at step <n> on <YYYY-MM-DD> — incomplete` and sets the **Status** field

@@ -58,14 +58,16 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
     `Skipped by user — step 3 skipped`, so the specific open rows stay visible downstream and in
     the PR.
   - **Plan skipped** (writing-plans or the bounded task list): warn once and record it, then get an
-    explicit go-ahead for implementation. Implement directly against the AC list (the ticket's own
-    AC with a stub or no doc — see step 6) to the same verification standard, without
+    explicit go-ahead for implementation. Implement directly against the settled AC list and
+    cover only active AC (see step 6, stage 2) to the same verification standard, without
     plan-implementation's approved-plan prerequisite. The PR body states "Intake: plan skipped".
   - **Skipped requirements doc → still write a stub doc** at `docs/specs/<KEY>-requirements.md`:
     Status, source link, "requirements not gap-checked" (if so), the skipped steps, the
-    **Gap table at skip** (if step 2 ran), and every deferred or skipped AC — so no deferral is
-    ever lost. Only if the user explicitly says "no doc
-    at all" does that same information go into the PR body instead.
+    **Gap table at skip** (if step 2 ran), and — whenever step 3 ran — the
+    **Acceptance criteria (settled)** section: every numbered AC with its final text and its
+    disposition (active / deferred / skipped / out of scope). No refinement or deferral is ever
+    lost. Only if the user explicitly says "no doc at all" does that same information go into the
+    PR body (and any handoff) instead.
   - **Every skipped step is stated downstream:** in the plan's **Spec** line and in the PR body,
     e.g. "Intake: gap analysis skipped — requirements not gap-checked".
 - **Step 0 is the exception.** The skill itself never waives the repo's own start procedure or
@@ -253,9 +255,13 @@ step by hand to the same standard. After cancel, no chained skill is invoked.
    - **Spike** → the output is a recommendation; come back to step 3 if it changes requirements.
    - If design surfaces a genuine requirements gap, stop, return to step 3 for that row, and update
      the requirements doc and its decision log. Don't patch requirements inside the design.
-2. **Plan.** Tasks cite `AC-n` from the requirements doc. With a stub or no doc, they cite the
-   ticket's own AC, numbered in the order the ticket lists them; if the ticket has none, they cite
-   "no AC — unverified".
+2. **Plan.** Tasks cite `AC-n` from the **settled AC list**: the requirements doc, the stub's
+   **Acceptance criteria (settled)** section, or (with "no doc at all") the same list carried for the
+   PR body. Plans **cover only active AC**; deferred, skipped, and out-of-scope AC get no task and
+   are listed as not delivered. Fall back to the ticket's original AC — numbered in the order the
+   ticket lists them — only when intake made no revisions or deferrals (e.g. step 3 never ran), and
+   say so; if the ticket has none, tasks cite "no AC — unverified". Never plan from the original
+   ticket text after step 3 changed it: that silently restores refined or deferred AC.
    - **(a) Architectural — `superpowers:writing-plans`.** Every task cites the AC numbers it
      satisfies, and every AC is covered by at least one task; the plan's **Spec** line lists both
      the design doc and the requirements doc, plus every skipped intake step (e.g. "Intake: gap
@@ -274,16 +280,16 @@ step by hand to the same standard. After cancel, no chained skill is invoked.
      once, record it, get an explicit go-ahead, and go to stage 3 without a plan.
 3. **Implement — `[[plan-implementation]]`**, only after the user approves the plan from stage 2 —
    **except when the user skipped the plan**: then, after the explicit go-ahead, implement directly
-   against the AC list (or the ticket's AC) without plan-implementation's approved-plan
-   prerequisite, and the PR body states "Intake: plan skipped". A single small edit doesn't need
-   the orchestrator either. Either way, work to the same standard (tests, verification evidence per
-   AC).
+   against the settled AC list, covering only active AC (stage 2's rule), without
+   plan-implementation's approved-plan prerequisite, and the PR body states "Intake: plan skipped".
+   A single small edit doesn't need the orchestrator either. Either way, work to the same standard
+   (tests, verification evidence per AC).
 4. **Ship — `[[opening-pull-requests]]`.** The ticket question for its gate 7 is already answered
    here. The PR body's first line is the ticket link: Jira → `**Ticket:** [PROJ-571](<jira-url>)`;
    GitHub → `**Ticket:** [owner/repo#12](<issue-url>)`, followed by `Refs owner/repo#12` (use a
    closing keyword only if the repo allows a merge to close the issue).
-   The PR body says which AC numbers it delivers and which are deferred or skipped (not delivered /
-   unverified), and states every skipped intake step — e.g. "Intake: gap analysis skipped —
+   The PR body works from the same settled AC list: it says which active AC numbers it delivers and
+   lists the deferred, skipped, and out-of-scope ones as not delivered / unverified, and states every skipped intake step — e.g. "Intake: gap analysis skipped —
    requirements not gap-checked". If the user chose "no doc at all", the PR body also carries the
    stub doc's content.
 
