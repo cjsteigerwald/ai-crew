@@ -835,7 +835,7 @@ t "catv present, not installed: row reads NOT INSTALLED" 0 "^vendor $SP_KEY  ins
 # Outdated: the refreshed catalogue is ahead of the install.
 mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound; mksp 6.4.0
 t "catv outdated: status shows the newer available" 0 "^vendor $SP_KEY  installed=6.3.0  available=6.4.0" -- S status
-t "catv outdated: verify fails" 1 "$SP_KEY: FAIL — installed version '6.3.0' != manifest version '6.4.0'" -- S verify
+t "catv outdated: verify fails" 1 "$SP_KEY: FAIL — catalogue offers 6.4.0 but installed 6.3.0 — update did not land" -- S verify
 
 # After an update to the new version: the sha must have MOVED.
 mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound; mksp 6.4.0 6.4.0
@@ -852,6 +852,90 @@ t "catv same version, sha moved -> PASS with note" 0 "$SP_KEY: PASS 6.3.0 \(upst
 mkfix; S snapshot >/dev/null; bound
 jqi "$AI_CREW_INSTALLED" '.plugins["codex@openai-codex"][0].gitCommitSha = "deadbeef"'
 t "codex same version, sha moved -> still FAIL" 1 "codex@openai-codex: FAIL — sha changed without a version change" -- S verify
+
+# Stale catalogue label: the entry is an unpinned URL, so `claude plugin update`
+# installs upstream HEAD, whose OWN manifest may be ahead of the catalogue's
+# .version (live 2026-10-07: label 6.3.0, installed 6.4.2). The expected version
+# is then the installed one, pinned by installPath and the payload's manifest;
+# the label is only ORDERED against it.
+# spto <version> [sha]: re-point the installed superpowers entry at a fresh
+# payload of <version>, as an upstream update would.
+spto() {
+  mkcache "$F/cache/superpowers-marketplace/superpowers/$1" "$1"
+  jqi "$AI_CREW_INSTALLED" '.plugins[$k] = [{scope:"user", version:$v, installPath:$ip, gitCommitSha:$s}]' \
+    --arg k "$SP_KEY" --arg v "$1" --arg ip "$F/cache/superpowers-marketplace/superpowers/$1" --arg s "${2:-8ca22dba0000}"
+}
+mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound; spto 6.4.2
+t "catv label older than installed: verify PASS with stale note" 0 "$SP_KEY: PASS 6.3.0 -> 6.4.2 \(gitCommitSha 8ca22dba0000, .*\) \(catalogue label 6.3.0 stale; installed 6.4.2 from upstream 8ca22db; unpinned URL source\)" -- S verify
+t "catv label older than installed: verify PASS overall" 0 "verify: PASS \(4 entries\)" -- S verify
+t "catv label older than installed: status flags the label" 0 "^vendor $SP_KEY  installed=6.4.2  available=6.3.0  \(catalogue label stale\)" -- S status
+S snapshot >/dev/null; bound
+t "catv label older, no-op: PASS keeps the note" 0 "$SP_KEY: PASS 6.4.2 — no-op \(version unchanged\) \(catalogue label 6.3.0 stale; installed 6.4.2 from upstream 8ca22db; unpinned URL source\)" -- S verify
+spto 6.4.2 9f00ba11cafe
+t "catv label older, sha moved within: both notes" 0 "$SP_KEY: PASS 6.4.2 \(upstream moved within 6.4.2: 8ca22dba0000 -> 9f00ba11cafe; unpinned URL source\) \(catalogue label 6.3.0 stale; installed 6.4.2 from upstream 9f00ba1; unpinned URL source\)" -- S verify
+# Ordering is numeric per part, not lexical: 6.9.9 < 6.10.0.
+mkfix; mksp 6.9.9 6.9.9; S snapshot >/dev/null; bound; spto 6.10.0
+t "catv label 6.9.9 vs installed 6.10.0: numeric order, PASS stale" 0 "$SP_KEY: PASS 6.9.9 -> 6.10.0 .*catalogue label 6.9.9 stale" -- S verify
+mkfix; mksp 6.10.0 6.10.0; S snapshot >/dev/null; bound; mksp 6.10.1 >/dev/null; spto 6.9.9
+t "catv label 6.10.1 vs installed 6.9.9: numeric order, FAIL" 1 "$SP_KEY: FAIL — catalogue offers 6.10.1 but installed 6.9.9 — update did not land" -- S verify
+# Label NEWER than installed: the update did not land.
+mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound; mksp 6.5.0 >/dev/null; spto 6.4.2
+t "catv label newer than installed: verify FAIL" 1 "$SP_KEY: FAIL — catalogue offers 6.5.0 but installed 6.4.2 — update did not land" -- S verify
+t "catv label newer than installed: status has no stale flag" 0 "^vendor $SP_KEY  installed=6.4.2  available=6.5.0$" -- S status
+# The payload's own manifest must agree with installed_plugins.json.
+mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound; spto 6.4.2
+mkcache "$F/cache/superpowers-marketplace/superpowers/6.4.2" 6.4.1
+t "catv payload version != installed version: FAIL" 1 "$SP_KEY: FAIL — payload manifest version '6.4.1' != '6.4.2'" -- S verify
+# installPath is keyed on the INSTALLED version, not the label.
+mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound; spto 6.4.2
+jqi "$AI_CREW_INSTALLED" '.plugins[$k][0].installPath = $ip' --arg k "$SP_KEY" --arg ip "$F/cache/superpowers-marketplace/superpowers/6.3.0"
+t "catv installPath not keyed on installed version: FAIL" 1 "$SP_KEY: FAIL — installPath .*/superpowers/6.3.0' != '.*/superpowers/6.4.2'" -- S verify
+mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound; spto 6.4.2
+rm -rf "$F/cache/superpowers-marketplace/superpowers/6.4.2"
+t "catv installPath for installed version missing: FAIL" 1 "$SP_KEY: FAIL — installPath .*/superpowers/6.4.2 does not exist" -- S verify
+# With the label no longer the expected version, the snapshot catches a downgrade.
+mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound
+jqi "$AI_CREW_SNAPSHOT" '.[$k].version = "6.4.2"' --arg k "$SP_KEY"
+t "catv snapshot version higher than installed: FAIL" 1 "$SP_KEY: FAIL — version went backwards 6.4.2 -> 6.3.0" -- S verify
+mkfix; mksp 6.3.0 6.4.2; S snapshot >/dev/null; bound; spto 6.4.0
+t "catv downgrade still above stale label: FAIL" 1 "$SP_KEY: FAIL — version went backwards 6.4.2 -> 6.4.0" -- S verify
+# Anything that cannot be ordered fails closed — never a silent pass.
+mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound; spto 6.4.2-beta
+t "catv unparseable installed version: FAIL closed" 1 "$SP_KEY: FAIL — installed version '6.4.2-beta' is not a dotted-integer version; .* \(failing closed\)" -- S verify
+mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound; mksp 6.x >/dev/null
+t "catv unparseable catalogue label: FAIL closed" 1 "$SP_KEY: FAIL — catalogue label '6.x' is not a dotted-integer version; .* \(failing closed\)" -- S verify
+mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound; spto 6.4.2
+jqi "$AI_CREW_SNAPSHOT" '.[$k].version = "six"' --arg k "$SP_KEY"
+t "catv unparseable snapshot version: FAIL closed" 1 "$SP_KEY: FAIL — snapshot version 'six' is not a dotted-integer version; .* \(failing closed\)" -- S verify
+# An EMPTY version in an existing snapshot entry would skip the downgrade guard;
+# it fails closed too. Only a null entry (not installed when snapshotted) has no
+# baseline, and keeps the "<not installed> -> v" PASS.
+mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound; spto 6.4.2
+jqi "$AI_CREW_SNAPSHOT" '.[$k].version = ""' --arg k "$SP_KEY"
+t "catv empty snapshot version + sha moved: FAIL closed" 1 "$SP_KEY: FAIL — snapshot version '' is not a dotted-integer version; .* \(failing closed\)" -- S verify
+mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound; spto 6.4.2
+jqi "$AI_CREW_SNAPSHOT" '.[$k] = null' --arg k "$SP_KEY"
+t "catv null snapshot entry: PASS from not installed" 0 "$SP_KEY: PASS <not installed> -> 6.4.2 \(gitCommitSha 8ca22dba0000, .*\) \(catalogue label 6.3.0 stale" -- S verify
+# Equal label and install: unchanged behaviour, and no stale note anywhere.
+mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound
+t "catv label equal: verify PASS unchanged" 0 "$SP_KEY: PASS 6.3.0 — no-op \(version unchanged\)$" -- S verify
+t "catv label equal: no stale note" 0 "" -- bash -c '! "$1" verify 2>&1 | grep -q stale && ! "$1" status 2>&1 | grep -q stale' _ "$SCRIPT"
+# The relaxation is for URL-sourced catalogue vendors ONLY: codex stays strict
+# even when its manifest is BEHIND the install.
+mkfix; S snapshot >/dev/null; bound; echo '{"name":"codex","version":"1.0.5"}' >"$AI_CREW_VENDOR_MANIFEST"
+t "codex manifest older than installed -> still FAIL" 1 "codex@openai-codex: FAIL — installed version '1.0.6' != manifest version '1.0.5'" -- S verify
+# ver_ok / ver_cmp directly, lifted out of the script (it cannot be sourced).
+sed -n -e '/^ver_ok() /p' -e '/^ver_cmp() {/,/^}/p' "$SCRIPT" >"$TMP/ver.sh"
+vc() { bash -c '. "$1"; shift; "$@"' _ "$TMP/ver.sh" "$@"; }
+t "ver helpers extracted" 0 "" -- grep -q '^ver_cmp() {' "$TMP/ver.sh"
+t "ver_cmp 6.4 == 6.4.0" 0 "^0$" -- vc ver_cmp 6.4 6.4.0
+t "ver_cmp 6.04 == 6.4" 0 "^0$" -- vc ver_cmp 6.04 6.4
+t "ver_cmp 0.0 == 0" 0 "^0$" -- vc ver_cmp 0.0 0
+t "ver_cmp 6.10.0 > 6.9.9" 0 "^1$" -- vc ver_cmp 6.10.0 6.9.9
+t "ver_cmp 6.9.9 < 6.10.0" 0 "^-1$" -- vc ver_cmp 6.9.9 6.10.0
+t "ver_ok rejects 6.4.2-beta" 1 "" -- vc ver_ok 6.4.2-beta
+t "ver_ok rejects empty" 1 "" -- vc ver_ok ""
+t "ver_ok accepts 6.4.2" 0 "" -- vc ver_ok 6.4.2
 
 # A clone that IS present must be readable: fail closed.
 mkfix; mksp 6.3.0 6.3.0

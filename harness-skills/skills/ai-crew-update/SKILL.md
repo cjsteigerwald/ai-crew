@@ -154,7 +154,9 @@ It prints a `== marketplace <name> (<repo>)` banner per marketplace, then
 `vendor codex@openai-codex` row, a `vendor superpowers@superpowers-marketplace`
 row when that marketplace is added (a WARNING when it is not), the `skip:` lines for catalogued-but-not-
 installed plugins, the counts line (vendor rows included), any unconfigured marketplace, and finally
-`reconcile: needed|clean` (see step 3.5). A plugin missing from
+`reconcile: needed|clean` (see step 3.5). The superpowers row ends
+`(catalogue label stale)` when the catalogue label is older than the
+installed version (see step 4, rule 2). A plugin missing from
 `installed_plugins.json` is `NOT INSTALLED`. An unreadable or invalid
 `installed_plugins.json`, or a missing manifest, is an ERROR (exit 1). The
 script keeps those two cases separate. For why the jq reads `.plugins[<key>][0]`
@@ -537,7 +539,8 @@ is decided by `claude plugin update` in step 3.
    rule below — and that the user's config is consistent with it. It does
    **not** prove which run produced that state. For the vendor, it proves the
    install matches the refreshed `openai-codex` marketplace clone, not
-   upstream's latest release; for superpowers, that it matches the refreshed
+   upstream's latest release; for superpowers, that the installed version is
+   internally consistent and not behind the refreshed
    `superpowers-marketplace` catalogue's version.
 
    First, per marketplace, `verify` requires the snapshot's `_bound` record. If
@@ -555,10 +558,20 @@ is decided by `claude plugin update` in step 3.
    1. The entry exists in `installed_plugins.json` and has a non-empty
       `gitCommitSha`.
    2. The installed version equals that marketplace clone manifest's `.version`
-      (`<clone>/<source>/.claude-plugin/plugin.json`).
+      (`<clone>/<source>/.claude-plugin/plugin.json`). For superpowers the
+      catalogue `.version` is only a label that can go stale (its unpinned URL
+      installs upstream HEAD, whose own manifest may be newer), so the expected
+      version is the INSTALLED one, and the label is ordered against it as
+      dot-separated integers: equal PASSES; label older PASSES with the note
+      `catalogue label <label> stale; installed <v> from upstream <short sha>;
+      unpinned URL source`; label newer FAILS ("catalogue offers <label> but
+      installed <v> — update did not land"); a version on either side that is
+      not dot-separated integers FAILS closed. `status` marks the older-label
+      case `(catalogue label stale)`.
    3. `installPath` equals
       `~/.claude/plugins/cache/<marketplace>/<name>/<version>`, and that
-      directory exists.
+      directory exists. For superpowers `<version>` is the installed version,
+      so rule 4 then pins it to the payload's own manifest.
    4. The payload `<installPath>/.claude-plugin/plugin.json` exists and its
       `.version` equals the expected version. An empty or partial install
       fails here.
@@ -568,9 +581,13 @@ is decided by `claude plugin update` in step 3.
       HEAD. For superpowers no clone holds the installed commit (it comes
       from the upstream URL), so the rule is weaker: a version change must
       have MOVED `gitCommitSha` away from the snapshot's, and a version
-      change with an unmoved sha is a FAIL. Rule 2's manifest is the
-      catalogue entry's `.version` for superpowers. Its catalogue entry is an
-      unpinned URL (no ref or sha), so the install tracks upstream's
+      change with an unmoved sha is a FAIL. Since rule 2 no longer pins
+      superpowers to the label, an installed version numerically LOWER than
+      the snapshot's is a FAIL ("version went backwards"), and a snapshot
+      entry whose version is empty or not dot-separated integers FAILS closed
+      (a null entry — not installed when snapshotted — has no baseline and
+      passes as `<not installed> -> <v>`). Its catalogue
+      entry is an unpinned URL (no ref or sha), so the install tracks upstream's
       default-branch HEAD and the version is only a catalogue label: upstream
       commits land without version bumps. For superpowers ONLY, a sha that
       moved with the version unchanged therefore PASSES, with the note

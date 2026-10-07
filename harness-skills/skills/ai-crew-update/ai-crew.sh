@@ -44,7 +44,11 @@
 #       change only requires the sha to have MOVED from the snapshot's. The
 #       URL carries no ref, so the install tracks upstream's default-branch
 #       HEAD and the sha may also move WITHOUT a version change — a PASS here,
-#       where it is a FAIL for every other target.
+#       where it is a FAIL for every other target. For the same reason the
+#       catalogue `.version` is only a LABEL, and can be stale: verify expects
+#       the installed version (pinned by installPath and the payload's own
+#       plugin.json), passes a label behind it with a note, and fails a label
+#       ahead of it, an unorderable version, or a drop below the snapshot's.
 #     - Their marketplace is OPTIONAL. An ABSENT clone path is a WARNING
 #       naming the exact `claude plugin marketplace add` command, and the
 #       vendor is skipped — never a failure, because a user who does not use it
@@ -310,13 +314,45 @@ catalogue_version() {
     || die "$1: unparseable, or no single '$2' entry with a string .version"
 }
 
-# avail_version <target-idx>: the version the target should be installed at.
+# avail_version <target-idx>: the version the target should be installed at —
+# for a catalogue vendor, the catalogue's LABEL, which verify only orders
+# against the installed version (an unpinned URL installs upstream HEAD, whose
+# own manifest may be ahead of a stale label).
 avail_version() {
   if [ "${TCAT[$1]}" -eq 1 ]; then
     catalogue_version "${MANIFESTS[$1]}" "${TNAMES[$1]}"
   else
     manifest_version "${MANIFESTS[$1]}"
   fi
+}
+
+# ver_ok <v>: true iff <v> is dot-separated decimal integers (6.4.2). Anything
+# else — a pre-release suffix, an empty string — cannot be ordered here, and
+# every caller treats that as a FAIL, never as "equal".
+ver_ok() { [[ $1 =~ ^[0-9]+(\.[0-9]+)*$ ]]; }
+
+# ver_cmp <a> <b>: prints -1, 0 or 1 for a<b, a=b, a>b. Both must pass ver_ok.
+# Missing trailing parts count as 0 (6.4 == 6.4.0). Parts are compared as
+# digit strings (leading zeros stripped, then length, then lexically), so no
+# part is too long for shell arithmetic.
+ver_cmp() {
+  local i x y n a=() b=()
+  IFS=. read -ra a <<<"$1"
+  IFS=. read -ra b <<<"$2"
+  n=${#a[@]}; [ "${#b[@]}" -gt "$n" ] && n=${#b[@]}
+  for ((i = 0; i < n; i++)); do
+    x=${a[i]:-0}; y=${b[i]:-0}
+    x=${x#"${x%%[!0]*}"}; y=${y#"${y%%[!0]*}"}
+    if [ "${#x}" -ne "${#y}" ]; then
+      [ "${#x}" -lt "${#y}" ] && echo -1 || echo 1
+      return 0
+    fi
+    if [ "$x" != "$y" ]; then
+      [[ $x < $y ]] && echo -1 || echo 1
+      return 0
+    fi
+  done
+  echo 0
 }
 
 # manifest_version <plugin.json>: prints .version or dies.
@@ -1410,7 +1446,7 @@ unconfigured_marketplaces() {
 }
 
 cmd_status() {
-  local i key avail inst label st prev reason mkt skipped=0
+  local i key avail inst label st stale prev reason mkt skipped=0
   require_installed
   all_targets
   prev=-1
@@ -1425,7 +1461,14 @@ cmd_status() {
     fi
     label=${TNAMES[$i]}
     { [ "$key" = "$VENDOR_KEY" ] || [ "${TCAT[$i]}" -eq 1 ]; } && label="vendor $key"
-    echo "$label  installed=$inst  available=$avail"
+    # A catalogue vendor's label can trail what its unpinned URL installed;
+    # say so rather than let available<installed read as a pending update.
+    stale=""
+    if [ "${TCAT[$i]}" -eq 1 ] && [ "${TINST[$i]}" -eq 1 ] && ver_ok "$avail" && ver_ok "$inst" \
+      && [ "$(ver_cmp "$avail" "$inst")" = -1 ]; then
+      stale="  (catalogue label stale)"
+    fi
+    echo "$label  installed=$inst  available=$avail$stale"
   done
   for i in "${!KEYS[@]}"; do
     [ "${TINST[$i]}" -eq 0 ] && echo "skip: ${KEYS[$i]} not installed"
@@ -1881,7 +1924,7 @@ cmd_update() {
 }
 
 cmd_verify() {
-  local i m key want ver path sha head snapver snapsha expect pm pv bh cur snap reason bad=0 gfail=0 n=0 fails=()
+  local i m key want ver path sha head snapver snapsha snapnull expect pm pv bh cur snap reason catlabel catnote bad=0 gfail=0 n=0 fails=()
   require_installed
   all_targets
   for m in "${!MKT_NAMES[@]}"; do
@@ -1904,7 +1947,7 @@ cmd_verify() {
     fi
   done
   for i in "${!KEYS[@]}"; do
-    key=${KEYS[$i]}; bad=0; snap=${MKT_SNAPSHOTS[${TIDX[$i]}]}
+    key=${KEYS[$i]}; bad=0; catnote=""; snap=${MKT_SNAPSHOTS[${TIDX[$i]}]}
     want=$(avail_version "$i") || exit 1
     if [ "${TINST[$i]}" -eq 0 ]; then
       echo "skip: $key not installed"; continue
@@ -1916,7 +1959,26 @@ cmd_verify() {
     if [ -z "$sha" ]; then
       echo "$key: FAIL — installed entry has no gitCommitSha"; bad=1
     fi
-    if [ "$ver" != "$want" ]; then
+    if [ "${TCAT[$i]}" -eq 1 ]; then
+      # A catalogue vendor's entry is an unpinned upstream URL: the install is
+      # upstream HEAD, whose own manifest can be AHEAD of a stale catalogue
+      # label that no refresh will fix. So the expected version is the one
+      # installed (rules 3-4 below then pin installPath and the payload's own
+      # manifest to it), and the label is only ORDERED against it: behind is a
+      # stale label, ahead means the update did not land. Unorderable on
+      # either side fails closed.
+      catlabel=$want; want=$ver
+      if ! ver_ok "$ver"; then
+        echo "$key: FAIL — installed version '${ver:-<none>}' is not a dotted-integer version; cannot compare it to catalogue label '$catlabel' (failing closed)"; bad=1
+      elif ! ver_ok "$catlabel"; then
+        echo "$key: FAIL — catalogue label '$catlabel' is not a dotted-integer version; cannot compare it to installed '$ver' (failing closed)"; bad=1
+      else
+        case $(ver_cmp "$catlabel" "$ver") in
+          1) echo "$key: FAIL — catalogue offers $catlabel but installed $ver — update did not land"; bad=1 ;;
+          -1) catnote="catalogue label $catlabel stale; installed $ver from upstream ${sha:0:7}; unpinned URL source" ;;
+        esac
+      fi
+    elif [ "$ver" != "$want" ]; then
       echo "$key: FAIL — installed version '${ver:-<none>}' != manifest version '$want'"; bad=1
     fi
     expect="$AI_CREW_CACHE/${TMKTS[$i]}/${TNAMES[$i]}/$want"
@@ -1940,26 +2002,37 @@ cmd_verify() {
     elif [ "$bad" -eq 0 ]; then
       snapver=$(jq -r --arg k "$key" '.[$k].version // ""' "$snap")
       snapsha=$(jq -r --arg k "$key" '.[$k].gitCommitSha // ""' "$snap")
+      snapnull=$(jq -r --arg k "$key" '.[$k] == null' "$snap")
       if [ "$snapver" = "$ver" ]; then
         if [ "$sha" = "$snapsha" ]; then
-          echo "$key: PASS $ver — no-op (version unchanged)"
+          echo "$key: PASS $ver — no-op (version unchanged)${catnote:+ ($catnote)}"
         elif [ "${TCAT[$i]}" -eq 1 ]; then
           # An unpinned URL source installs upstream's default-branch HEAD, and
           # upstream commits land without version bumps: the version is only a
           # catalogue label, so the sha may move within it.
-          echo "$key: PASS $ver (upstream moved within $ver: $snapsha -> $sha; unpinned URL source)"
+          echo "$key: PASS $ver (upstream moved within $ver: $snapsha -> $sha; unpinned URL source)${catnote:+ ($catnote)}"
         else
           echo "$key: FAIL — sha changed without a version change ($snapsha -> $sha)"; bad=1
         fi
       elif [ "${TCAT[$i]}" -eq 1 ]; then
         # A catalogue vendor installs from an upstream URL, so its sha is that
         # repo's commit and no local clone can confirm it. The rule weakens to
-        # "a version change must have moved the sha".
-        if [ -n "$snapsha" ] && [ "$sha" = "$snapsha" ]; then
+        # "a version change must have moved the sha". With the label no longer
+        # the expected version, the snapshot is what catches a downgrade — so a
+        # snapshot ENTRY must carry an orderable version: an empty one would
+        # skip the guard. Only a null entry (not installed when snapshotted)
+        # has no baseline.
+        if [ "$snapnull" != true ] && ! ver_ok "$snapver"; then
+          echo "$key: FAIL — snapshot version '$snapver' is not a dotted-integer version; cannot compare it to installed '$ver' (failing closed)"
+          bad=1
+        elif [ "$snapnull" != true ] && [ "$(ver_cmp "$ver" "$snapver")" = -1 ]; then
+          echo "$key: FAIL — version went backwards $snapver -> $ver"
+          bad=1
+        elif [ -n "$snapsha" ] && [ "$sha" = "$snapsha" ]; then
           echo "$key: FAIL — version changed ${snapver:-<not installed>} -> $ver but gitCommitSha did not move ($sha)"
           bad=1
         else
-          echo "$key: PASS ${snapver:-<not installed>} -> $ver (gitCommitSha $sha, upstream — not checked against a clone)"
+          echo "$key: PASS ${snapver:-<not installed>} -> $ver (gitCommitSha $sha, upstream — not checked against a clone)${catnote:+ ($catnote)}"
         fi
       else
         # Only a version change should move gitCommitSha. Compared against
