@@ -6,7 +6,8 @@ description: >
   acceptance criteria, blocks on clarifying questions until every gap is closed
   or explicitly deferred, writes docs/specs/<KEY>-requirements.md, offers
   confirmed writebacks to the ticket, then chains design, plan, implementation
-  and PR with a user checkpoint between each. Use when starting work on an
+  (superpowers or mattpocock-skills, the user's choice) and PR with a user
+  checkpoint between each. Use when starting work on an
   existing ticket — "start work on PROJ-571", "pick up issue #12", "bring in
   this ticket", "work on owner/repo#N", a pasted Jira or GitHub issue URL, or
   "is this ticket ready". Skip when creating a new ticket (use your
@@ -50,17 +51,20 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
     requires one) is not a gap: skipping it is a step-0 override and needs the second
     confirmation below.
 - **Skip a whole step** (fetch extras, gap analysis, requirements doc, writeback, brainstorming,
-  writing-plans, plan-implementation, PR): allowed, **with a warning, and it does not block the
-  chain**. Warn once, in one line, about what the skip loses, record it, then continue to the next
-  step. Skipping gap analysis means no gate ran: the doc says "requirements not gap-checked".
+  writing-plans, plan-implementation, mattpocock spec / tickets / implement, PR): allowed,
+  **with a warning, and it does not block the chain**. Warn once, in one line, about what the skip
+  loses, record it, then continue to the next step. Skipping gap analysis means no gate ran: the
+  doc says "requirements not gap-checked".
   - **Step 3 skipped after step 2 ran:** copy the final gap table into the doc's
     **Gap table at skip** section, and add each open row to Deferred as
     `Skipped by user — step 3 skipped`, so the specific open rows stay visible downstream and in
     the PR.
-  - **Plan skipped** (writing-plans or the bounded task list): warn once and record it, then get an
-    explicit go-ahead for implementation. Implement directly against the settled AC list and
-    cover only active AC (see step 6, stage 2) to the same verification standard, without
-    plan-implementation's approved-plan prerequisite. The PR body states "Intake: plan skipped".
+  - **Plan skipped** (writing-plans, the bounded task list, or `to-tickets`): warn once and record
+    it, then get an explicit go-ahead for implementation. Implement directly against the settled AC
+    list and cover only active AC (see step 6, **Settled AC list**) to the same verification
+    standard, without plan-implementation's approved-plan prerequisite. The PR body states
+    "Intake: plan skipped". On the mattpocock chain the user still runs
+    `/mattpocock-skills:implement` — see [chain-mattpocock.md](chain-mattpocock.md).
   - **Skipped requirements doc → still write a stub doc** at `docs/specs/<KEY>-requirements.md`:
     Status, source link, "requirements not gap-checked" (if so), the skipped steps, the
     **Gap table at skip** (if step 2 ran), and — whenever step 3 ran — the
@@ -68,8 +72,9 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
     disposition (active / deferred / skipped / out of scope). No refinement or deferral is ever
     lost. Only if the user explicitly says "no doc at all" does that same information go into the
     PR body (and any handoff) instead.
-  - **Every skipped step is stated downstream:** in the plan's **Spec** line and in the PR body,
-    e.g. "Intake: gap analysis skipped — requirements not gap-checked".
+  - **Every skipped step is stated downstream:** in the plan's **Spec** line (on the mattpocock
+    chain, in the context given to `to-spec` and `to-tickets`) and in the PR body, e.g.
+    "Intake: gap analysis skipped — requirements not gap-checked".
 - **Step 0 is the exception.** The skill itself never waives the repo's own start procedure or
   gates. Only the **user** can override it: state the repo rule and that skipping it means acting
   outside the repo's process, and proceed only on an explicit second confirmation, recorded in the
@@ -102,7 +107,8 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
   first. **On any conflict the repo procedure wins**; this skill layers gap analysis on top of it.
 - An unmet repo gate is a blocker, not a gap to clarify away: record it and stop where the repo says to.
 - Respect repo rules about **when a GitHub issue may exist** — some repos forbid creating it until the
-  Jira ticket enters a sprint. Intake never creates an issue or ticket on its own; at most it notes
+  Jira ticket enters a sprint. Intake never creates an issue or ticket on its own — on the
+  mattpocock chain (step 6), issues are created only by commands the user types; at most it notes
   that one is missing and points at the repo's rule.
 - This skill never skips or waives step 0 on its own. The **user** may override it, but only with
   the second confirmation described in **Controls** — the only step that needs one.
@@ -219,79 +225,69 @@ The ticket is outward-facing; every write is the user's call, every time.
 - Typical offers: a comment linking the requirements doc and the decision log; agreed AC written to
   the ticket's AC field; a Jira↔GitHub cross-link that is missing. Declining or skipping all of
   them is fine. On cancel, nothing is posted — not even an already-drafted payload.
+- On the mattpocock chain, the spec-issue comment and the Jira remote link to the spec issue
+  ([chain-mattpocock.md](chain-mattpocock.md)) are offered under this same per-action rule.
 - After an applied write, re-read the ticket and confirm it landed — a success response alone proves
   little on some fields.
 
-## 6. Chain — a user checkpoint between each skill
+## 6. Chain — a user checkpoint between each stage
 
-Stop after each stage and get an explicit go before invoking the next; each checkpoint offers
-go / **Skip** / cancel (see **Controls**). If a chained skill is not installed, say so and do that
-step by hand to the same standard. After cancel, no chained skill is invoked.
+Steps 0–5 are the same for every chain. Step 6 picks the chain that runs design, plan, and
+implement, then ships through the shared **Ship** stage below.
 
-1. **Design — `superpowers:brainstorming`.** What you hand it depends on what intake produced:
-   - **Gate passed:** the requirements doc path, and say plainly: *requirements and AC are settled;
-     brainstorm the design and approach only — do not re-open scope or AC.*
-   - **Gap analysis or the requirements doc was skipped:** the ticket link, the stub doc (or, with
-     "no doc at all", the skip summary), and the note *requirements not gap-checked — treat AC as
-     unverified*. Do not tell it requirements are settled.
+**Choosing the chain.**
+1. Read the **target** repo's `docs/agents/issue-tracker.md`, if present. Recommend mattpocock
+   only when it configures GitHub issues for the target repo (its `owner/repo` matches
+   `gh repo view --json nameWithOwner`); otherwise recommend superpowers.
+2. Ask once (`AskUserQuestion`): superpowers / mattpocock / **Skip** / cancel, the recommendation
+   first and labelled as such.
+3. If mattpocock is chosen:
+   - **Not set up** (no `docs/agents/issue-tracker.md`): tell the user to run
+     `/mattpocock-skills:setup-matt-pocock-skills` and wait.
+   - **Not GitHub issues for this repo** (it configures local markdown, GitLab, Jira, another
+     tracker, or another repo): say intake's mattpocock path needs GitHub issues for the target
+     repo, and offer superpowers — or the user re-runs
+     `/mattpocock-skills:setup-matt-pocock-skills` to switch to GitHub.
+   - **Repo rules forbid issues now** (a step-0 rule such as "no GitHub issue until the Jira ticket
+     is in a sprint"): say the mattpocock path is unavailable for this ticket and offer
+     superpowers. A step-0 override follows **Controls**' second-confirmation rule.
+4. **Skip** means no chain: apply the plan-skip rule in **Controls** — warn once, record
+   "Intake: chain skipped — no design/plan", get an explicit go-ahead, implement directly against
+   the settled AC list (active AC only, same verification standard), then go to **Ship**. The PR
+   body states "Intake: chain skipped — no design/plan".
+5. Record the choice in the requirements doc's `Chain:` field.
 
-   Its "write back your understanding" step should be a short summary of the doc for the user to
-   confirm, not a second interview. Brainstorming picks a path itself, and on two of them it chains
-   onward on its own — so give it these instructions up front, with the plan instructions from
-   stage 2, plus intake's controls: *on cancel, stop and return to intake and write or post nothing
-   further; on skip at your spec-review gate, record "Intake: design review skipped" and proceed
-   (to writing-plans on the architectural path); on skip at any other gate of yours, return to
-   intake.*
-   - **Architectural** → it writes a design doc (default
-     `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`; ask it to link the requirements doc),
-     runs its own spec-review gate, then invokes writing-plans itself. That is allowed: **its
-     spec-review gate is this stage's checkpoint**, and the stage-2 instructions **and intake's
-     skip/cancel controls** must reach writing-plans through it. At that gate, "skip" means the
-     design is accepted unreviewed: record it ("Intake: design review skipped") and continue to
-     stage 2. "cancel" follows **Controls**.
-   - **Bounded** → it presents an in-chat design, and after approval its default is to implement
-     directly. Instruct it instead: **after design approval, STOP and return to intake** — do not
-     implement. Intake then runs stage 2b.
-   - **Spike** → the output is a recommendation; come back to step 3 if it changes requirements.
-   - If design surfaces a genuine requirements gap, stop, return to step 3 for that row, and update
-     the requirements doc and its decision log. Don't patch requirements inside the design.
-2. **Plan.** Tasks cite `AC-n` from the **settled AC list**: the requirements doc, the stub's
-   **Acceptance criteria (settled)** section, or (with "no doc at all") the same list carried for the
-   PR body. Plans **cover only active AC**; deferred, skipped, and out-of-scope AC get no task and
-   are listed as not delivered. Fall back to the ticket's original AC — numbered in the order the
-   ticket lists them — only when intake made no revisions or deferrals (e.g. step 3 never ran), and
-   say so; if the ticket has none, tasks cite "no AC — unverified". Never plan from the original
-   ticket text after step 3 changed it: that silently restores refined or deferred AC.
-   - **(a) Architectural — `superpowers:writing-plans`.** Every task cites the AC numbers it
-     satisfies, and every AC is covered by at least one task; the plan's **Spec** line lists both
-     the design doc and the requirements doc, plus every skipped intake step (e.g. "Intake: gap
-     analysis skipped — requirements not gap-checked"). Tell it up front that execution will be
-     `dev-workflow:plan-implementation`, so its handoff asks only for plan review. Its plan header
-     hardcodes a *REQUIRED SUB-SKILL* line naming other executors: have that line in the saved plan
-     replaced with `dev-workflow:plan-implementation`, then verify the saved file carries no
-     contradictory executor directive —
-     `grep -nE 'subagent-driven-development|executing-plans' <plan-file>` must print nothing.
-   - **(b) Bounded — intake writes a short task list.** Each task maps to the AC numbers it
-     satisfies, every AC is covered, any skipped intake step is stated at the top, and the list
-     goes to the user for approval. That approved list is the plan stage 3 executes. Don't skip it
-     even for small changes — it is what makes the AC traceable into the PR — unless the user
-     explicitly skips the plan (see below).
-   - **Plan skipped by the user** (either path): follow the plan-skip rule in **Controls** — warn
-     once, record it, get an explicit go-ahead, and go to stage 3 without a plan.
-3. **Implement — `[[plan-implementation]]`**, only after the user approves the plan from stage 2 —
-   **except when the user skipped the plan**: then, after the explicit go-ahead, implement directly
-   against the settled AC list, covering only active AC (stage 2's rule), without
-   plan-implementation's approved-plan prerequisite, and the PR body states "Intake: plan skipped".
-   A single small edit doesn't need the orchestrator either. Either way, work to the same standard
-   (tests, verification evidence per AC).
-4. **Ship — `[[opening-pull-requests]]`.** The ticket question for its gate 7 is already answered
-   here. The PR body's first line is the ticket link: Jira → `**Ticket:** [PROJ-571](<jira-url>)`;
-   GitHub → `**Ticket:** [owner/repo#12](<issue-url>)`, followed by `Refs owner/repo#12` (use a
-   closing keyword only if the repo allows a merge to close the issue).
-   The PR body works from the same settled AC list: it says which active AC numbers it delivers and
-   lists the deferred, skipped, and out-of-scope ones as not delivered / unverified, and states every skipped intake step — e.g. "Intake: gap analysis skipped —
-   requirements not gap-checked". If the user chose "no doc at all", the PR body also carries the
-   stub doc's content.
+**Checkpoints.** Stop after each stage and get an explicit go before the next; each checkpoint
+offers go / **Skip** / cancel (see **Controls**). If a chained skill is not installed, say so:
+- a missing superpowers skill → do that step by hand to the same standard;
+- a missing `mattpocock-skills` command → intake does not replicate it; offer superpowers instead.
+
+After cancel, no chained skill is invoked.
+
+**Settled AC list.** Plans and tickets cite `AC-n` from the **settled AC list**: the requirements
+doc, the stub's **Acceptance criteria (settled)** section, or (with "no doc at all") the same list
+carried for the PR body. Plans and tickets **cover only active AC**; deferred, skipped, and
+out-of-scope AC get no task or ticket and are listed as not delivered. Fall back to the ticket's
+original AC — numbered in the order the ticket lists them — only when intake made no revisions or
+deferrals (e.g. step 3 never ran), and say so; if the ticket has none, tasks cite "no AC —
+unverified". Never plan from the original ticket text after step 3 changed it: that silently
+restores refined or deferred AC.
+
+**Run the chosen chain:**
+- superpowers → read [chain-superpowers.md](chain-superpowers.md)
+- mattpocock → read [chain-mattpocock.md](chain-mattpocock.md)
+
+**Ship — `[[opening-pull-requests]]`.** The ticket question for its gate 7 is already answered
+here. The PR body's first line is the ticket link: Jira → `**Ticket:** [PROJ-571](<jira-url>)`;
+GitHub → `**Ticket:** [owner/repo#12](<issue-url>)`, followed by `Refs owner/repo#12` (use a
+closing keyword only if the repo allows a merge to close the issue).
+The PR body works from the same settled AC list: it says which active AC numbers it delivers and
+lists the deferred, skipped, and out-of-scope ones as not delivered / unverified, and states every
+skipped intake step — e.g. "Intake: gap analysis skipped — requirements not gap-checked". If the
+user chose "no doc at all", the PR body also carries the stub doc's content.
+- **mattpocock chain:** the PR body also lists the spec issue (none if `to-spec` was skipped) and
+  each ticket issue it delivers (`Refs owner/repo#N` each; a closing keyword only where the repo
+  allows a merge to close it).
 
 ## Gotchas
 
