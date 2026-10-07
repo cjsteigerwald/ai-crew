@@ -267,7 +267,7 @@ if [ -f "$INTAKE_SKILL" ]; then
   [ "$lines" -lt 500 ] || ifail "intaking-work-items/SKILL.md: $lines lines (keep under 500; push detail into supporting files)"
 
   # Supporting files exist and are linked one level deep from SKILL.md.
-  for support in checklist.md template.md; do
+  for support in checklist.md template.md chain-superpowers.md chain-mattpocock.md; do
     [ -f "$INTAKE_DIR/$support" ] || ifail "intaking-work-items/$support not found"
     grep -qF "]($support)" "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: does not link $support"
   done
@@ -298,7 +298,7 @@ if [ -f "$INTAKE_SKILL" ]; then
   grep -qF 'still write a stub doc' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the stub-doc rule"
   grep -qF 'unless the user skipped the whole step' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: gate text missing the whole-step-skip exception"
   grep -qF 'Intake: plan skipped' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the 'Intake: plan skipped' PR line"
-  grep -qF 'except when the user skipped the plan' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: stage-3 prerequisite missing the plan-skip exception"
+  grep -qF 'except when the user skipped the plan' "$INTAKE_DIR/chain-superpowers.md" || ifail "intaking-work-items/chain-superpowers.md: stage-3 prerequisite missing the plan-skip exception"
   grep -qF 'A row 7/12 blocker that is a repo gate' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the row-7/12 repo-gate second-confirmation rule"
   grep -qF 'Gap table at skip' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the 'Gap table at skip' rule"
   grep -qF '## Gap table at skip' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: missing the 'Gap table at skip' section"

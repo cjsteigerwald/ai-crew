@@ -12,6 +12,7 @@ never leave `TBD`. No secrets, tokens, or credential values anywhere in the doc.
 **Fetched:** <YYYY-MM-DD, required — resume diffs comments and changes against this date> — ticket status `<status>`, sprint `<sprint or none>`, estimate `<value or none>`
 **Intake by:** <name> with the `dev-workflow:intaking-work-items` skill
 **Status:** <Draft | Ready | Cancelled> — <last completed step; skipped steps and what each lost, e.g. "gap analysis skipped — requirements not gap-checked">
+**Chain:** <superpowers | mattpocock | — (not yet chosen)>
 
 > Snapshot of the ticket on the fetched date plus the decisions below. If the ticket changes,
 > re-run intake for the changed rows rather than editing this doc by memory.
@@ -84,6 +85,13 @@ Each AC is testable as written and names how it is verified. Plans and PRs cite 
 <Only if step 3 was skipped after step 2 ran: the final gap table, row by row with its rating and
 reason, as it stood when the user skipped. Otherwise "None — step 3 completed, or gap analysis
 skipped".>
+
+## Chain artifacts
+
+<Filled in step 6. superpowers: the design doc path and the plan path (or the approved bounded
+task list). mattpocock: the spec issue (`owner/repo#N`) and the ticket issues (`owner/repo#N` —
+`AC-n` each). Either chain: **Last completed stage:** <stage, or "none">. Before step 6: "None —
+chain not started".>
 ```
 
 **Stub doc** (the requirements-doc step was skipped): keep only the header lines — Source,
