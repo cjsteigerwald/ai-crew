@@ -51,9 +51,10 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
     requires one) is not a gap: skipping it is a step-0 override and needs the second
     confirmation below.
 - **Skip a whole step** (fetch extras, gap analysis, requirements doc, writeback, brainstorming,
-  writing-plans, plan-implementation, mattpocock spec / tickets / implement, PR): allowed, **with a warning, and it does not block the
-  chain**. Warn once, in one line, about what the skip loses, record it, then continue to the next
-  step. Skipping gap analysis means no gate ran: the doc says "requirements not gap-checked".
+  writing-plans, plan-implementation, mattpocock spec / tickets / implement, PR): allowed,
+  **with a warning, and it does not block the chain**. Warn once, in one line, about what the skip
+  loses, record it, then continue to the next step. Skipping gap analysis means no gate ran: the
+  doc says "requirements not gap-checked".
   - **Step 3 skipped after step 2 ran:** copy the final gap table into the doc's
     **Gap table at skip** section, and add each open row to Deferred as
     `Skipped by user — step 3 skipped`, so the specific open rows stay visible downstream and in
@@ -62,7 +63,8 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
     it, then get an explicit go-ahead for implementation. Implement directly against the settled AC
     list and cover only active AC (see step 6, **Settled AC list**) to the same verification
     standard, without plan-implementation's approved-plan prerequisite. The PR body states
-    "Intake: plan skipped".
+    "Intake: plan skipped". On the mattpocock chain the user still runs
+    `/mattpocock-skills:implement` — see [chain-mattpocock.md](chain-mattpocock.md).
   - **Skipped requirements doc → still write a stub doc** at `docs/specs/<KEY>-requirements.md`:
     Status, source link, "requirements not gap-checked" (if so), the skipped steps, the
     **Gap table at skip** (if step 2 ran), and — whenever step 3 ran — the
@@ -70,8 +72,9 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
     disposition (active / deferred / skipped / out of scope). No refinement or deferral is ever
     lost. Only if the user explicitly says "no doc at all" does that same information go into the
     PR body (and any handoff) instead.
-  - **Every skipped step is stated downstream:** in the plan's **Spec** line and in the PR body,
-    e.g. "Intake: gap analysis skipped — requirements not gap-checked".
+  - **Every skipped step is stated downstream:** in the plan's **Spec** line (on the mattpocock
+    chain, in the context given to `to-spec` and `to-tickets`) and in the PR body, e.g.
+    "Intake: gap analysis skipped — requirements not gap-checked".
 - **Step 0 is the exception.** The skill itself never waives the repo's own start procedure or
   gates. Only the **user** can override it: state the repo rule and that skipping it means acting
   outside the repo's process, and proceed only on an explicit second confirmation, recorded in the
@@ -233,20 +236,32 @@ Steps 0–5 are the same for every chain. Step 6 picks the chain that runs desig
 implement, then ships through the shared **Ship** stage below.
 
 **Choosing the chain.**
-1. Check the **target** repo for `docs/agents/issue-tracker.md`. Present → recommend mattpocock;
-   absent → recommend superpowers.
+1. Read the **target** repo's `docs/agents/issue-tracker.md`, if present. Recommend mattpocock
+   only when it configures GitHub issues for the target repo (its `owner/repo` matches
+   `gh repo view --json nameWithOwner`); otherwise recommend superpowers.
 2. Ask once (`AskUserQuestion`): superpowers / mattpocock / **Skip** / cancel, the recommendation
    first and labelled as such.
 3. If mattpocock is chosen:
    - **Not set up** (no `docs/agents/issue-tracker.md`): tell the user to run
      `/mattpocock-skills:setup-matt-pocock-skills` and wait.
+   - **Not GitHub issues for this repo** (it configures local markdown, GitLab, Jira, another
+     tracker, or another repo): say intake's mattpocock path needs GitHub issues for the target
+     repo, and offer superpowers — or the user re-runs
+     `/mattpocock-skills:setup-matt-pocock-skills` to switch to GitHub.
    - **Repo rules forbid issues now** (a step-0 rule such as "no GitHub issue until the Jira ticket
      is in a sprint"): say the mattpocock path is unavailable for this ticket and offer
      superpowers. A step-0 override follows **Controls**' second-confirmation rule.
-4. Record the choice in the requirements doc's `Chain:` field.
+4. **Skip** means no chain: apply the plan-skip rule in **Controls** — warn once, record
+   "Intake: chain skipped — no design/plan", get an explicit go-ahead, implement directly against
+   the settled AC list (active AC only, same verification standard), then go to **Ship**. The PR
+   body states "Intake: chain skipped — no design/plan".
+5. Record the choice in the requirements doc's `Chain:` field.
 
 **Checkpoints.** Stop after each stage and get an explicit go before the next; each checkpoint
-offers go / **Skip** / cancel (see **Controls**). If a chained skill is not installed, say so.
+offers go / **Skip** / cancel (see **Controls**). If a chained skill is not installed, say so:
+- a missing superpowers skill → do that step by hand to the same standard;
+- a missing `mattpocock-skills` command → intake does not replicate it; offer superpowers instead.
+
 After cancel, no chained skill is invoked.
 
 **Settled AC list.** Plans and tickets cite `AC-n` from the **settled AC list**: the requirements
@@ -267,11 +282,12 @@ here. The PR body's first line is the ticket link: Jira → `**Ticket:** [PROJ-5
 GitHub → `**Ticket:** [owner/repo#12](<issue-url>)`, followed by `Refs owner/repo#12` (use a
 closing keyword only if the repo allows a merge to close the issue).
 The PR body works from the same settled AC list: it says which active AC numbers it delivers and
-lists the deferred, skipped, and out-of-scope ones as not delivered / unverified, and states every skipped intake step — e.g. "Intake: gap analysis skipped —
-requirements not gap-checked". If the user chose "no doc at all", the PR body also carries the
-stub doc's content.
-- **mattpocock chain:** the PR body also lists the spec issue and each ticket issue it delivers
-  (`Refs owner/repo#N` each; a closing keyword only where the repo allows a merge to close it).
+lists the deferred, skipped, and out-of-scope ones as not delivered / unverified, and states every
+skipped intake step — e.g. "Intake: gap analysis skipped — requirements not gap-checked". If the
+user chose "no doc at all", the PR body also carries the stub doc's content.
+- **mattpocock chain:** the PR body also lists the spec issue (none if `to-spec` was skipped) and
+  each ticket issue it delivers (`Refs owner/repo#N` each; a closing keyword only where the repo
+  allows a merge to close it).
 
 ## Gotchas
 

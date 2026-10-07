@@ -305,6 +305,9 @@ if [ -f "$INTAKE_SKILL" ]; then
   grep -qF 'cover only active AC' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the 'cover only active AC' settled-AC rule"
   grep -qF 'Acceptance criteria (settled)' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: stub doc missing the 'Acceptance criteria (settled)' section"
   grep -qF '## Acceptance criteria (settled)' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: stub note missing the 'Acceptance criteria (settled)' section"
+  grep -qF '**Chain:**' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: missing the '**Chain:**' header field"
+  grep -qF 'Never replicate these skills' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: missing the 'Never replicate' rule for user-only mattpocock skills"
+  grep -qF 'mattpocock path needs GitHub issues' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the GitHub-only gate for the mattpocock chain"
 
   # Public-repo hygiene: no organisation-specific ticket project or skill
   # names in this skill (they don't resolve from a public checkout).

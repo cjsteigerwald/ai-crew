@@ -90,15 +90,15 @@ skipped".>
 
 <Filled in step 6. superpowers: the design doc path and the plan path (or the approved bounded
 task list). mattpocock: the spec issue (`owner/repo#N`) and the ticket issues (`owner/repo#N` —
-`AC-n` each). Either chain: **Last completed stage:** <stage, or "none">. Before step 6: "None —
-chain not started".>
+`AC-n` each), plus any superseded tickets. Either chain: **Last completed stage:** <stage, or
+"none">. Before step 6: "None — chain not started".>
 ```
 
 **Stub doc** (the requirements-doc step was skipped): keep only the header lines — Source,
-Fetched, Status with "requirements not gap-checked" if gap analysis was skipped, and the skipped
-steps — plus the **Deferred and out-of-scope items** table with every deferred or skipped AC, the
-**Gap table at skip** section, and, whenever step 3 ran, an **Acceptance criteria (settled)**
-section in this form:
+Fetched, Status with "requirements not gap-checked" if gap analysis was skipped, the skipped
+steps, and `Chain:` — plus the **Deferred and out-of-scope items** table with every deferred or
+skipped AC, the **Gap table at skip** section, the **Chain artifacts** section, and, whenever
+step 3 ran, an **Acceptance criteria (settled)** section in this form:
 
     ## Acceptance criteria (settled)
 
