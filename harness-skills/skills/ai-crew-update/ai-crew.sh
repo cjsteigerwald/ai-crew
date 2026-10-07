@@ -1924,7 +1924,7 @@ cmd_update() {
 }
 
 cmd_verify() {
-  local i m key want ver path sha head snapver snapsha expect pm pv bh cur snap reason catlabel catnote bad=0 gfail=0 n=0 fails=()
+  local i m key want ver path sha head snapver snapsha snapnull expect pm pv bh cur snap reason catlabel catnote bad=0 gfail=0 n=0 fails=()
   require_installed
   all_targets
   for m in "${!MKT_NAMES[@]}"; do
@@ -2002,6 +2002,7 @@ cmd_verify() {
     elif [ "$bad" -eq 0 ]; then
       snapver=$(jq -r --arg k "$key" '.[$k].version // ""' "$snap")
       snapsha=$(jq -r --arg k "$key" '.[$k].gitCommitSha // ""' "$snap")
+      snapnull=$(jq -r --arg k "$key" '.[$k] == null' "$snap")
       if [ "$snapver" = "$ver" ]; then
         if [ "$sha" = "$snapsha" ]; then
           echo "$key: PASS $ver — no-op (version unchanged)${catnote:+ ($catnote)}"
@@ -2017,11 +2018,14 @@ cmd_verify() {
         # A catalogue vendor installs from an upstream URL, so its sha is that
         # repo's commit and no local clone can confirm it. The rule weakens to
         # "a version change must have moved the sha". With the label no longer
-        # the expected version, the snapshot is what catches a downgrade.
-        if [ -n "$snapver" ] && ! ver_ok "$snapver"; then
+        # the expected version, the snapshot is what catches a downgrade — so a
+        # snapshot ENTRY must carry an orderable version: an empty one would
+        # skip the guard. Only a null entry (not installed when snapshotted)
+        # has no baseline.
+        if [ "$snapnull" != true ] && ! ver_ok "$snapver"; then
           echo "$key: FAIL — snapshot version '$snapver' is not a dotted-integer version; cannot compare it to installed '$ver' (failing closed)"
           bad=1
-        elif [ -n "$snapver" ] && [ "$(ver_cmp "$ver" "$snapver")" = -1 ]; then
+        elif [ "$snapnull" != true ] && [ "$(ver_cmp "$ver" "$snapver")" = -1 ]; then
           echo "$key: FAIL — version went backwards $snapver -> $ver"
           bad=1
         elif [ -n "$snapsha" ] && [ "$sha" = "$snapsha" ]; then

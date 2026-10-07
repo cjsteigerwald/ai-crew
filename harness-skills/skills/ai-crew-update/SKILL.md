@@ -154,7 +154,9 @@ It prints a `== marketplace <name> (<repo>)` banner per marketplace, then
 `vendor codex@openai-codex` row, a `vendor superpowers@superpowers-marketplace`
 row when that marketplace is added (a WARNING when it is not), the `skip:` lines for catalogued-but-not-
 installed plugins, the counts line (vendor rows included), any unconfigured marketplace, and finally
-`reconcile: needed|clean` (see step 3.5). A plugin missing from
+`reconcile: needed|clean` (see step 3.5). The superpowers row ends
+`(catalogue label stale)` when the catalogue label is older than the
+installed version (see step 4, rule 2). A plugin missing from
 `installed_plugins.json` is `NOT INSTALLED`. An unreadable or invalid
 `installed_plugins.json`, or a missing manifest, is an ERROR (exit 1). The
 script keeps those two cases separate. For why the jq reads `.plugins[<key>][0]`
@@ -581,7 +583,10 @@ is decided by `claude plugin update` in step 3.
       have MOVED `gitCommitSha` away from the snapshot's, and a version
       change with an unmoved sha is a FAIL. Since rule 2 no longer pins
       superpowers to the label, an installed version numerically LOWER than
-      the snapshot's is a FAIL ("version went backwards"). Its catalogue
+      the snapshot's is a FAIL ("version went backwards"), and a snapshot
+      entry whose version is empty or not dot-separated integers FAILS closed
+      (a null entry — not installed when snapshotted — has no baseline and
+      passes as `<not installed> -> <v>`). Its catalogue
       entry is an unpinned URL (no ref or sha), so the install tracks upstream's
       default-branch HEAD and the version is only a catalogue label: upstream
       commits land without version bumps. For superpowers ONLY, a sha that

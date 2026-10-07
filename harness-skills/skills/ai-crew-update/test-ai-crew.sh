@@ -907,6 +907,15 @@ t "catv unparseable catalogue label: FAIL closed" 1 "$SP_KEY: FAIL — catalogue
 mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound; spto 6.4.2
 jqi "$AI_CREW_SNAPSHOT" '.[$k].version = "six"' --arg k "$SP_KEY"
 t "catv unparseable snapshot version: FAIL closed" 1 "$SP_KEY: FAIL — snapshot version 'six' is not a dotted-integer version; .* \(failing closed\)" -- S verify
+# An EMPTY version in an existing snapshot entry would skip the downgrade guard;
+# it fails closed too. Only a null entry (not installed when snapshotted) has no
+# baseline, and keeps the "<not installed> -> v" PASS.
+mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound; spto 6.4.2
+jqi "$AI_CREW_SNAPSHOT" '.[$k].version = ""' --arg k "$SP_KEY"
+t "catv empty snapshot version + sha moved: FAIL closed" 1 "$SP_KEY: FAIL — snapshot version '' is not a dotted-integer version; .* \(failing closed\)" -- S verify
+mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound; spto 6.4.2
+jqi "$AI_CREW_SNAPSHOT" '.[$k] = null' --arg k "$SP_KEY"
+t "catv null snapshot entry: PASS from not installed" 0 "$SP_KEY: PASS <not installed> -> 6.4.2 \(gitCommitSha 8ca22dba0000, .*\) \(catalogue label 6.3.0 stale" -- S verify
 # Equal label and install: unchanged behaviour, and no stale note anywhere.
 mkfix; mksp 6.3.0 6.3.0; S snapshot >/dev/null; bound
 t "catv label equal: verify PASS unchanged" 0 "$SP_KEY: PASS 6.3.0 — no-op \(version unchanged\)$" -- S verify
@@ -915,6 +924,18 @@ t "catv label equal: no stale note" 0 "" -- bash -c '! "$1" verify 2>&1 | grep -
 # even when its manifest is BEHIND the install.
 mkfix; S snapshot >/dev/null; bound; echo '{"name":"codex","version":"1.0.5"}' >"$AI_CREW_VENDOR_MANIFEST"
 t "codex manifest older than installed -> still FAIL" 1 "codex@openai-codex: FAIL — installed version '1.0.6' != manifest version '1.0.5'" -- S verify
+# ver_ok / ver_cmp directly, lifted out of the script (it cannot be sourced).
+sed -n -e '/^ver_ok() /p' -e '/^ver_cmp() {/,/^}/p' "$SCRIPT" >"$TMP/ver.sh"
+vc() { bash -c '. "$1"; shift; "$@"' _ "$TMP/ver.sh" "$@"; }
+t "ver helpers extracted" 0 "" -- grep -q '^ver_cmp() {' "$TMP/ver.sh"
+t "ver_cmp 6.4 == 6.4.0" 0 "^0$" -- vc ver_cmp 6.4 6.4.0
+t "ver_cmp 6.04 == 6.4" 0 "^0$" -- vc ver_cmp 6.04 6.4
+t "ver_cmp 0.0 == 0" 0 "^0$" -- vc ver_cmp 0.0 0
+t "ver_cmp 6.10.0 > 6.9.9" 0 "^1$" -- vc ver_cmp 6.10.0 6.9.9
+t "ver_cmp 6.9.9 < 6.10.0" 0 "^-1$" -- vc ver_cmp 6.9.9 6.10.0
+t "ver_ok rejects 6.4.2-beta" 1 "" -- vc ver_ok 6.4.2-beta
+t "ver_ok rejects empty" 1 "" -- vc ver_ok ""
+t "ver_ok accepts 6.4.2" 0 "" -- vc ver_ok 6.4.2
 
 # A clone that IS present must be readable: fail closed.
 mkfix; mksp 6.3.0 6.3.0
