@@ -11,8 +11,9 @@ delegate-agent packs:
 | **crew-gates** | N/A | PreToolUse gates that make an orchestrator delegate to cheaper lanes: delegation-gate, read-budget-gate, lane-model-gate, plus a per-prompt routing table |
 | **harness-skills** | N/A | Crew configuration writer and the ai-crew-update plugin updater/reconciler. |
 | **tech-research** | Varied | Interrogative, evidence-tiered research protocol for technology and vendor decisions, with seven specialised research agents |
-| **repo-audit** | Haiku | Read-only repository audit suite: seven audit skills, an agentic-readiness roll-up, and an ai-readiness orchestrator, with sandboxing wrappers for gh and git |
 | **dev-workflow** | Varied | Engineering workflow skills (ticket intake and requirements gap analysis, PR gates, orchestrated plan implementation, incident investigation and write-ups, skill retrospectives, Copilot readiness) plus verifier, adversarial reviewer, worker, and specialist review agents |
+
+**repo-audit has moved** to an internal marketplace and is no longer published here. Pin tag `repo-audit--v0.1.0` for the last version this repository shipped, or fork it (MIT). If you installed it, uninstall it explicitly: `claude plugin uninstall repo-audit@cjs-plugins`.
 
 Installing a plugin does not remove any same-named personal skill in `~/.claude/skills`; plugin skills are namespaced (`<plugin>:<skill>`) and the personal copy keeps the bare name.
 
