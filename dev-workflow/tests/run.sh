@@ -267,7 +267,7 @@ if [ -f "$INTAKE_SKILL" ]; then
   [ "$lines" -lt 500 ] || ifail "intaking-work-items/SKILL.md: $lines lines (keep under 500; push detail into supporting files)"
 
   # Supporting files exist and are linked one level deep from SKILL.md.
-  for support in checklist.md template.md chain-superpowers.md chain-mattpocock.md run-modes.md; do
+  for support in checklist.md template.md chain-superpowers.md chain-mattpocock.md run-modes.md verify.md; do
     [ -f "$INTAKE_DIR/$support" ] || ifail "intaking-work-items/$support not found"
     grep -qF "]($support)" "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: does not link $support"
   done
@@ -340,6 +340,19 @@ if [ -f "$INTAKE_SKILL" ]; then
   grep -qF 'PushNotification' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the notification channel"
   grep -qF 'continue from the Run log' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing resume-from-Run-log"
 
+  grep -qF '## 7. Verify' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing step 7 Verify"
+  grep -qF 'fail on an assertion' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: red check not limited to assertion failures"
+  grep -qF 'red n/a — new interface' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing the new-interface red rule"
+  grep -qF 'names a module or symbol the branch adds' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: new-interface exception too broad"
+  grep -qF 'only test files and fixtures' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing what is copied to the base worktree"
+  grep -qF 'pass twice on head' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing the flake check"
+  grep -qF 'up to 2 fix attempts' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing the 2-attempt rule"
+  grep -qF 'verified / failed / unverified / not delivered' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing the result vocabulary"
+  grep -qF 'read-only commands only' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing the read-only live-check rule"
+  grep -qF 'post-merge' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing post-merge DoD handling"
+  grep -qF 'quoted output line' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing the evidence rule"
+  grep -qF "never trust a worker's report" "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing the re-run rule"
+  grep -qF 'the commit Ship pushes' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing re-verify on the shipped commit"
   # Public-repo hygiene: no organisation-specific ticket project or skill
   # names in this skill (they don't resolve from a public checkout).
   ces_hits="$(grep -rniwE 'ces' "$INTAKE_DIR" 2>/dev/null || true)"

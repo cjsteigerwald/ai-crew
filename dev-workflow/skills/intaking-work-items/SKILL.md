@@ -304,6 +304,13 @@ user chose "no doc at all", the PR body also carries the stub doc's content.
   each ticket issue it delivers (`Refs owner/repo#N` each; a closing keyword only where the repo
   allows a merge to close it).
 
+## 7. Verify
+
+Both run modes. Follow [verify.md](verify.md): re-run the repo checks, then every active AC by its
+AC→test row, then the Definition of done, on the final branch. Write each result with its evidence
+to the doc's Verification evidence table. Nothing ships until every active AC is verified or
+unverified with reason, or a stop condition applies (see [run-modes.md](run-modes.md)).
+
 ## Gotchas
 
 - **Why this exists:** tickets reach implementation with untestable AC, and the ambiguity is then
