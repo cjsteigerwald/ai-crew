@@ -21,11 +21,12 @@ this shape:
 | 6 | **Acceptance criteria** | Every AC testable as written: Given/When/Then, or a command plus its expected output; each maps to a requirement | "Works", "handles errors", "is documented"; AC that restate the title |
 | 7 | **Dependencies, blockers, gates** | Upstream tickets, approvals, access, environments, or repo gates named with their current state | A "depends on" link whose state nobody checked; implicit access needs |
 | 8 | **Definition of done** | What must be true beyond the AC to close it: merged, deployed where, docs updated, ticket transitioned | Done = "PR merged" when the work is only real once deployed |
-| 9 | **Test plan** | How each AC will be verified: automated test, manual check, or live command — and where it runs | No test plan; "QA will test"; an AC with no way to observe it |
+| 9 | **Test plan** | The AC→test table is filled for every active AC (AC-n → kind: unit / integration / live read / person-only → seam, the public interface the test goes through → what it catches and misses → test name → location) and each AC is tagged `agent-verifiable` or `person-only`. This table is what step 4 approves as the `tdd` seam confirmation | No test plan; "QA will test"; an AC with no way to observe it |
 | 10 | **Risks** | Known failure modes, blast radius, rollback path for anything that touches running systems | Production-touching change with no rollback or risk line |
 | 11 | **Open questions in comments** | Every question raised in the comment thread has an answer | A comment question with no reply, or a reply that changed scope without updating the description |
 | 12 | **Sizing and sprint status** | Estimate set per the team's convention; sprint/milestone matches the intent to start now | Unestimated; not in a sprint while the repo requires one before work starts |
 | 13 | **Contradictions** | No conflict between any two sources: Jira vs GitHub equivalent, description vs comments, a field vs the body | Description says "retain 30 days", a later comment says "90 days"; AC field and description list different AC |
+| 14 | **Access and environment** | The agent can run the suite and reach every environment, credential, and cloud read the checks need, each named with how it was confirmed | "Needs prod access" unchecked; tests that only run in CI |
 
 ## Rating rules
 
@@ -46,5 +47,6 @@ this shape:
 - **A generic remote link is not identity evidence.** An item counts as equivalent only if the link
   type, the link text, or the item itself asserts same-work ("mirrors", "tracked in", a sync link
   type, the same key in the title), or the user confirms it. Otherwise it is related context.
+- Row 14 unmet or skipped ⇒ `unattended unavailable`; offer attended.
 - Rows 7 and 12 can be **blockers** rather than gaps: an unmet gate is reported and stops the work;
   it is not something a clarifying answer can close.

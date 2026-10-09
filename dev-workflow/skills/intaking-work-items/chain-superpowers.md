@@ -1,7 +1,7 @@
 # Superpowers chain — step 6 of intaking-work-items
 
 Read only after the superpowers chain is chosen in SKILL.md step 6; it ends by returning to SKILL.md
-step 6's **Ship** stage.
+step 7 (Verify).
 
 1. **Design — `superpowers:brainstorming`.** What you hand it depends on what intake produced:
    - **Gate passed:** the requirements doc path, and say plainly: *requirements and AC are settled;
@@ -34,6 +34,10 @@ step 6's **Ship** stage.
      design.
 2. **Plan.** Tasks cite `AC-n` from the **settled AC list** and cover only active AC — see the
    **Settled AC list** rule in SKILL.md step 6.
+   - **Plan approval.** In unattended mode, the approval question states the gate mapping from
+     [run-modes.md](run-modes.md) § What the sitting settles and that approval `pre-authorizes`
+     the two outward actions (commit/push and the draft PR). Run Preflight (same file) before
+     asking.
    - **(a) Architectural — `superpowers:writing-plans`.** Every task cites the AC numbers it
      satisfies, and every AC is covered by at least one task; the plan's **Spec** line lists both
      the design doc and the requirements doc, plus every skipped intake step (e.g. "Intake: gap
@@ -57,4 +61,8 @@ step 6's **Ship** stage.
    "Intake: plan skipped". A single small edit doesn't need the orchestrator either. Either way,
    work to the same standard (tests, verification evidence per AC).
 
-After stage 3, return to SKILL.md step 6 for the **Ship** stage.
+   In unattended mode `plan-implementation` runs `without its stage checkpoints`, stopping only
+   on the [run-modes.md](run-modes.md) stop conditions. Every implementer it dispatches receives
+   the AC→test table as the `confirmed seam list` for its `tdd` call; a seam not in the table is a stop (report it, never ask or invent).
+
+After stage 3, return to SKILL.md step 7 (Verify).

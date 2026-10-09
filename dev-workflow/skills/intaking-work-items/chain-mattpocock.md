@@ -1,7 +1,7 @@
 # mattpocock chain — step 6 of intaking-work-items
 
 Read only after the mattpocock chain is chosen in SKILL.md step 6; it ends by returning to SKILL.md
-step 6's **Ship** stage.
+step 7 (Verify).
 
 ## Why the user types each command
 
@@ -12,7 +12,8 @@ disable-model-invocation. Ask the user to run /mattpocock-skills:to-spec themsel
 replicate this skill's workflow by other means".
 
 So at each stage intake prints the exact command, with its arguments, and the context to give it,
-stops, and resumes when the user reports back. **Never replicate these skills' workflows by other
+stops, and resumes when the user reports back. The one exception is `implement-spec` in intake
+mode, which intake invokes itself (stage 3). **Never replicate these skills' workflows by other
 means** — intake does not write the spec, break down tickets, or implement in their place, even
 when a stage is skipped.
 
@@ -50,16 +51,34 @@ user's confirmation for the issues it creates. The same context names every skip
 
    Take any gap back to the user before implementation. Record the ticket list
    (`owner/repo#N` — `AC-n` each) in **Chain artifacts**.
-3. **Implement.** First state the handoff: the settled AC list with each AC's disposition; build
-   only the tickets for active AC (list them); the spec issue — especially an original GitHub
-   ticket whose text predates step 3 — is background only; deferred, skipped, and out-of-scope AC
-   must not be implemented. Then the user types `/mattpocock-skills:implement <spec issue URL>`.
-   Its `tdd` seam confirmation and `/code-review` run as that skill defines.
 
-   **After it returns, before Ship:** check the diff and tests against the active AC list, and
-   flag back to the user any change that implements a non-active AC.
+   Then, in unattended mode, run Preflight ([run-modes.md](run-modes.md)) and ask once
+   (`AskUserQuestion`): "`go unattended?`" — stating that the go
+   `pre-authorizes exactly two outward actions` (commit/push and the draft PR), with the gate
+   mapping from run-modes.md. Record the answer in the Run log.
 
-After stage 3, return to SKILL.md step 6 for the **Ship** stage.
+3. **Implement.** First state the handoff, in both modes: the settled AC list with each AC's
+   disposition, and the AC→test table as the pre-agreed seams; build only the tickets for active
+   AC (list them); the spec issue — especially an original GitHub ticket whose text predates
+   step 3 — is background only; deferred, skipped, and out-of-scope AC must not be implemented.
+   - **Intake mode:** invoke the Skill `implement-spec` (bare name, not
+     `mattpocock-skills:implement-spec`) with the spec issue URL, "intake mode", and the AC→test
+     table as the `confirmed seam list` for every implementer's `tdd` call;
+     a seam not in the table is a stop (report it, never ask or invent). Before invoking it, read the resolved SKILL.md and require its "In intake mode"
+     clauses at steps 3 and 8 (count ≥ 2); otherwise take the attended fallback. Pass a
+     `review base` for every nested `code-review` call: the merge-base of the integration branch with
+     main, settled in the sitting and recorded in the Run log.
+     `intake mode publishes nothing`: no draft PR at its step 3, no ready or close at step 8, no
+     closing keywords; it returns the integration branch.
+   - **If the Skill call errors** (e.g. `disable-model-invocation`), the chain runs `attended only`
+     with today's command: the user types `/mattpocock-skills:implement <spec-url>` (it opens no
+     PR). The unedited `implement-spec` is never used, in either mode.
+
+   **After it returns, before Verify:** check the diff and tests against the active AC list, and
+   flag back to the user any change that implements a non-active AC; in unattended mode this is a scope stop (run-modes.md § Stop
+   conditions).
+
+After stage 3, return to SKILL.md step 7 (Verify).
 
 ## Controls on this path
 
@@ -68,11 +87,12 @@ The **Controls** in SKILL.md apply, with these specifics:
 - **Skip** at a stage checkpoint follows the whole-step skip rules (warn once, in one line, about
   what the skip loses; record it; continue).
   - **Skip `to-spec`** (Jira): the warning says what is lost — no spec issue, so tickets have no
-    parent, `implement` is pointed at the tickets and the settled AC list only, and **Ship** lists
-    no spec issue.
+    parent, `implement` is pointed at the tickets and the settled AC list only, and step 8 (Ship)
+    lists no spec issue.
   - **Skip `to-tickets`** is the plan-skip rule: warn once, record it, get an explicit go-ahead.
-    The user still types `/mattpocock-skills:implement <spec issue URL>` — intake never implements
-    in its place on this path — with the settled AC list stated as the only scope. The PR body
+    The Implement stage still runs — `implement-spec` in intake mode, or the user types
+    `/mattpocock-skills:implement <spec issue URL>` on the attended fallback; intake never
+    implements in their place — with the settled AC list stated as the only scope. The PR body
     states "Intake: plan skipped".
 - **Cancel:** stop, and do not prompt the user to type any further command. Issues already created
   by commands the user ran are reported (`owner/repo#N` each), not deleted.

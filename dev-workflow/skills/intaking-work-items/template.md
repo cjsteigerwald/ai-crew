@@ -11,8 +11,9 @@ never leave `TBD`. No secrets, tokens, or credential values anywhere in the doc.
 **Linked items:** <key or owner/repo#N — equivalent / parent / dependency / related — evidence for the class>
 **Fetched:** <YYYY-MM-DD, required — resume diffs comments and changes against this date> — ticket status `<status>`, sprint `<sprint or none>`, estimate `<value or none>`
 **Intake by:** <name> with the `dev-workflow:intaking-work-items` skill
-**Status:** <Draft | Ready | Cancelled> — <last completed step; skipped steps and what each lost, e.g. "gap analysis skipped — requirements not gap-checked">
+**Status:** <Draft | Ready | Partial | Delivered | Cancelled> — <last completed step; skipped steps and what each lost, e.g. "gap analysis skipped — requirements not gap-checked">
 **Chain:** <superpowers | mattpocock | — (not yet chosen)>
+**Run mode:** <unattended | attended>
 
 > Snapshot of the ticket on the fetched date plus the decisions below. If the ticket changes,
 > re-run intake for the changed rows rather than editing this doc by memory.
@@ -59,7 +60,30 @@ Each AC is testable as written and names how it is verified. Plans and PRs cite 
 
 ## Test plan
 
-<How the AC are exercised: unit/integration tests, manual checks, live commands, and where each runs.>
+| AC | Kind | Seam | Catches / misses | Test name | Location |
+|---|---|---|---|---|---|
+| AC-1 | unit / integration / live read / person-only | <public interface the test goes through> | <what it catches / what it misses> | <test name> | <file or environment> |
+
+Repo-wide checks: <suite, lint, types — the commands as the repo names them>.
+
+## Verification evidence
+
+| AC | Check | Kind | Result | Evidence | Base / head / time |
+|---|---|---|---|---|---|
+| AC-1 | `pytest tests/test_retention.py::test_purge_after_90d` | automated, new | verified | base: `AssertionError: 30 != 90`; head ×2: `1 passed` | `9f8e7d6` / `a1b2c3d` 14:02 |
+| AC-2 | `pytest tests/test_export.py::test_csv_header` | automated, new | verified (red n/a — new interface) | base: `ImportError: export`; head ×2: `1 passed` | `9f8e7d6` / `a1b2c3d` 14:03 |
+| AC-3 | log in as read-only user, open /admin | person-only | unverified | steps at close-out | — |
+| AC-4 | — | deferred | not delivered | "<user's words>" | — |
+
+<Filled in step 7. Before step 7: "None — step 7 not run".>
+
+## Run log
+
+| Time | Step | Event | Attempt | Blocker |
+|---|---|---|---|---|
+| <HH:MM> | <step> | <event> | <n> | <blocker kind, or —> |
+
+<Before the run starts: "None — run not started".>
 
 ## Risks
 
@@ -97,7 +121,7 @@ task list). mattpocock: the spec issue (`owner/repo#N`) and the ticket issues (`
 **Stub doc** (the requirements-doc step was skipped): keep only the header lines — Source,
 Fetched, Status with "requirements not gap-checked" if gap analysis was skipped, the skipped
 steps, and `Chain:` — plus the **Deferred and out-of-scope items** table with every deferred or
-skipped AC, the **Gap table at skip** section, the **Chain artifacts** section, and, whenever
+skipped AC, the **Gap table at skip** section, the **Chain artifacts** section, the **Verification evidence** and **Run log** sections when step 7 ran, and, whenever
 step 3 ran, an **Acceptance criteria (settled)** section in this form:
 
     ## Acceptance criteria (settled)
