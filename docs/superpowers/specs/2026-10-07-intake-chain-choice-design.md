@@ -23,6 +23,8 @@ shared PR stage are identical for both.
 - `mattpocock-skills` 1.2.3 marks `to-spec`, `to-tickets`, `implement`, `implement-spec`,
   `grill-with-docs`, `wayfinder`, `triage` and `setup-matt-pocock-skills` with
   `disable-model-invocation: true` (frontmatter line 4 of each `SKILL.md`).
+  (2026-10-09: intake now invokes the user-level `implement-spec` in intake mode — see
+  docs/superpowers/specs/2026-10-09-intake-agentic-run-design.md.)
 - Claude cannot launch them: a `Skill` call to `mattpocock-skills:to-spec` returns
   "cannot be used with Skill tool due to disable-model-invocation. Ask the user to run
   /mattpocock-skills:to-spec themselves … Do not replicate this skill's workflow by other means".

@@ -324,6 +324,21 @@ gate 2's rebase or a review fix changes the tree, step 7 re-runs on the commit S
 body carries the step-7 evidence table. The PR stays draft while any AC is failed or person-only
 unverified; deferred, skipped, and out-of-scope AC are listed as not delivered.
 
+## 9. Close-out
+
+Runs when the user returns (unattended) or after Ship (attended).
+
+1. Show the Run log, the evidence table, and any blockers.
+2. Walk each person-only AC with the user and record the result in the doc's evidence table.
+3. Offer each outward action separately under step 5's per-action rule, each with Skip:
+   - mark the PR ready — state any failed or unverified AC first;
+   - Jira transition;
+   - ticket comment;
+   - close tickets, as the repo allows.
+4. Status becomes Delivered only if every active AC is verified and the PR is ready; otherwise Partial, listing the open AC.
+5. Offer `/retro` on the session. Skill and memory findings go to `dev-workflow:skill-retrospective`;
+   accepted environment changes go on a separate branch and PR, never the ticket PR.
+
 ## Gotchas
 
 - **Why this exists:** tickets reach implementation with untestable AC, and the ambiguity is then
