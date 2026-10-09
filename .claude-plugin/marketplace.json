@@ -40,12 +40,6 @@
       "description": "Interrogative, evidence-tiered research protocol for technology and vendor decisions, with seven specialised research agents."
     },
     {
-      "name": "repo-audit",
-      "source": "./repo-audit",
-      "version": "0.1.0",
-      "description": "Read-only repository audit suite: seven audit skills, an agentic-readiness roll-up, and an ai-readiness orchestrator, with sandboxing wrappers for gh and git."
-    },
-    {
       "name": "dev-workflow",
       "source": "./dev-workflow",
       "version": "0.1.6",
