@@ -353,6 +353,17 @@ if [ -f "$INTAKE_SKILL" ]; then
   grep -qF 'quoted output line' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing the evidence rule"
   grep -qF "never trust a worker's report" "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing the re-run rule"
   grep -qF 'the commit Ship pushes' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing re-verify on the shipped commit"
+  grep -qF '## 8. Ship' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing step 8 Ship"
+  grep -qF 'a user checkpoint between each' "$INTAKE_SKILL" && ifail "intaking-work-items/SKILL.md: still claims a checkpoint between every stage"
+  grep -qF "step 6's **Ship**" "$INTAKE_DIR/chain-superpowers.md" "$INTAKE_DIR/chain-mattpocock.md" && ifail "intaking-work-items/chain-*.md: still return to step 6's Ship"
+  grep -qF 'without its stage checkpoints' "$INTAKE_DIR/chain-superpowers.md" || ifail "intaking-work-items/chain-superpowers.md: missing the unattended implement rule"
+  grep -qF 'pre-authorizes' "$INTAKE_DIR/chain-superpowers.md" || ifail "intaking-work-items/chain-superpowers.md: plan approval missing the pre-authorization"
+  grep -qF 'go unattended?' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: missing the go question"
+  grep -qF 'implement-spec' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: Implement stage does not use implement-spec"
+  grep -qF 'intake mode publishes nothing' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: missing intake mode"
+  grep -qF 'attended only' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: missing the attended fallback"
+  grep -qF 'confirmed seam list' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: implement-spec handoff missing the seam list"
+  grep -qF 'confirmed seam list' "$INTAKE_DIR/chain-superpowers.md" || ifail "intaking-work-items/chain-superpowers.md: implementer handoff missing the seam list"
   # Public-repo hygiene: no organisation-specific ticket project or skill
   # names in this skill (they don't resolve from a public checkout).
   ces_hits="$(grep -rniwE 'ces' "$INTAKE_DIR" 2>/dev/null || true)"

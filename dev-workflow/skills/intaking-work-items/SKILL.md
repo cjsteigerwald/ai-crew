@@ -6,11 +6,12 @@ description: >
   acceptance criteria, blocks on clarifying questions until every gap is closed
   or explicitly deferred, writes docs/specs/<KEY>-requirements.md, offers
   confirmed writebacks to the ticket, then chains design, plan, implementation
-  (superpowers or mattpocock-skills, the user's choice) and PR with a user
-  checkpoint between each. Use when starting work on an
-  existing ticket — "start work on PROJ-571", "pick up issue #12", "bring in
-  this ticket", "work on owner/repo#N", a pasted Jira or GitHub issue URL, or
-  "is this ticket ready". Skip when creating a new ticket (use your
+  (superpowers or mattpocock-skills, the user's choice) — unattended after one
+  sitting by default — verifies each AC, opens a draft PR, closes out on
+  return. Use when starting work on an existing ticket — "start work on
+  PROJ-571", "pick up issue #12", "bring in this ticket", "work on
+  owner/repo#N", a pasted Jira or GitHub issue URL, or "is this ticket ready".
+  Skip when creating a new ticket (use your
   workspace's ticket-creation skill or process), root-causing an incident
   (investigating-incidents), executing an already-approved plan
   (plan-implementation), or just shipping finished work (opening-pull-requests).
@@ -63,8 +64,9 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
     it, then get an explicit go-ahead for implementation. Implement directly against the settled AC
     list and cover only active AC (see step 6, **Settled AC list**) to the same verification
     standard, without plan-implementation's approved-plan prerequisite. The PR body states
-    "Intake: plan skipped". On the mattpocock chain the user still runs
-    `/mattpocock-skills:implement` — see [chain-mattpocock.md](chain-mattpocock.md).
+    "Intake: plan skipped". On the mattpocock chain
+    the Implement stage still runs, as [chain-mattpocock.md](chain-mattpocock.md) defines it (`implement-spec`
+    in intake mode, or `/mattpocock-skills:implement` on the attended fallback).
     In unattended mode the plan-skip go-ahead comes after Preflight passes and carries the same
     pre-authorization and gate answers as plan approval.
   - **Skipped requirements doc → still write a stub doc** at `docs/specs/<KEY>-requirements.md`:
@@ -245,10 +247,10 @@ The ticket is outward-facing; every write is the user's call, every time.
 - After an applied write, re-read the ticket and confirm it landed — a success response alone proves
   little on some fields.
 
-## 6. Chain — a user checkpoint between each stage
+## 6. Chain — design, plan, implement
 
 Steps 0–5 are the same for every chain. Step 6 picks the chain that runs design, plan, and
-implement, then ships through the shared **Ship** stage below.
+implement, then goes to step 7 (Verify) and step 8 (Ship).
 
 **Choosing the chain.**
 1. Read the **target** repo's `docs/agents/issue-tracker.md`, if present. Recommend mattpocock
@@ -268,12 +270,15 @@ implement, then ships through the shared **Ship** stage below.
      superpowers. A step-0 override follows **Controls**' second-confirmation rule.
 4. **Skip** means no chain: apply the plan-skip rule in **Controls** — warn once, record
    "Intake: chain skipped — no design/plan", get an explicit go-ahead, implement directly against
-   the settled AC list (active AC only, same verification standard), then go to **Ship**. The PR
-   body states "Intake: chain skipped — no design/plan".
+   the settled AC list (active AC only, same verification standard) after Preflight passes and
+   the go-ahead is given; then go to step 7. The PR body states "Intake: chain skipped — no
+   design/plan".
 5. Record the choice in the requirements doc's `Chain:` field.
 
 **Checkpoints.** Stop after each stage and get an explicit go before the next; each checkpoint
-offers go / **Skip** / cancel (see **Controls**). If a chained skill is not installed, say so:
+offers go / **Skip** / cancel (see **Controls**). In unattended mode the checkpoints end at the
+go; after it only [run-modes.md](run-modes.md) § Stop conditions halt the run. If a chained skill
+is not installed, say so:
 - a missing superpowers skill → do that step by hand to the same standard;
 - a missing `mattpocock-skills` command → intake does not replicate it; offer superpowers instead.
 
@@ -292,8 +297,17 @@ restores refined or deferred AC.
 - superpowers → read [chain-superpowers.md](chain-superpowers.md)
 - mattpocock → read [chain-mattpocock.md](chain-mattpocock.md)
 
-**Ship — `[[opening-pull-requests]]`.** The ticket question for its gate 7 is already answered
-here. The PR body's first line is the ticket link: Jira → `**Ticket:** [PROJ-571](<jira-url>)`;
+## 7. Verify
+
+Both run modes. Follow [verify.md](verify.md): re-run the repo checks, then every active AC by its
+AC→test row, then the Definition of done, on the final branch. Write each result with its evidence
+to the doc's Verification evidence table. Nothing ships until every active AC is verified or
+unverified with reason, or a stop condition applies (see [run-modes.md](run-modes.md)).
+
+## 8. Ship
+
+Both run modes ship through `[[opening-pull-requests]]`. The ticket question for its gate 7 is
+already answered here. The PR body's first line is the ticket link: Jira → `**Ticket:** [PROJ-571](<jira-url>)`;
 GitHub → `**Ticket:** [owner/repo#12](<issue-url>)`, followed by `Refs owner/repo#12` (use a
 closing keyword only if the repo allows a merge to close the issue).
 The PR body works from the same settled AC list: it says which active AC numbers it delivers and
@@ -304,12 +318,11 @@ user chose "no doc at all", the PR body also carries the stub doc's content.
   each ticket issue it delivers (`Refs owner/repo#N` each; a closing keyword only where the repo
   allows a merge to close it).
 
-## 7. Verify
-
-Both run modes. Follow [verify.md](verify.md): re-run the repo checks, then every active AC by its
-AC→test row, then the Definition of done, on the final branch. Write each result with its evidence
-to the doc's Verification evidence table. Nothing ships until every active AC is verified or
-unverified with reason, or a stop condition applies (see [run-modes.md](run-modes.md)).
+**Unattended mode.** `opening-pull-requests` gate 8 is pre-answered by the go (recorded in the Run
+log), and gate 9 runs `gh pr create --draft`. A lint/test failure inside it is a step-7 failure. If
+gate 2's rebase or a review fix changes the tree, step 7 re-runs on the commit Ship pushes. The PR
+body carries the step-7 evidence table. The PR stays draft while any AC is failed or person-only
+unverified; deferred, skipped, and out-of-scope AC are listed as not delivered.
 
 ## Gotchas
 
