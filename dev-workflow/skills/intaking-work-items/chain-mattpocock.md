@@ -52,7 +52,7 @@ user's confirmation for the issues it creates. The same context names every skip
    Take any gap back to the user before implementation. Record the ticket list
    (`owner/repo#N` — `AC-n` each) in **Chain artifacts**.
 
-   Then run Preflight ([run-modes.md](run-modes.md)) and ask once
+   Then, in unattended mode, run Preflight ([run-modes.md](run-modes.md)) and ask once
    (`AskUserQuestion`): "`go unattended?`" — stating that the go
    `pre-authorizes exactly two outward actions` (commit/push and the draft PR), with the gate
    mapping from run-modes.md. Record the answer in the Run log.
@@ -63,7 +63,11 @@ user's confirmation for the issues it creates. The same context names every skip
    step 3 — is background only; deferred, skipped, and out-of-scope AC must not be implemented.
    - **Intake mode:** invoke the Skill `implement-spec` (bare name, not
      `mattpocock-skills:implement-spec`) with the spec issue URL, "intake mode", and the AC→test
-     table as the `confirmed seam list` for every implementer's `tdd` call.
+     table as the `confirmed seam list` for every implementer's `tdd` call;
+     a seam not in the table is a stop (report it, never ask or invent). Before invoking it, read the resolved SKILL.md and require its "In intake mode"
+     clauses at steps 3 and 8 (count ≥ 2); otherwise take the attended fallback. Pass a
+     `review base` for every nested `code-review` call: the merge-base of the integration branch with
+     main, settled in the sitting and recorded in the Run log.
      `intake mode publishes nothing`: no draft PR at its step 3, no ready or close at step 8, no
      closing keywords; it returns the integration branch.
    - **If the Skill call errors** (e.g. `disable-model-invocation`), the chain runs `attended only`
@@ -71,7 +75,8 @@ user's confirmation for the issues it creates. The same context names every skip
      PR). The unedited `implement-spec` is never used, in either mode.
 
    **After it returns, before Verify:** check the diff and tests against the active AC list, and
-   flag back to the user any change that implements a non-active AC.
+   flag back to the user any change that implements a non-active AC; in unattended mode this is a scope stop (run-modes.md § Stop
+   conditions).
 
 After stage 3, return to SKILL.md step 7 (Verify).
 

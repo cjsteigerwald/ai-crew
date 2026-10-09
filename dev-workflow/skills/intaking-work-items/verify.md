@@ -13,9 +13,11 @@ fixes and retries go in its `## Run log`.
 
 1. **Repo checks** — full suite, lint, type checks as the repo names them.
 2. **Each active AC**, by its AC→test row:
-   - **Automated** — run it, quote the output line, record the commit. Run the red check below.
+   - **Automated** — run it, quote the output line, record the commit. Run the red check below for each new test. Checklist kinds unit and integration map to Automated.
    - **Live read** — read-only commands only (`az … show`, `kubectl get`, `terraform plan`); never
-     apply or deploy.
+     apply or deploy. A live read verifies an AC only if its output identifies the observed
+     artifact's revision and that revision is the shipped commit or built from it; otherwise the
+     result is `unverified` and the evidence is marked `context only`.
    - **Person-only** — not run; result `unverified`, with exact steps for the user at close-out.
 3. **Definition of done** items, each with evidence or marked post-merge and carried to close-out.
 
@@ -31,7 +33,7 @@ For each new test, prove it can fail:
   reviewers' check that the test asserts the AC.
 - Any other setup failure is a failed check.
 - Each new test must pass twice on head. Differing results are a failure.
-- Record the base SHA, the command, and the failure reason.
+- Record the base SHA, the command, and the failure reason, and remove the worktree afterwards.
 
 ## Failure
 

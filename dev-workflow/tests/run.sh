@@ -369,6 +369,15 @@ if [ -f "$INTAKE_SKILL" ]; then
   grep -qF 'skill-retrospective' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: close-out missing the skill-retrospective route"
   grep -qF 'separate branch and PR' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: retro changes not kept off the ticket PR"
   grep -qF 'Status becomes Delivered only if' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the Delivered rule"
+  grep -qF 'context only' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: live read lacks the revision-provenance rule"
+  grep -qF 'review base' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: handoff missing the review base"
+  grep -qF 'review base' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: sitting does not settle the review base"
+  grep -qF 'time limit' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the time limit"
+  grep -qF 'In intake mode' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: missing the implement-spec intake-clause check"
+  grep -qF 'a seam not in the table is a stop' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: handoff missing the unanswered-seam stop"
+  grep -qF 'a seam not in the table is a stop' "$INTAKE_DIR/chain-superpowers.md" || ifail "intaking-work-items/chain-superpowers.md: handoff missing the unanswered-seam stop"
+  grep -qF 'fresh go' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: resume lacks a fresh go"
+  grep -qF 'person-only' "$INTAKE_DIR/checklist.md" || ifail "intaking-work-items/checklist.md: checklist missing person-only"
   # Public-repo hygiene: no organisation-specific ticket project or skill
   # names in this skill (they don't resolve from a public checkout).
   ces_hits="$(grep -rniwE 'ces' "$INTAKE_DIR" 2>/dev/null || true)"

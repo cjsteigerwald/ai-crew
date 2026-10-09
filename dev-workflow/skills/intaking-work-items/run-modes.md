@@ -17,6 +17,7 @@ The sitting answers every downstream gate in advance. Record each answer in the 
 - The approved AC→test table is the seam confirmation `tdd` requires. It names each test's seam
   and what it catches and misses, and is handed to every implementer, on both chains, as the
   confirmed seam list.
+- The review base: the merge-base of the integration branch with main, recorded in the Run log.
 - Plan approval answers `plan-implementation`'s commit/push/PR prompt and answers gate 8 of
   `opening-pull-requests`.
 - On the mattpocock chain there is no plan approval: an explicit "go unattended?" question after
@@ -31,7 +32,7 @@ the one intake opened, ticket comments, Jira transitions, closing tickets.
 ## Preflight
 
 Run while the user is present, before every go: plan approval, the mattpocock go question, and the
-plan-skip or chain-skip go-ahead. If any item fails, offer attended.
+plan-skip or chain-skip go-ahead. If any item fails, offer attended, else fix the item or cancel.
 
 - Checklist row 14 (Access and environment) is Present.
 - Row 9 is Present: the AC→test table is approved. A skipped row 9 means attended only.
@@ -57,10 +58,15 @@ Each stop is one of two kinds:
 - **implementation blocker** (scope, a wrong or untestable AC, a person-only gap, a missing seam)
   with checks green: run the review chain, push, open the draft PR with the blocker in its body,
   notify. Do this only if every publication gate (repo step-0 rules, `opening-pull-requests`) is
-  satisfied.
+  satisfied; otherwise stop locally.
 - **publication blocker** (a repo gate, missing push or PR access, an unanswered publication
   gate) or failing checks: stop locally. Commits stay on the branch, the Run log and final
   message carry the blocker, notify. Nothing is pushed. Repo gates keep step 0's precedence.
+
+Every command and worker wait has a `time limit` (defaults: 30 min per command, 2 h per worker;
+confirmed at Preflight, recorded in the Run log). A timeout counts as a failed attempt; a worker
+timeout is an implementation blocker. Post-PR CI waits use the same limit; a timeout is recorded in
+the Run log and PR body, leaving the PR as is.
 
 Notify with `PushNotification`; if unavailable, use the PR body or Run log plus the final message.
 
@@ -68,3 +74,5 @@ Notify with `PushNotification`; if unavailable, use the PR body or Run log plus 
 
 Append to the doc's `## Run log` as the run goes: time, step, event, attempt, blocker. On resume,
 refetch and diff per Controls in SKILL.md, then continue from the Run log.
+A resumed run re-runs Preflight and needs a `fresh go` before leaving the user again; fix-attempt
+counts restart.

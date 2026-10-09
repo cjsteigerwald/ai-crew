@@ -34,7 +34,7 @@ step 7 (Verify).
      design.
 2. **Plan.** Tasks cite `AC-n` from the **settled AC list** and cover only active AC — see the
    **Settled AC list** rule in SKILL.md step 6.
-   - **Plan approval.** The approval question states the gate mapping from
+   - **Plan approval.** In unattended mode, the approval question states the gate mapping from
      [run-modes.md](run-modes.md) § What the sitting settles and that approval `pre-authorizes`
      the two outward actions (commit/push and the draft PR). Run Preflight (same file) before
      asking.
@@ -63,6 +63,6 @@ step 7 (Verify).
 
    In unattended mode `plan-implementation` runs `without its stage checkpoints`, stopping only
    on the [run-modes.md](run-modes.md) stop conditions. Every implementer it dispatches receives
-   the AC→test table as the `confirmed seam list` for its `tdd` call.
+   the AC→test table as the `confirmed seam list` for its `tdd` call; a seam not in the table is a stop (report it, never ask or invent).
 
 After stage 3, return to SKILL.md step 7 (Verify).

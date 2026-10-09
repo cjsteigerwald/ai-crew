@@ -89,8 +89,8 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
   `> Status: CANCELLED at step <n> on <date> — incomplete`, Status `Cancelled` — or the deletion
   of that doc if the user asks. Never create a doc on cancel. If the marker edit fails, say so.
   Never post to Jira or GitHub on cancel, and invoke no chained skill. Report in a few lines what
-  was done, what was written locally, and that nothing is pending. If a draft PR already open
-  exists, cancel leaves it untouched and names it in the report; closing it needs a separate yes.
+  was done, what was written locally, and that nothing is pending. If there is a draft PR already open,
+  cancel leaves it untouched and names it in the report; closing it needs a separate yes.
 - **Resume:** if `docs/specs/<KEY>-requirements.md` already exists when intake starts, read it and
   show its status and gap/decision state, then ask: **resume, or start over** with a fresh doc. On
   resume, **always refetch and diff against the snapshot**:
@@ -321,8 +321,11 @@ user chose "no doc at all", the PR body also carries the stub doc's content.
 **Unattended mode.** `opening-pull-requests` gate 8 is pre-answered by the go (recorded in the Run
 log), and gate 9 runs `gh pr create --draft`. A lint/test failure inside it is a step-7 failure. If
 gate 2's rebase or a review fix changes the tree, step 7 re-runs on the commit Ship pushes. The PR
-body carries the step-7 evidence table. The PR stays draft while any AC is failed or person-only
-unverified; deferred, skipped, and out-of-scope AC are listed as not delivered.
+body carries the step-7 evidence table.
+
+The PR stays draft while any AC is failed or person-only unverified; attended mode also opens with
+`gh pr create --draft` in that case. Deferred, skipped, and out-of-scope AC are listed as not
+delivered.
 
 ## 9. Close-out
 
