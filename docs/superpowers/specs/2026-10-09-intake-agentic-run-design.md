@@ -1,8 +1,8 @@
 # intaking-work-items: unattended run, AC verification, and close-out — design
 
-- **Date:** 2026-10-09
+- **Date:** 2026-10-09 (revised the same day after the full-tier plan review)
 - **Skill:** `dev-workflow/skills/intaking-work-items/`
-- **Status:** Approved design, pending implementation plan
+- **Status:** Approved design, revision 2 pending re-review
 
 ## Problem
 
@@ -12,82 +12,108 @@ and nothing between implementation and Ship checks the work against the acceptan
 - The template has a `*Verify:*` line per AC and a Definition of done (`template.md:45-47`, `:49-52`),
   but no step runs them. Step 6 goes straight from the implement stage to Ship (`SKILL.md:280`).
 - Checklist row 9 "Test plan" (`checklist.md:24`) asks how each AC will be verified, but nothing ties
-  an AC to a concrete test that is shown to fail first and pass after.
+  an AC to a concrete test shown to fail first and pass after.
 - Every stage of step 6 ends in a user checkpoint (`SKILL.md:260-263`), so a ticket cannot be
   intaken and then left to run.
 
 ## Goal
 
 Pull a ticket, answer every question in one sitting, approve design and plan in that same sitting,
-then walk away. The run builds, verifies each AC with recorded evidence, and opens a **draft** PR.
-Everything else outward-facing waits for the user's return.
+then walk away. The run builds, verifies each agent-verifiable AC with recorded evidence on the
+commit it ships, and opens a **draft** PR. Everything else outward-facing waits for the user.
 
-Success: one intake sitting, then a draft PR whose body carries a per-AC evidence table, with any
-blocker stated in the PR and the requirements doc and the user notified.
+Success: one intake sitting, then either a draft PR whose body carries a per-AC evidence table, or a
+local stop with the reason in the Run log — and in both cases a notification.
 
 ## Facts this design relies on (verified 2026-10-09)
 
 - `mattpocock-skills` 1.2.3 is the only installed version; `implement-spec` and `retro` live under
-  its `skills/in-progress/` group, not the stable set.
+  its `skills/in-progress/` group, both with `disable-model-invocation: true`.
 - The user keeps user-level copies at `~/.claude/skills/implement-spec/` and `~/.claude/skills/retro/`.
-  `retro` is byte-identical to the plugin copy. `implement-spec` differs: description
-  "Implement the result of /to-spec and /to-tickets in code."; per-ticket worktrees whose implementer
-  calls the `tdd` skill; an integration branch; a draft PR only when the tracker closes work through
-  PRs or the user asks; `code-review` via the Skill tool; step 8 marks the PR ready or closes the
-  tickets. Both copies carry `disable-model-invocation: true`.
-- `retro` writes nothing: it reads session logs and returns ranked suggestions (navigation,
-  automated checks, coding standards, AGENTS.md, tool economy, information access).
-- `dev-workflow:skill-retrospective` routes learnings to memory, a per-repo overlay, or skills; it
-  never touches AGENTS.md, hooks, or lint (`skill-retrospective/SKILL.md:46-48`).
+  `retro` is byte-identical to the plugin copy. The user's `implement-spec` differs: per-ticket
+  worktrees whose implementer calls `tdd`; an integration branch; step 3 opens a draft PR after the
+  first merge when the tracker closes work through PRs, "marked as closing the spec and tickets";
+  step 8 marks the PR ready or closes the tickets; `disable-model-invocation: true` at line 4.
+- `retro` writes nothing: it reads session logs and returns ranked suggestions.
+- `dev-workflow:skill-retrospective` routes learnings to memory, a per-repo overlay, or skills
+  (`skill-retrospective/SKILL.md:46-48`); the file never mentions AGENTS.md, hooks, or lint.
+- Gates intake's unattended run must answer in advance:
+  - `tdd/SKILL.md:22-24`: "No test is written at an unconfirmed seam" — seams are confirmed with the
+    user before any test.
+  - `plan-implementation/SKILL.md:201`: "prompt before commit/push/PR".
+  - `opening-pull-requests/SKILL.md:104-106` (gate 8): "ask before running `gh pr create`".
+  - `opening-pull-requests/SKILL.md:44-46` (gate 2) rebases on main before any PR, and `:52-54`
+    (gate 3) forbids pushing unless lint and the full suite are clean. It has no draft concept.
 - The mattpocock chain today ends with the user typing `/mattpocock-skills:implement`
-  (`chain-mattpocock.md`). `dev-workflow/tests/run.sh:270` asserts the chain files exist; `:309` asserts
-  `chain-mattpocock.md` keeps the "Never replicate these skills" rule; `:310` asserts the GitHub-only gate.
-- `SKILL.md` is 305 lines, at the ~300-line progressive-disclosure limit the repo's skill
-  conventions use.
+  (`chain-mattpocock.md:53-60`; also named at `SKILL.md:66-67` and `chain-mattpocock.md:71-76`).
+  `dev-workflow/tests/run.sh:270` asserts the chain files exist; `:309` the "Never replicate these
+  skills" rule; `:310` the GitHub-only gate.
+- `SKILL.md` is 305 lines (`run.sh:267` caps it at 500); its description is 932 chars (`run.sh:264`
+  caps it at 1024) and says "with a user checkpoint between each" (`SKILL.md:9-10`).
 
 ## Decisions
 
-1. **Run modes: `unattended` (default) and `attended`.** Attended is today's behaviour. Unattended
-   front-loads every human decision: gap questions, run mode, chain, requirements OK, writebacks,
-   design approval, plan approval. After plan approval the run proceeds without checkpoints.
-2. **Plan approval is the go, and pre-authorizes exactly two outward actions:** pushing the work
-   branch and opening a **draft** PR, after the full review chain. Nothing else — marking ready,
-   ticket comments, Jira transitions, closing tickets — happens before the user returns.
-3. **Stop conditions** end the run with a draft PR (if there is a branch to push), the blocker
-   recorded in the requirements doc and PR body, and a notification:
-   - a check still failing after 2 fix attempts;
-   - an AC found wrong or untestable (immediate stop; never "fixed" by editing the AC);
-   - work growing beyond the agreed scope;
-   - a repo gate or missing access;
-   - any outward write beyond decision 2.
-4. **A person-only AC keeps the PR in draft** until the user confirms it at close-out.
-5. **Verification gate (new step 7)** runs on the final branch, re-running everything rather than
-   trusting worker reports. A new test written for an AC must **fail on the base commit** (checked
-   in a throwaway worktree); a test that passes there counts as failed.
-6. **mattpocock chain uses the user's `implement-spec` copy**, not the plugin's `implement`. Two
-   edits to `~/.claude/skills/implement-spec/SKILL.md` (outside the repo, applied only on the user's
-   confirmation): drop `disable-model-invocation`, and make step 8 leave the PR draft and close no
-   tickets when called from intake. A hand-off instruction alone is too weak against the skill's own
-   step 8.
-7. **Close-out (new step 8)** runs on the user's return and offers `/retro`. Skill and memory
-   findings go to `dev-workflow:skill-retrospective`; accepted environment changes go on a separate
-   branch and PR, never into the ticket's PR.
-8. **Layout: thin `SKILL.md`, detail in reference files** (`run-modes.md`, `verify.md`), as the chain
-   files already do. Rejected: a standalone verifying skill (no second caller yet), and inlining
-   everything (~450 lines, buries the gate).
+1. **Run modes: `unattended` (default) and `attended`.** Attended is today's behaviour. Skip on the
+   run-mode question means attended.
+2. **The sitting answers every downstream gate in advance**, and the doc's Run log records each:
+   - the AC→test table, approved in step 4, *is* the seam confirmation `tdd` requires;
+   - plan approval answers `plan-implementation`'s commit/push/PR prompt and
+     `opening-pull-requests` gate 8;
+   - on the mattpocock chain, which has no plan-approval question, an explicit "go unattended?"
+     question after the `to-tickets` coverage check is the equivalent go.
+3. **The go pre-authorizes exactly two outward actions:** pushing the work branch and opening one
+   **draft** PR (`gh pr create --draft`), only after verification and the full review chain pass.
+   Nothing else outward — marking ready, editing a PR other than the one intake opened, ticket
+   comments, Jira transitions, closing tickets — before the user returns.
+4. **Unattended preflight** (user still present) must pass, else intake offers attended:
+   checklist row 14 (access) Present; the **baseline is green** — the full suite and lint pass on
+   the base commit (a red baseline or no runnable test suite means attended only); the permission
+   mode will not stall on prompts; a notification channel exists or the fallback is accepted.
+5. **Stop conditions:** a check still failing after 2 fix attempts; an AC found wrong or untestable;
+   work beyond the agreed scope; a repo gate or missing access; any outward write outside
+   decision 3; a gate decision 2 did not answer. On a stop:
+   - **checks green** (scope, a wrong AC, a person-only gap, an unanswered gate): run the review
+     chain, push, open the draft PR with the blocker in its body, notify;
+   - **checks failing, or no push/PR access:** stop locally — commits stay on the branch, the Run
+     log and final message carry the blocker, notify. Nothing is pushed.
+6. **Verification (step 7)** runs on the final branch, re-running everything rather than trusting
+   worker reports, and **again on the exact commit Ship pushes** if a rebase or review fix changed
+   the tree. Evidence is stale the moment the tree changes.
+7. **Red-on-base is evidence only for an assertion failure.** Each new test is applied to the base
+   commit in a throwaway worktree and must fail on an assertion about the AC's behaviour. A
+   collection, import, or compile failure (the code under test does not exist on base) is recorded as
+   `red n/a — new interface` and the AC is verified by its head run plus the reviewers' check that the
+   test asserts the AC. Each new test must also pass twice on head; a differing result is a failure
+   (flaky). The evidence row records the base SHA, the command, and the failure reason.
+8. **A person-only AC keeps the PR in draft** until the user confirms it at close-out.
+9. **mattpocock chain uses the user's `implement-spec` in intake mode**, invoked as the bare Skill
+   identifier `implement-spec` (not `mattpocock-skills:implement-spec`). Intake mode publishes
+   nothing: no draft PR at its step 3, no ready/close at step 8, no closing keywords; it returns the
+   integration branch to intake. This needs edits to `~/.claude/skills/implement-spec/SKILL.md`
+   (outside the repo, applied only on the user's confirmation): drop `disable-model-invocation`, and
+   make steps 3 and 8 honour intake mode. If the edits are declined, or the Skill call errors, the
+   mattpocock chain runs **attended only** — the user types the command and intake does not go
+   unattended on that chain.
+10. **Steps are renumbered:** 6 Chain, 7 Verify, 8 Ship, 9 Close-out. Every cross-reference
+    (`SKILL.md`, both chain files' lines 3-4 and their "return to … Ship" lines) is updated.
+11. **Close-out (step 9)** runs on the user's return and offers `/retro`. Status becomes `Delivered`
+    only if every active AC is verified (person-only ones confirmed) and the PR is ready; otherwise
+    `Partial`, with the open AC listed. Skill and memory findings from `/retro` go to
+    `dev-workflow:skill-retrospective`; accepted environment changes go on a separate branch and PR.
+12. **Layout: thin `SKILL.md`, detail in `run-modes.md` and `verify.md`**, as the chain files already
+    do. Rejected: a standalone verifying skill (no second caller yet), and inlining everything.
 
 ## Flow
 
 | Step | Who | What |
 |---|---|---|
-| 0–2 | user | Repo procedure, fetch, gap analysis — now with the access row and the person-only AC tag |
-| 3 | user | Close gaps; choose run mode (default unattended) and chain |
-| 4–5 | user | Requirements doc with the AC→test table; confirmed writebacks |
-| 6a | user | superpowers: design and plan approved in the sitting. mattpocock: user types `to-spec`, `to-tickets`. **Plan approval = go** (decision 2) |
-| 6b | unattended | Implement: `plan-implementation`, or `implement-spec` in intake mode |
-| 7 | unattended | Verify (below); 2 fix attempts, then blocker |
-| Ship | unattended | Full review chain, push, draft PR with the per-AC table; on a blocker, draft PR + blocker + notification |
-| 8 | user, on return | Close-out (below) |
+| 0–2 | user | Repo procedure, fetch, gap analysis — now with row 14 (access) and the person-only AC tag |
+| 3 | user | Close gaps; choose run mode (default unattended; Skip = attended) |
+| 4–5 | user | Requirements doc with the AC→test table (= seam approval); confirmed writebacks |
+| 6 | user, then unattended | Chain choice; superpowers: design + plan approved in the sitting; mattpocock: user types `to-spec`, `to-tickets`, then the go question. Preflight runs before the go. Then implement unattended |
+| 7 | unattended | Verify; 2 fix attempts, then a stop |
+| 8 | unattended | Ship: `opening-pull-requests` with gate 8 pre-answered; re-verify if the tree changed; `gh pr create --draft` with the evidence table |
+| 9 | user, on return | Close-out |
 
 Attended mode is the same flow with today's checkpoint between every stage.
 
@@ -95,114 +121,83 @@ Attended mode is the same flow with today's checkpoint between every stage.
 
 ### `SKILL.md`
 
-- New **Run mode** section after **Controls**: the two modes, a pointer to `run-modes.md`.
-- Step 3 gains the run-mode choice; step 6 keeps chain choice and points the unattended stretch at
-  `run-modes.md`.
-- New **7. Verify** → `verify.md`. New **8. Close-out**.
-- Ship: the PR is opened as a draft in unattended mode; the PR body carries the step-7 table.
-- Stays near its current length; the detail moves out.
+- Description: replace "with a user checkpoint between each" with wording for the unattended run,
+  verification, and close-out; stay ≤ 1024 chars. Mirror in `dev-workflow/README.md:13`.
+- New `## Run mode` after **Controls**, pointing at `run-modes.md`.
+- Step 3 gains the run-mode question. Controls: the plan-skip go-ahead carries the same
+  pre-authorization as plan approval; cancel leaves an already-open draft PR untouched and reports it.
+- `## 6. Chain` title drops "a user checkpoint between each stage"; its Checkpoints paragraph ends
+  checkpoints at the go in unattended mode. The Ship text moves out to `## 8. Ship`.
+- New `## 7. Verify`, `## 8. Ship`, `## 9. Close-out`.
 
 ### `run-modes.md` (new)
 
-- What the sitting must produce before the run starts, and what plan approval pre-authorizes.
-- **Preflight** while the user is still present:
-  1. checklist access row passed;
-  2. baseline: run the suite once on the base commit and record pre-existing failures so they are
-     not blamed on this work;
-  3. permission mode will not stall on prompts — if it would, say so before the user leaves;
-  4. notification available (`PushNotification`), else fall back to the draft PR body plus the
-     final message.
-- Stop conditions (decision 3), the 2-attempt rule, and what a blocked run leaves behind.
-- The **Run log**: timestamped stage, attempts, and blockers, written to the requirements doc as
-  the run goes. Resume (existing **Controls** rules) starts from it.
+Modes; what the sitting settles and the gate-by-gate mapping (decision 2); the go's
+pre-authorization (decision 3); Preflight (decision 4); Stop conditions and the green/failing split
+(decision 5); notification (`PushNotification`, else the PR body or Run log plus the final message);
+the Run log, and resume: refetch and diff per Controls, then continue from the Run log.
 
 ### `verify.md` (new) — step 7
 
-Order:
-1. **Repo checks** — full suite, lint, type checks as the repo's AGENTS.md or CI names them. A
-   failure counts as failed.
-2. **Each active AC**, by its row in the AC→test table:
-   - *automated*: run the named test or command; quote the output line; record the commit;
-   - *red check*: each new test also runs against the base commit in a throwaway worktree and must
-     fail there;
-   - *live read*: read-only commands only (`az … show`, `kubectl get`, `terraform plan`); never
-     apply or deploy;
-   - *person-only*: not run; marked unverified, with exact steps for the user at close-out.
-3. **Definition of done** items, each with evidence, or marked *post-merge* (e.g. "deployed to
-   prod") and carried to close-out, not counted as failed.
+1. **Repo checks** — full suite, lint, type checks as the repo names them.
+2. **Each active AC** by its AC→test row: *automated* (run, quote the output line, record the
+   commit); *red check* per decision 7; *live read* — read-only commands only (`az … show`,
+   `kubectl get`, `terraform plan`), never apply or deploy; *person-only* — not run, unverified, with
+   exact steps for the user.
+3. **Definition of done** items, each with evidence or marked *post-merge* and carried to close-out.
 
-On failure: up to 2 fix attempts, each logged, then all of step 7 re-runs. A third failure is a
-blocker. Results: **verified / failed / unverified / not delivered**. A verified row needs a quoted
-output line; prose like "tests pass" is not evidence.
+On failure: up to 2 fix attempts, each logged, then step 7 re-runs in full; a third failure is a
+stop. A wrong or untestable AC is an immediate stop, never fixed by editing the AC. Results:
+**verified / failed / unverified / not delivered**; a verified row needs a quoted output line. Re-run
+on the commit Ship pushes whenever the tree changed (decision 6).
 
-Evidence table (requirements doc **Verification evidence** section and PR body):
-
-| AC | Check | Kind | Result | Evidence | Commit / time |
+| AC | Check | Kind | Result | Evidence | Base / head / time |
 |---|---|---|---|---|---|
-| AC-1 | `pytest tests/test_retention.py::test_purge_after_90d` | automated, new | verified (red on base) | `1 passed in 0.4s` | `a1b2c3d` 2026-10-09 14:02 |
+| AC-1 | `pytest tests/test_retention.py::test_purge_after_90d` | automated, new | verified | base: `AssertionError: 30 != 90`; head ×2: `1 passed` | `9f8e7d6` / `a1b2c3d` 14:02 |
+| AC-2 | `pytest tests/test_export.py::test_csv_header` | automated, new | verified (red n/a — new interface) | base: `ImportError: export`; head ×2: `1 passed` | `9f8e7d6` / `a1b2c3d` 14:03 |
 | AC-3 | log in as read-only user, open /admin | person-only | unverified | steps at close-out | — |
 | AC-4 | — | deferred | not delivered | "<user's words>" | — |
 
 ### `checklist.md`
 
-- Row 9 "Test plan" becomes Present only with the AC→test table filled: AC-n → kind (unit /
-  integration / live read / person-only) → planned test name and location.
-- Each AC is tagged **agent-verifiable** or **person-only**.
-- New row **Access and environment**: the agent can run the tests and reach every environment,
-  credential, and cloud read the checks need. Unmet access is a blocker in unattended mode.
+- Row 9 Present only with the AC→test table filled (AC-n → kind → test name → location) and each AC
+  tagged **agent-verifiable** or **person-only**.
+- New row 14 **Access and environment**. Unmet or skipped ⇒ unattended unavailable.
 
 ### `template.md`
 
-- **Run mode** header line.
-- **Test plan** becomes the AC→test table.
-- New **Verification evidence** and **Run log** sections.
-- Status gains `Delivered`, set at close-out.
-- Stub doc keeps the evidence table when step 7 ran.
+`**Run mode:**` header; Status `Draft | Ready | Partial | Delivered | Cancelled`; Test plan becomes
+the AC→test table; new `## Verification evidence` and `## Run log` sections; the stub keeps both when
+step 7 ran.
 
-### `chain-superpowers.md`
+### Chain files
 
-- Unattended: brainstorming's spec review and writing-plans' approval both happen in the sitting.
-  The plan-approval question states what it pre-authorizes (decision 2).
-- `plan-implementation` then runs without its stage checkpoints, stopping only on the stop
-  conditions.
-
-### `chain-mattpocock.md`
-
-- The Implement stage invokes the user's `implement-spec` (Skill tool) in intake mode, replacing
-  `/mattpocock-skills:implement`. `to-spec` and `to-tickets` stay user-typed, in the sitting.
-- If the user's `implement-spec` still carries `disable-model-invocation`, intake says so and the
-  user types it — unattended then begins after that command.
-
-### Step 8 — close-out
-
-1. Show the Run log, the evidence table, and any blocker.
-2. Walk each person-only AC with the user and record the result.
-3. Offer each outward action separately, per the existing step-5 rule:
-   - mark the PR ready — stating any failed or unverified AC first;
-   - Jira transition; ticket comment; close tickets as the repo allows.
-4. Set Status to `Delivered`.
-5. Offer `/retro` on the session. Route skill/memory findings to `skill-retrospective`; accepted
-   environment changes go on a separate branch and PR.
+- Lines 3-4 and the closing "return to" lines point at step 7 (Verify), not step 6's Ship.
+- `chain-superpowers.md`: design and plan approval in the sitting; the plan-approval question states
+  the gate mapping and the pre-authorization; `plan-implementation` then runs without its stage
+  checkpoints.
+- `chain-mattpocock.md`: after the `to-tickets` coverage check, the "go unattended?" question; the
+  Implement stage invokes `implement-spec` in intake mode (decision 9) with the attended fallback;
+  "Never replicate these skills" stays, naming `implement-spec` in intake mode as the one skill
+  intake invokes. The `/mattpocock-skills:implement` mentions at `SKILL.md:66-67` and
+  `chain-mattpocock.md:71-76` are updated.
 
 ## Out of scope
 
-- Editing `mattpocock-skills` plugin files, or vendoring the user's `implement-spec` into this repo.
+- Editing `mattpocock-skills` plugin files, `plan-implementation`, `opening-pull-requests`, or `tdd`;
+  intake passes them its recorded answers.
 - Post-deploy verification beyond listing *post-merge* DoD items at close-out.
-- Changing `plan-implementation` or `opening-pull-requests` themselves; intake only passes them
-  the pre-authorization and the draft flag.
+- Behavioural (scenario) tests of the skill; `run.sh` pins presence of each rule, and the full review
+  chain judges the rules themselves.
 
 ## Testing
 
-`dev-workflow/tests/run.sh` assertions:
-- `run-modes.md` and `verify.md` exist and contain: "fails on the base commit", the 2-attempt rule,
-  the draft-only pre-authorization, and the stop conditions.
-- `SKILL.md` has the Run mode section and steps 7 and 8.
-- `template.md` has Verification evidence, Run log, and the AC→test table; `checklist.md` has the
-  access row.
-- `chain-mattpocock.md` names `implement-spec` and intake mode (draft, no ticket closes).
-- Existing assertions (`run.sh:270`, `:309-310`) keep passing: the "Never replicate these skills" rule
-  stays, with `implement-spec` in intake mode named as the one skill intake may invoke.
-- Update the version pin reference in `2026-10-07-intake-chain-choice-design.md:23`.
+`dev-workflow/tests/run.sh` presence assertions, one per load-bearing rule, each string absent from
+the skill today and quoted verbatim in the plan's content step: both new files linked; the run-mode
+default and Skip rule; the gate mapping; `gh pr create --draft`; the green-baseline rule; the
+green/failing stop split; re-verify on the shipped commit; the assertion-failure red rule and
+`red n/a — new interface`; pass twice on head; `Partial`; the `implement-spec` intake mode and
+attended fallback; the renumbered steps. Existing assertions stay green.
 
 Review tier: **full chain** (skill definitions) — fresh-verifier and codex-adversary on the plan and
 on the diff.

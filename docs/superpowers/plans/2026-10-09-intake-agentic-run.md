@@ -2,225 +2,204 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let `intaking-work-items` run unattended from plan approval to a draft PR, with every active AC verified by recorded evidence, and a close-out step on the user's return.
+**Goal:** Let `intaking-work-items` run unattended from the go to a draft PR, verify every agent-verifiable AC with evidence on the shipped commit, stop safely on blockers, and close out on the user's return.
 
-**Architecture:** `SKILL.md` stays the outline and gains a Run mode section, step 7 (Verify) and step 8 (Close-out); detail lives in two new reference files, `run-modes.md` and `verify.md`, linked one level deep like the chain files. The template and checklist carry the new artifacts (AC→test table, Verification evidence, Run log). Tests are `grep -qF` presence assertions in `dev-workflow/tests/run.sh`, matching the existing intake block.
+**Architecture:** `SKILL.md` stays the outline: a new Run mode section, and steps renumbered to 6 Chain, 7 Verify, 8 Ship, 9 Close-out. Detail lives in two new reference files, `run-modes.md` and `verify.md`, linked one level deep like the chain files. Template and checklist carry the artifacts. Tests are `grep -qF` presence assertions (and a few negative ones) in the intake block of `dev-workflow/tests/run.sh`.
 
-**Tech Stack:** Markdown skill files; bash test harness (`bash dev-workflow/tests/run.sh`).
+**Tech Stack:** Markdown skill files; bash test harness — run with `bash dev-workflow/tests/run.sh` (prints `PASSED` and exits 0 when clean).
 
-**Spec:** `docs/superpowers/specs/2026-10-09-intake-agentic-run-design.md`
+**Spec:** `docs/superpowers/specs/2026-10-09-intake-agentic-run-design.md` (revision 2). Read its Decisions 1-12 before starting; every content step below cites them.
 
 ## Global Constraints
 
-- Run modes are exactly `unattended` (default) and `attended`.
-- Plan approval pre-authorizes exactly two outward actions: pushing the work branch and opening a **draft** PR, after the full review chain.
-- Fix attempts: 2, then all of step 7 re-runs; a third failure is a blocker.
-- A new test for an AC must fail on the base commit, checked in a throwaway worktree.
-- Live reads are read-only (`az … show`, `kubectl get`, `terraform plan`); never apply or deploy.
-- AC results are exactly: verified / failed / unverified / not delivered.
-- A person-only AC keeps the PR in draft until confirmed at close-out.
+- **Every assertion string must appear verbatim in the content you write.** Each content step lists the exact phrases it must contain, in backticks; write them character for character.
+- Run modes: exactly `unattended` (default) and `attended`; Skip on the run-mode question = attended.
+- The go pre-authorizes exactly two outward actions: push the work branch; open one draft PR with `gh pr create --draft`, after verification and the full review chain.
+- Fix attempts: up to 2, then step 7 re-runs in full; a third failure is a stop.
+- Results vocabulary: verified / failed / unverified / not delivered. Status vocabulary: Draft | Ready | Partial | Delivered | Cancelled.
 - `SKILL.md` under 500 lines (`run.sh:267`); description ≤ 1024 chars (`run.sh:264`).
-- No organisation-specific terms (`run.sh` greps the skill dir for the word `ces`).
-- Every existing `run.sh` intake assertion keeps passing.
-- The user-level `~/.claude/skills/implement-spec/SKILL.md` is edited only after the user explicitly confirms in chat.
+- No organisation-specific terms: `run.sh:314` fails on the whole word `ces` anywhere in the skill dir.
+- Every existing intake assertion (`run.sh:277-312`) stays green.
+- Do not edit `plan-implementation`, `opening-pull-requests`, `tdd`, or any `mattpocock-skills` plugin file.
+- `~/.claude/skills/implement-spec/SKILL.md` is edited only in Task 6, only after the user's explicit yes in chat.
 
 ## Review Focus
 
-1. **Permission prompt mid-run** — an unattended session stalls silently on a tool prompt; preflight must tell the user before they leave (Task 3 asserts `permission mode`).
-2. **Cancel after a draft PR exists** — the user returns and cancels; cancel must not delete or edit the already-open draft PR, and must report it as left open (Task 3 asserts `draft PR already open`).
-3. **Plan skipped in unattended mode** — there is no plan approval to act as the go; the explicit go-ahead from the plan-skip rule must state the same pre-authorization (Task 3 asserts `plan-skip go-ahead`).
-4. **Repo with no runnable tests or CI** — the baseline can't run; preflight treats it as a blocker for unattended mode and offers attended (Task 3 asserts `no runnable test suite`).
-5. **Resume after a blocked run** — resume must still refetch and diff the ticket, then continue from the Run log, not from memory (Task 3 asserts `continue from the Run log`).
+1. **A gate nobody pre-answered** stalls the run silently — `run-modes.md` must list the gate mapping and make "a gate the sitting did not answer" a stop condition (Task 2).
+2. **Evidence for a different commit than the one shipped** — Ship's rebase or a review fix changes the tree; verify must re-run on the commit Ship pushes (Tasks 3, 4).
+3. **Red-on-base passing for the wrong reason** — an import error on base is not behavioural evidence (Task 3).
+4. **Cancel after a draft PR exists** — leave it untouched and report it (Task 2).
+5. **mattpocock chain without the `implement-spec` edits** — must fall back to attended, never run unattended against the unedited skill (Task 4).
 
 ---
 
 ### Task 1: Checklist and template artifacts
 
-**Files:**
-- Modify: `dev-workflow/skills/intaking-work-items/checklist.md` (rows table; row 9; new row 14)
-- Modify: `dev-workflow/skills/intaking-work-items/template.md` (header, Test plan, new sections, stub note)
-- Test: `dev-workflow/tests/run.sh` (intake block, after line 311)
+**Files:** Modify `dev-workflow/skills/intaking-work-items/checklist.md`, `.../template.md`; Test `dev-workflow/tests/run.sh` (append inside the intake `if` block, before the `ces` check at ~line 312).
 
-**Interfaces:**
-- Produces (exact strings later tasks reference): checklist row `**Access and environment**`; AC tags `agent-verifiable` / `person-only`; template header `**Run mode:**`; template sections `## Verification evidence`, `## Run log`; AC→test table header `| AC | Kind | Test name | Location |`; Status value `Delivered`.
+**Interfaces — Produces:** row `**Access and environment**`; AC tags `agent-verifiable` / `person-only`; template header `**Run mode:**`; sections `## Verification evidence`, `## Run log`; AC→test header `| AC | Kind | Test name | Location |`; Status `Ready | Partial | Delivered`.
 
-- [ ] **Step 1: Add the failing assertions to `run.sh`**
+- [ ] **Step 1: Failing assertions**
 
 ```bash
   grep -qF '**Access and environment**' "$INTAKE_DIR/checklist.md" || ifail "intaking-work-items/checklist.md: missing the Access and environment row"
   grep -qF 'agent-verifiable' "$INTAKE_DIR/checklist.md" || ifail "intaking-work-items/checklist.md: missing the agent-verifiable / person-only AC tag"
+  grep -qF 'unattended unavailable' "$INTAKE_DIR/checklist.md" || ifail "intaking-work-items/checklist.md: row 14 missing the unattended-unavailable rule"
   grep -qF '| AC | Kind | Test name | Location |' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: missing the AC→test table"
   grep -qF '**Run mode:**' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: missing the Run mode header"
   grep -qF '## Verification evidence' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: missing the Verification evidence section"
   grep -qF '## Run log' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: missing the Run log section"
-  grep -qF 'Delivered' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: Status missing Delivered"
+  grep -qF 'Ready | Partial | Delivered' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: Status missing Partial / Delivered"
 ```
 
-- [ ] **Step 2: Run, expect FAIL** — `bash dev-workflow/tests/run.sh` → output names each of the 7 messages above.
+- [ ] **Step 2: Run** — `bash dev-workflow/tests/run.sh` → FAIL listing these 8 messages.
+- [ ] **Step 3: `checklist.md`**
+  - Row 9 "Present means": the AC→test table is filled for every active AC (AC-n → kind: unit / integration / live read / person-only → test name → location) and each AC is tagged `agent-verifiable` or `person-only`. This table is what step 4 approves as the `tdd` seam confirmation (spec decision 2).
+  - New row 14 `**Access and environment**`: Present = the agent can run the suite and reach every environment, credential, and cloud read the checks need, each named with how it was confirmed. Signals: "needs prod access" unchecked; tests that only run in CI.
+  - Rating rules bullet: "Row 14 unmet or skipped ⇒ `unattended unavailable`; offer attended."
+- [ ] **Step 4: `template.md`**
+  - Header: `**Run mode:** <unattended | attended>` after `**Chain:**`; Status line becomes `<Draft | Ready | Partial | Delivered | Cancelled>`.
+  - `## Test plan`: the table `| AC | Kind | Test name | Location |`, plus one line naming the repo-wide checks (suite, lint, types).
+  - `## Verification evidence`: columns `| AC | Check | Kind | Result | Evidence | Base / head / time |` with the four example rows from spec § `verify.md`; placeholder "None — step 7 not run".
+  - `## Run log`: `| Time | Step | Event | Attempt | Blocker |`; placeholder "None — run not started".
+  - Stub note: the stub keeps Verification evidence and Run log when step 7 ran.
+- [ ] **Step 5: Run** → `PASSED`.
+- [ ] **Step 6: Commit** — `feat(dev-workflow): intake template/checklist carry AC→test table, evidence, run log`.
 
-- [ ] **Step 3: Edit `checklist.md`**
-  - Row 9 "Present means": the AC→test table is filled for every active AC (AC-n → kind: unit / integration / live read / person-only → test name → location), and each AC is tagged `agent-verifiable` or `person-only`.
-  - New row 14 `**Access and environment**`: Present = the agent can run the test suite and reach every environment, credential, and cloud read the checks need, named with how it was confirmed. Signal: "needs prod access" with no check; tests that only run in CI.
-  - Rating rules: in unattended mode an unmet row 14 is a blocker, like rows 7/12.
+### Task 2: `run-modes.md`, Run mode section, Controls
 
-- [ ] **Step 4: Edit `template.md`**
-  - Header: add `**Run mode:** <unattended | attended>` after `**Chain:**`; Status gains `Delivered` (`Draft | Ready | Delivered | Cancelled`).
-  - `## Test plan` becomes the AC→test table with header `| AC | Kind | Test name | Location |`, plus a line for repo-wide checks (suite, lint, types).
-  - New `## Verification evidence` section: the table from spec § verify.md (columns `| AC | Check | Kind | Result | Evidence | Commit / time |`), before step 7: "None — step 7 not run".
-  - New `## Run log` section: `| Time | Stage | Event | Attempts | Blocker |`, before the run: "None — run not started".
-  - Stub note: the stub keeps **Verification evidence** and **Run log** when step 7 ran.
+**Files:** Create `.../intaking-work-items/run-modes.md`; Modify `SKILL.md` (new `## Run mode` after `## Controls: skip and cancel`, ~line 102; step 3 end, ~line 199; Controls plan-skip bullet ~line 62 and cancel bullet ~line 82); Test `run.sh`.
 
-- [ ] **Step 5: Run, expect PASS** — `bash dev-workflow/tests/run.sh` → no intake failures; exit 0.
+**Interfaces — Consumes:** Task 1 `**Run mode:**`, `## Run log`, row 14. **Produces:** `## Run mode`; `run-modes.md` headings `## Preflight`, `## Stop conditions`; phrase `pre-authorizes exactly two outward actions`.
 
-- [ ] **Step 6: Commit** — `git add` the three files; `feat(dev-workflow): intake template/checklist carry AC→test table, evidence, run log`.
+- [ ] **Step 1: Failing assertions** — add `run-modes.md` to the support-file loop at `run.sh:270`, and:
 
-### Task 2: `verify.md` and step 7
+```bash
+  grep -qF '## Run mode' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the Run mode section"
+  grep -qF 'Skip on the run-mode question means attended' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the run-mode Skip rule"
+  grep -qF 'plan-skip go-ahead' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: plan-skip rule missing the pre-authorization"
+  grep -qF 'draft PR already open' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: cancel rule missing the open-draft-PR case"
+  grep -qF 'pre-authorizes exactly two outward actions' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the go's pre-authorization"
+  grep -qF 'gh pr create --draft' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the draft PR command"
+  grep -qF 'is the seam confirmation' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: gate mapping missing the tdd seam answer"
+  grep -qF 'answers gate 8' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: gate mapping missing opening-pull-requests gate 8"
+  grep -qF 'a gate the sitting did not answer' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the unanswered-gate stop"
+  grep -qF '## Preflight' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing Preflight"
+  grep -qF 'baseline is green' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the green-baseline rule"
+  grep -qF 'permission mode' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: preflight missing the permission-mode check"
+  grep -qF '## Stop conditions' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing Stop conditions"
+  grep -qF 'checks green' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the green-checks stop path"
+  grep -qF 'stop locally' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the local-stop path"
+  grep -qF 'PushNotification' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the notification channel"
+  grep -qF 'continue from the Run log' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing resume-from-Run-log"
+```
 
-**Files:**
-- Create: `dev-workflow/skills/intaking-work-items/verify.md`
-- Modify: `dev-workflow/skills/intaking-work-items/SKILL.md` (new `## 7. Verify` after step 6's Ship-preceding text; Ship paragraph at ~line 280)
-- Test: `dev-workflow/tests/run.sh` (support-file loop at line 270; new assertions)
+- [ ] **Step 2: Run** → FAIL with these messages plus the loop's two `run-modes.md` messages.
+- [ ] **Step 3: Write `run-modes.md`** (spec decisions 1-5), sections and required phrases:
+  - `## Modes` — unattended default, attended = today's checkpoints.
+  - `## What the sitting settles` — the gate mapping: "the approved AC→test table `is the seam confirmation` `tdd` requires"; "plan approval answers `plan-implementation`'s commit/push/PR prompt and `answers gate 8` of `opening-pull-requests`"; the mattpocock "go unattended?" question; each answer recorded in the Run log. Then: "The go `pre-authorizes exactly two outward actions`: pushing the work branch, and opening one draft PR with `gh pr create --draft` after step 7 and the full review chain pass." List what stays forbidden until close-out.
+  - `## Preflight` — while the user is present, before the go: row 14 Present; "the `baseline is green`" — full suite and lint pass on the base commit; red baseline or no runnable suite ⇒ attended only; the `permission mode` won't stall on prompts (say so before the user leaves); `PushNotification` available, else the fallback (PR body or Run log + final message) accepted.
+  - `## Stop conditions` — the six from decision 5, including "`a gate the sitting did not answer`". Then the split: "`checks green`: run the review chain, push, open the draft PR with the blocker in its body, notify" / "checks failing, or no push or PR access: `stop locally` — commits stay on the branch, the Run log and final message carry the blocker, notify; nothing is pushed."
+  - `## Run log` — append as the run goes (time, step, event, attempt, blocker); on resume, refetch and diff per Controls, then "`continue from the Run log`".
+- [ ] **Step 4: Edit `SKILL.md`**
+  - `## Run mode` (≤ 8 lines): two modes, default unattended, link `[run-modes.md](run-modes.md)`, recorded in the doc's `**Run mode:**`.
+  - Step 3, after the gate: one `AskUserQuestion` — unattended (recommended) / attended / Skip; add "`Skip on the run-mode question means attended`."
+  - Plan-skip bullet: "In unattended mode the `plan-skip go-ahead` carries the same pre-authorization and gate answers as plan approval."
+  - Cancel bullet: "If a `draft PR already open` exists, cancel leaves it untouched and names it in the report; closing it needs a separate yes."
+- [ ] **Step 5: Run** → `PASSED`.
+- [ ] **Step 6: Commit** — `feat(dev-workflow): intake unattended run mode, gate mapping, preflight, stop conditions`.
 
-**Interfaces:**
-- Consumes: Task 1's `## Verification evidence`, AC→test table, `person-only`.
-- Produces: heading `## 7. Verify` in SKILL.md; Ship text cites "the step-7 evidence table".
+### Task 3: `verify.md` and step 7
 
-- [ ] **Step 1: Add failing assertions** — add `verify.md` to the support-file loop at `run.sh:270`, and:
+**Files:** Create `.../intaking-work-items/verify.md`; Modify `SKILL.md` (insert `## 7. Verify` immediately before `## Gotchas` for now — Task 4 places Ship after it); Test `run.sh`.
+
+**Interfaces — Consumes:** Task 1 table/section names; Task 2 `## Stop conditions`. **Produces:** `## 7. Verify`; phrase `the commit Ship pushes`.
+
+- [ ] **Step 1: Failing assertions** — add `verify.md` to the support-file loop, and:
 
 ```bash
   grep -qF '## 7. Verify' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing step 7 Verify"
-  grep -qF 'fails on the base commit' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing the red-on-base check"
-  grep -qF '2 fix attempts' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing the 2-attempt rule"
+  grep -qF 'fail on an assertion' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: red check not limited to assertion failures"
+  grep -qF 'red n/a — new interface' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing the new-interface red rule"
+  grep -qF 'pass twice on head' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing the flake check"
+  grep -qF 'up to 2 fix attempts' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing the 2-attempt rule"
   grep -qF 'verified / failed / unverified / not delivered' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing the result vocabulary"
   grep -qF 'read-only commands only' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing the read-only live-check rule"
   grep -qF 'post-merge' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing post-merge DoD handling"
   grep -qF 'quoted output line' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing the evidence rule"
-  grep -qF 'never trust a worker' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing the re-run-on-final-branch rule"
+  grep -qF "never trust a worker's report" "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing the re-run rule"
+  grep -qF 'the commit Ship pushes' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing re-verify on the shipped commit"
 ```
 
-- [ ] **Step 2: Run, expect FAIL** — every new message above, plus the loop's `verify.md not found` / `does not link verify.md`.
-
-- [ ] **Step 3: Write `verify.md`** — content per spec § `verify.md`: when (once, final branch, after all merges, before the review chain; "never trust a worker's report — re-run it"); order (repo checks → each active AC by kind, including the red check in a throwaway worktree "a new test must fail on the base commit" → DoD with `post-merge`); failure loop ("up to 2 fix attempts", each logged in the Run log, then step 7 re-runs; third failure is a blocker → `run-modes.md`); a wrong/untestable AC is an immediate blocker, never fixed by editing the AC; result vocabulary; "a verified row needs a quoted output line"; the evidence table with the spec's example rows; attended mode runs the same step with the user present.
-
-- [ ] **Step 4: Edit `SKILL.md`** — add `## 7. Verify` (≤8 lines: runs in both modes, link `[verify.md](verify.md)`, writes Verification evidence, gates Ship). Ship paragraph: the PR body carries the step-7 evidence table instead of only listing delivered AC numbers; failed/unverified rows are stated, not hidden.
-
-- [ ] **Step 5: Run, expect PASS** — exit 0.
-
+- [ ] **Step 2: Run** → FAIL with these plus the loop's `verify.md` messages.
+- [ ] **Step 3: Write `verify.md`** per spec § `verify.md` and decisions 6-7, with every phrase above verbatim: when ("once on the final branch after all merges; `never trust a worker's report` — re-run it"; "again on `the commit Ship pushes` whenever a rebase or review fix changed the tree; evidence is stale once the tree changes"); order (repo checks → each active AC → DoD with `post-merge`); red check ("apply the new test to the base commit in a throwaway worktree; it must `fail on an assertion` about the AC's behaviour; a collection, import, or compile failure is recorded as `red n/a — new interface`, and the AC then rests on the head run plus the reviewers' check that the test asserts the AC"; "each new test must `pass twice on head`; differing results are a failure"; record base SHA, command, failure reason); live reads ("`read-only commands only` — `az … show`, `kubectl get`, `terraform plan`; never apply or deploy"); failure loop ("`up to 2 fix attempts`, each in the Run log, then step 7 re-runs in full; a third failure is a stop — see [run-modes.md](run-modes.md)"); a wrong/untestable AC is an immediate stop, never fixed by editing the AC; results `verified / failed / unverified / not delivered`; "a verified row needs a `quoted output line`"; the evidence table from the spec.
+- [ ] **Step 4: `SKILL.md`** — `## 7. Verify` (≤ 8 lines): both modes; link `[verify.md](verify.md)`; writes Verification evidence; nothing ships until it passes or a stop condition applies.
+- [ ] **Step 5: Run** → `PASSED`.
 - [ ] **Step 6: Commit** — `feat(dev-workflow): intake step 7 verifies every active AC with evidence`.
 
-### Task 3: `run-modes.md`, Run mode section, Controls interactions
+### Task 4: Step 8 Ship, step 6 rewiring, chain files
 
-**Files:**
-- Create: `dev-workflow/skills/intaking-work-items/run-modes.md`
-- Modify: `SKILL.md` — new `## Run mode` after `## Controls: skip and cancel` (~line 102); step 3 (run-mode question); Controls cancel bullet (~line 82) and plan-skip bullet (~line 62); Ship (draft in unattended mode)
-- Test: `dev-workflow/tests/run.sh`
+**Files:** Modify `SKILL.md` (`## 6.` title ~line 233; lines 235-236; chain-choice item 4 ~line 254-257; Checkpoints ~line 260; Ship text ~lines 280-290 moves to a new `## 8. Ship` after `## 7. Verify`; plan-skip bullet `/mattpocock-skills:implement` at ~66-67); `chain-superpowers.md` (lines 1-4, stage 2 approval, stage 3, line 60); `chain-mattpocock.md` (lines 1-4, after the to-tickets coverage check ~line 52, Implement ~53-60, line 62, skip-to-tickets ~71-76); Test `run.sh`.
 
-**Interfaces:**
-- Consumes: Task 1 `**Run mode:**`, `## Run log`, row 14; Task 2 `## 7. Verify`.
-- Produces: `## Run mode` heading; the phrase `pre-authorizes exactly two outward actions` (Task 4 cites it).
+**Interfaces — Consumes:** Task 2 gate mapping and `## Stop conditions`; Task 3 `## 7. Verify`, `the commit Ship pushes`.
 
-- [ ] **Step 1: Add failing assertions** — add `run-modes.md` to the support-file loop, and:
+- [ ] **Step 1: Failing assertions**
 
 ```bash
-  grep -qF '## Run mode' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the Run mode section"
-  grep -qF 'pre-authorizes exactly two outward actions' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the draft-only pre-authorization"
-  grep -qF '## Stop conditions' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing Stop conditions"
-  grep -qF '## Preflight' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing Preflight"
-  grep -qF 'permission mode' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: preflight missing the permission-mode check"
-  grep -qF 'no runnable test suite' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: preflight missing the no-test-suite blocker"
-  grep -qF 'PushNotification' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the notification channel"
-  grep -qF 'continue from the Run log' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing resume-from-Run-log"
-  grep -qF 'draft PR already open' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: cancel rule missing the open-draft-PR case"
-  grep -qF 'plan-skip go-ahead' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: plan-skip rule missing the unattended pre-authorization"
-```
-
-- [ ] **Step 2: Run, expect FAIL** — every new message above, plus the loop's `run-modes.md` messages.
-
-- [ ] **Step 3: Write `run-modes.md`** — sections: `## Modes` (unattended default, attended = today's checkpoints); `## What the sitting settles` (gap questions, run mode, chain, requirements OK, writebacks, design approval, plan approval — "plan approval pre-authorizes exactly two outward actions: pushing the work branch and opening a draft PR, after the full review chain"; nothing else outward until close-out); `## Preflight` (user still present: row 14 passed; baseline suite on the base commit with pre-existing failures recorded — "no runnable test suite" is a blocker for unattended, offer attended; permission mode won't stall on prompts — say so before the user leaves; `PushNotification` available, else draft PR body + final message); `## Stop conditions` (the five from spec decision 3, each: push a draft PR if a branch exists, record blocker in Run log + PR body, notify, stop); `## Run log` (written as the run goes; on resume, refetch and diff per Controls, then "continue from the Run log").
-
-- [ ] **Step 4: Edit `SKILL.md`**
-  - `## Run mode` (≤8 lines): the two modes, default unattended, link `[run-modes.md](run-modes.md)`, record in the doc's `**Run mode:**`.
-  - Step 3: after the gate passes, ask run mode (unattended recommended / attended / Skip) — one `AskUserQuestion`.
-  - Plan-skip bullet: in unattended mode the explicit "plan-skip go-ahead" states the same pre-authorization as plan approval.
-  - Cancel bullet: if a "draft PR already open" exists, cancel leaves it untouched and reports it in the summary; it is never closed or edited without a separate yes.
-  - Ship: in unattended mode the PR is opened as a draft; it stays draft while any AC is failed or person-only unverified.
-  - Step 6 **Checkpoints** paragraph (~line 260): in unattended mode the checkpoints end at plan approval; after it, only `run-modes.md` § Stop conditions halt the run.
-
-- [ ] **Step 5: Run, expect PASS** — exit 0; `wc -l SKILL.md` < 500.
-
-- [ ] **Step 6: Commit** — `feat(dev-workflow): intake unattended run mode with preflight and stop conditions`.
-
-### Task 4: Chain files
-
-**Files:**
-- Modify: `dev-workflow/skills/intaking-work-items/chain-superpowers.md` (stages 1–3)
-- Modify: `dev-workflow/skills/intaking-work-items/chain-mattpocock.md` (Implement stage ~lines 50-60; intro rule ~lines 8-17)
-- Test: `dev-workflow/tests/run.sh`
-
-**Interfaces:**
-- Consumes: Task 3 `pre-authorizes exactly two outward actions`, `## Stop conditions`.
-
-- [ ] **Step 1: Add failing assertions**
-
-```bash
+  grep -qF '## 8. Ship' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing step 8 Ship"
+  grep -qF 'a user checkpoint between each' "$INTAKE_SKILL" && ifail "intaking-work-items/SKILL.md: still claims a checkpoint between every stage"
+  grep -qF "step 6's **Ship**" "$INTAKE_DIR/chain-superpowers.md" "$INTAKE_DIR/chain-mattpocock.md" && ifail "intaking-work-items/chain-*.md: still return to step 6's Ship"
+  grep -qE '/mattpocock-skills:implement([^-]|$)' "$INTAKE_SKILL" "$INTAKE_DIR/chain-mattpocock.md" && ifail "intaking-work-items: still names /mattpocock-skills:implement"
   grep -qF 'without its stage checkpoints' "$INTAKE_DIR/chain-superpowers.md" || ifail "intaking-work-items/chain-superpowers.md: missing the unattended implement rule"
   grep -qF 'pre-authorizes' "$INTAKE_DIR/chain-superpowers.md" || ifail "intaking-work-items/chain-superpowers.md: plan approval missing the pre-authorization"
+  grep -qF 'go unattended?' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: missing the go question"
   grep -qF 'implement-spec' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: Implement stage does not use implement-spec"
-  grep -qF 'leave the PR as a draft and close no tickets' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: missing intake mode for implement-spec"
+  grep -qF 'intake mode publishes nothing' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: missing intake mode"
+  grep -qF 'attended only' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: missing the attended fallback"
 ```
 
-(The existing `Never replicate these skills` assertion at `run.sh:309` must stay green.)
+(The three `&& ifail` lines are negative assertions: they fail while the old text exists. The existing `run.sh:309` "Never replicate these skills" assertion stays green.)
 
-- [ ] **Step 2: Run, expect FAIL** — the 4 messages.
+- [ ] **Step 2: Run** → FAIL with these messages.
+- [ ] **Step 3: `SKILL.md`**
+  - `## 6.` title → `## 6. Chain — design, plan, implement`; lines 235-236 → "…then goes to step 7 (Verify) and step 8 (Ship)"; chain-choice item 4 → "…then go to step 7"; Checkpoints paragraph: in unattended mode checkpoints end at the go; after it only [run-modes.md](run-modes.md) § Stop conditions halt the run.
+  - Move the Ship text into `## 8. Ship` after `## 7. Verify`, and add: in unattended mode `opening-pull-requests` gate 8 is pre-answered by the go (recorded in the Run log), gate 9 runs `gh pr create --draft`, a lint/test failure inside it is a step-7 failure, and if gate 2's rebase or a review fix changes the tree, step 7 re-runs on the commit Ship pushes; the PR body carries the step-7 evidence table; the PR stays draft while any AC is failed or person-only unverified.
+  - Plan-skip bullet: replace `/mattpocock-skills:implement` with `implement-spec` per [chain-mattpocock.md](chain-mattpocock.md).
+- [ ] **Step 4: `chain-superpowers.md`** — lines 1-4 and 60: return to SKILL.md **step 7** (Verify). Stage 2: the plan-approval question states the gate mapping and that it `pre-authorizes` the two actions (link `run-modes.md`), and runs Preflight first. Stage 3: in unattended mode `plan-implementation` runs `without its stage checkpoints`, stopping only on the stop conditions.
+- [ ] **Step 5: `chain-mattpocock.md`** — lines 1-4 and 62: return to step 7. After the to-tickets coverage check: Preflight, then one `AskUserQuestion` "`go unattended?`" (states it `pre-authorizes exactly two outward actions`; recorded in the Run log). Implement stage: invoke the Skill identifier `implement-spec` (bare, not `mattpocock-skills:implement-spec`) with the spec issue URL and "intake mode"; "`intake mode publishes nothing`: no draft PR at its step 3, no ready or close at step 8, no closing keywords; it returns the integration branch." If the Skill call errors (e.g. `disable-model-invocation`), the chain runs `attended only`: the user types `/implement-spec <spec-url>` and intake does not go unattended. Keep "Never replicate these skills" and name `implement-spec` in intake mode as the one skill intake invokes. Lines 71-76: replace the `implement` command with `implement-spec`.
+- [ ] **Step 6: Run** → `PASSED`; `grep -n 'Ship' dev-workflow/skills/intaking-work-items/*.md` — every hit refers to step 8 or the Ship stage by name, none to step 6.
+- [ ] **Step 7: Commit** — `feat(dev-workflow): intake step 8 Ship drafts unattended; chains hand off to verify; mattpocock uses implement-spec`.
 
-- [ ] **Step 3: Edit `chain-superpowers.md`** — unattended: brainstorming's spec review and writing-plans' approval happen in the sitting; the plan-approval question names what it pre-authorizes (link `run-modes.md`); `plan-implementation` then runs "without its stage checkpoints", stopping only on `run-modes.md` § Stop conditions; then step 7.
+### Task 5: Step 9 close-out, description, docs, version
 
-- [ ] **Step 4: Edit `chain-mattpocock.md`** — Implement stage: invoke the user-level `implement-spec` skill via the Skill tool with the spec issue URL and the instruction "intake mode: leave the PR as a draft and close no tickets"; if it still carries `disable-model-invocation`, say so and the user types `/implement-spec <spec-url>` — the unattended stretch starts after that. `to-spec`/`to-tickets` stay user-typed, in the sitting. Keep "Never replicate these skills", adding that `implement-spec` in intake mode is the one skill intake invokes. After it returns: step 7, not Ship.
+**Files:** Modify `SKILL.md` (new `## 9. Close-out` before `## Gotchas`; description lines 3-16); `dev-workflow/README.md:13`; `docs/superpowers/specs/2026-10-07-intake-chain-choice-design.md:23` (append a dated note: intake now invokes the user-level `implement-spec`, see the 2026-10-09 design); `dev-workflow/.claude-plugin/plugin.json:3` and `.claude-plugin/marketplace.json:51` → `0.1.6`; Test `run.sh`.
 
-- [ ] **Step 5: Run, expect PASS** — exit 0.
-
-- [ ] **Step 6: Commit** — `feat(dev-workflow): intake chains run unattended after plan approval; mattpocock uses implement-spec`.
-
-### Task 5: Step 8 close-out, description, docs, version
-
-**Files:**
-- Modify: `SKILL.md` (new `## 8. Close-out` before `## Gotchas`; frontmatter description)
-- Modify: `dev-workflow/README.md:13` (skills row)
-- Modify: `docs/superpowers/specs/2026-10-07-intake-chain-choice-design.md:23` (append a dated note that intake now uses the user-level `implement-spec`, see the 2026-10-09 design)
-- Modify: `dev-workflow/.claude-plugin/plugin.json:3` and `.claude-plugin/marketplace.json:51` → `0.1.6`
-- Test: `dev-workflow/tests/run.sh`
-
-- [ ] **Step 1: Add failing assertions**
+- [ ] **Step 1: Failing assertions**
 
 ```bash
-  grep -qF '## 8. Close-out' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing step 8 Close-out"
-  grep -qF '/retro' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: close-out missing the /retro offer"
+  grep -qF '## 9. Close-out' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing step 9 Close-out"
+  grep -qF '`/retro`' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: close-out missing the /retro offer"
   grep -qF 'skill-retrospective' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: close-out missing the skill-retrospective route"
-  grep -qF 'separate branch' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: retro changes not kept off the ticket PR"
+  grep -qF 'separate branch and PR' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: retro changes not kept off the ticket PR"
+  grep -qF 'Delivered only if' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the Delivered rule"
 ```
 
-- [ ] **Step 2: Run, expect FAIL** — the 4 messages.
-
-- [ ] **Step 3: Write `## 8. Close-out`** — per spec § Step 8: show Run log, evidence table, blockers; walk person-only AC and record results; offer each outward action separately under step 5's per-action rule (mark ready — state failed/unverified first; Jira transition; ticket comment; close tickets as the repo allows); set Status `Delivered`; offer `/retro` on the session, route skill/memory findings to `skill-retrospective`, accepted environment changes go on a separate branch and PR. Each offer has a Skip.
-
-- [ ] **Step 4: Description** — add "verifies each AC with recorded evidence, runs unattended to a draft PR, and closes out on return" to the frontmatter description; stay ≤ 1024 chars. Mirror in `dev-workflow/README.md:13`.
-
-- [ ] **Step 5: Docs and version** — the dated note at the 2026-10-07 design line 23; bump both version fields to `0.1.6`.
-
-- [ ] **Step 6: Run, expect PASS** — `bash dev-workflow/tests/run.sh` exit 0; `grep -n '"version": "0.1.6"' dev-workflow/.claude-plugin/plugin.json .claude-plugin/marketplace.json` → 2 lines.
-
-- [ ] **Step 7: Commit** — `feat(dev-workflow): intake step 8 close-out with /retro; bump 0.1.6`.
+- [ ] **Step 2: Run** → FAIL with these 5.
+- [ ] **Step 3: `## 9. Close-out`** — show Run log, evidence table, blockers; walk each person-only AC and record the result; offer each outward action separately under step 5's per-action rule (mark ready — state failed or unverified AC first; Jira transition; ticket comment; close tickets as the repo allows), each with Skip; "Status becomes `Delivered` only if every active AC is verified and the PR is ready; otherwise `Partial`, listing the open AC" (contains `Delivered only if`); offer `` `/retro` `` on the session — skill and memory findings go to `dev-workflow:skill-retrospective`, accepted environment changes go on a `separate branch and PR`.
+- [ ] **Step 4: Description** — replace "with a user checkpoint between each" with "— unattended after one sitting by default — verifies each AC with recorded evidence, opens a draft PR, and closes out on return". Check: `bash dev-workflow/tests/run.sh` reports no description-length failure (≤ 1024). Mirror the meaning in `dev-workflow/README.md:13`.
+- [ ] **Step 5: Docs and version** — the dated note at 2026-10-07 design line 23; both version fields to `0.1.6`.
+- [ ] **Step 6: Run** → `PASSED`; `grep -c '"version": "0.1.6"' dev-workflow/.claude-plugin/plugin.json .claude-plugin/marketplace.json` → `1` each.
+- [ ] **Step 7: Commit** — `feat(dev-workflow): intake step 9 close-out with /retro; bump 0.1.6`.
 
 ### Task 6: User-level `implement-spec` intake mode (outside the repo)
 
-**Files:**
-- Modify: `~/.claude/skills/implement-spec/SKILL.md` (frontmatter line 4; step 8)
+**Files:** `~/.claude/skills/implement-spec/SKILL.md` (line 4; step 3; step 8).
 
-- [ ] **Step 1: Ask the user** — show the exact two edits below and get an explicit yes in chat. No yes → skip this task; Task 4's fallback (user types the command) covers it.
-- [ ] **Step 2: Edit** — delete `disable-model-invocation: true`; append to step 8: "When called from intake (intake mode), leave the PR as a draft and close no tickets; report the integration branch and the PR."
-- [ ] **Step 3: Verify** — `grep -c 'disable-model-invocation' ~/.claude/skills/implement-spec/SKILL.md` → `0`; `grep -c 'intake mode' ~/.claude/skills/implement-spec/SKILL.md` → `1`. No commit (not in the repo).
+- [ ] **Step 1: Ask the user** — show the three edits below verbatim; proceed only on an explicit yes. On no, stop: Task 4's attended-only fallback applies.
+- [ ] **Step 2: Edit** — delete line 4 `disable-model-invocation: true`; append to step 3: "In intake mode, open no PR."; append to step 8: "In intake mode, mark nothing ready, close no tickets, and use no closing keywords; report the integration branch to the caller."
+- [ ] **Step 3: Verify** — `grep -c 'disable-model-invocation' ~/.claude/skills/implement-spec/SKILL.md` → `0`; `grep -c 'In intake mode' ~/.claude/skills/implement-spec/SKILL.md` → `2`. No commit (not in the repo).
 
 ### Final: review chain
 
-- [ ] `bash dev-workflow/tests/run.sh` exit 0 on the branch tip.
+- [ ] `bash dev-workflow/tests/run.sh` → `PASSED` on the branch tip.
 - [ ] Full tier: dispatch `dev-workflow:fresh-verifier` and `dev-workflow:codex-adversary` in one message on `git diff main...HEAD` against the spec; fix findings; then `opening-pull-requests`.
