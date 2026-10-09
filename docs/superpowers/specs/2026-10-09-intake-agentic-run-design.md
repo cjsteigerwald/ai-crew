@@ -2,7 +2,7 @@
 
 - **Date:** 2026-10-09 (revised the same day after the full-tier plan review)
 - **Skill:** `dev-workflow/skills/intaking-work-items/`
-- **Status:** Approved design, revision 2 pending re-review
+- **Status:** Approved design, revision 3 pending re-review
 
 ## Problem
 
@@ -36,13 +36,13 @@ local stop with the reason in the Run log — and in both cases a notification.
   step 8 marks the PR ready or closes the tickets; `disable-model-invocation: true` at line 4.
 - `retro` writes nothing: it reads session logs and returns ranked suggestions.
 - `dev-workflow:skill-retrospective` routes learnings to memory, a per-repo overlay, or skills
-  (`skill-retrospective/SKILL.md:46-48`); the file never mentions AGENTS.md, hooks, or lint.
+  (`skill-retrospective/SKILL.md:45-47`); the file never mentions AGENTS.md, hooks, or lint.
 - Gates intake's unattended run must answer in advance:
   - `tdd/SKILL.md:22-24`: "No test is written at an unconfirmed seam" — seams are confirmed with the
     user before any test.
   - `plan-implementation/SKILL.md:201`: "prompt before commit/push/PR".
   - `opening-pull-requests/SKILL.md:104-106` (gate 8): "ask before running `gh pr create`".
-  - `opening-pull-requests/SKILL.md:44-46` (gate 2) rebases on main before any PR, and `:52-54`
+  - `opening-pull-requests/SKILL.md:45-47` (gate 2) rebases on main before any PR, and `:53-55`
     (gate 3) forbids pushing unless lint and the full suite are clean. It has no draft concept.
 - The mattpocock chain today ends with the user typing `/mattpocock-skills:implement`
   (`chain-mattpocock.md:53-60`; also named at `SKILL.md:66-67` and `chain-mattpocock.md:71-76`).
@@ -56,7 +56,10 @@ local stop with the reason in the Run log — and in both cases a notification.
 1. **Run modes: `unattended` (default) and `attended`.** Attended is today's behaviour. Skip on the
    run-mode question means attended.
 2. **The sitting answers every downstream gate in advance**, and the doc's Run log records each:
-   - the AC→test table, approved in step 4, *is* the seam confirmation `tdd` requires;
+   - the AC→test table, approved in step 4, *is* the seam confirmation `tdd` requires: it names each
+     test's seam (the public interface it tests through) and what it catches and misses, and it is
+     handed to every implementer on both chains as the confirmed seam list. A worker that needs a
+     seam not in the table stops (decision 5) rather than asking or inventing one;
    - plan approval answers `plan-implementation`'s commit/push/PR prompt and
      `opening-pull-requests` gate 8;
    - on the mattpocock chain, which has no plan-approval question, an explicit "go unattended?"
@@ -69,21 +72,29 @@ local stop with the reason in the Run log — and in both cases a notification.
    checklist row 14 (access) Present; the **baseline is green** — the full suite and lint pass on
    the base commit (a red baseline or no runnable test suite means attended only); the permission
    mode will not stall on prompts; a notification channel exists or the fallback is accepted.
+   Preflight runs before **every** go: plan approval, the mattpocock go question, and the plan-skip
+   or chain-skip go-ahead.
 5. **Stop conditions:** a check still failing after 2 fix attempts; an AC found wrong or untestable;
    work beyond the agreed scope; a repo gate or missing access; any outward write outside
-   decision 3; a gate decision 2 did not answer. On a stop:
-   - **checks green** (scope, a wrong AC, a person-only gap, an unanswered gate): run the review
-     chain, push, open the draft PR with the blocker in its body, notify;
-   - **checks failing, or no push/PR access:** stop locally — commits stay on the branch, the Run
-     log and final message carry the blocker, notify. Nothing is pushed.
+   decision 3; a gate decision 2 did not answer (including a seam not in the AC→test table). Each
+   stop is one of two kinds:
+   - **implementation blocker** (scope growth, a wrong or untestable AC, a person-only gap, a missing
+     seam) **with checks green**: run the review chain, push, open the draft PR with the blocker in
+     its body, notify — only if every publication gate (repo step-0 rules, `opening-pull-requests`)
+     is satisfied;
+   - **publication blocker** (a repo gate, missing push or PR access, an unanswered publication
+     gate) **or failing checks**: stop locally — commits stay on the branch, the Run log and final
+     message carry the blocker, notify. Nothing is pushed. Repo gates keep step 0's precedence.
 6. **Verification (step 7)** runs on the final branch, re-running everything rather than trusting
    worker reports, and **again on the exact commit Ship pushes** if a rebase or review fix changed
    the tree. Evidence is stale the moment the tree changes.
 7. **Red-on-base is evidence only for an assertion failure.** Each new test is applied to the base
-   commit in a throwaway worktree and must fail on an assertion about the AC's behaviour. A
-   collection, import, or compile failure (the code under test does not exist on base) is recorded as
-   `red n/a — new interface` and the AC is verified by its head run plus the reviewers' check that the
-   test asserts the AC. Each new test must also pass twice on head; a differing result is a failure
+   commit in a throwaway worktree — only test files and fixtures from the branch are copied there,
+   never implementation files — and must fail on an assertion about the AC's behaviour. A
+   collection, import, or compile failure counts as `red n/a — new interface` only when the error
+   names a module or symbol the branch adds; the AC is then verified by its head run plus the
+   reviewers' check that the test asserts the AC. Any other setup failure (a missing fixture,
+   dependency, or build setting) is a failed check. Each new test must also pass twice on head; a differing result is a failure
    (flaky). The evidence row records the base SHA, the command, and the failure reason.
 8. **A person-only AC keeps the PR in draft** until the user confirms it at close-out.
 9. **mattpocock chain uses the user's `implement-spec` in intake mode**, invoked as the bare Skill
@@ -92,8 +103,10 @@ local stop with the reason in the Run log — and in both cases a notification.
    integration branch to intake. This needs edits to `~/.claude/skills/implement-spec/SKILL.md`
    (outside the repo, applied only on the user's confirmation): drop `disable-model-invocation`, and
    make steps 3 and 8 honour intake mode. If the edits are declined, or the Skill call errors, the
-   mattpocock chain runs **attended only** — the user types the command and intake does not go
-   unattended on that chain.
+   mattpocock chain runs **attended only** with today's command: the user types
+   `/mattpocock-skills:implement <spec-url>`, which commits to the branch and opens no PR; intake
+   does not go unattended on that chain. The unedited `implement-spec` is never used, in either
+   mode, because it publishes before verification.
 10. **Steps are renumbered:** 6 Chain, 7 Verify, 8 Ship, 9 Close-out. Every cross-reference
     (`SKILL.md`, both chain files' lines 3-4 and their "return to … Ship" lines) is updated.
 11. **Close-out (step 9)** runs on the user's return and offers `/retro`. Status becomes `Delivered`
@@ -121,8 +134,8 @@ Attended mode is the same flow with today's checkpoint between every stage.
 
 ### `SKILL.md`
 
-- Description: replace "with a user checkpoint between each" with wording for the unattended run,
-  verification, and close-out; stay ≤ 1024 chars. Mirror in `dev-workflow/README.md:13`.
+- Description: replace "with a user checkpoint between each" with "— unattended after one sitting by
+  default — verifies each AC, opens a draft PR, closes out on return" (1001 bytes). Mirror in `dev-workflow/README.md:13`.
 - New `## Run mode` after **Controls**, pointing at `run-modes.md`.
 - Step 3 gains the run-mode question. Controls: the plan-skip go-ahead carries the same
   pre-authorization as plan approval; cancel leaves an already-open draft PR untouched and reports it.
