@@ -69,7 +69,8 @@ local stop with the reason in the Run log — and in both cases a notification.
    Nothing else outward — marking ready, editing a PR other than the one intake opened, ticket
    comments, Jira transitions, closing tickets — before the user returns.
 4. **Unattended preflight** (user still present) must pass, else intake offers attended:
-   checklist row 14 (access) Present; the **baseline is green** — the full suite and lint pass on
+   checklist row 14 (access) Present; row 9 Present — the AC→test table approved (a skipped row 9
+   means attended only); the **baseline is green** — the full suite and lint pass on
    the base commit (a red baseline or no runnable test suite means attended only); the permission
    mode will not stall on prompts; a notification channel exists or the fallback is accepted.
    Preflight runs before **every** go: plan approval, the mattpocock go question, and the plan-skip
@@ -146,7 +147,7 @@ Attended mode is the same flow with today's checkpoint between every stage.
 ### `run-modes.md` (new)
 
 Modes; what the sitting settles and the gate-by-gate mapping (decision 2); the go's
-pre-authorization (decision 3); Preflight (decision 4); Stop conditions and the green/failing split
+pre-authorization (decision 3); Preflight (decision 4); Stop conditions and the two blocker kinds
 (decision 5); notification (`PushNotification`, else the PR body or Run log plus the final message);
 the Run log, and resume: refetch and diff per Controls, then continue from the Run log.
 
@@ -173,7 +174,8 @@ on the commit Ship pushes whenever the tree changed (decision 6).
 
 ### `checklist.md`
 
-- Row 9 Present only with the AC→test table filled (AC-n → kind → test name → location) and each AC
+- Row 9 Present only with the AC→test table filled (AC-n → kind → seam → catches / misses → test name
+  → location) and each AC
   tagged **agent-verifiable** or **person-only**.
 - New row 14 **Access and environment**. Unmet or skipped ⇒ unattended unavailable.
 
@@ -208,7 +210,7 @@ step 7 ran.
 `dev-workflow/tests/run.sh` presence assertions, one per load-bearing rule, each string absent from
 the skill today and quoted verbatim in the plan's content step: both new files linked; the run-mode
 default and Skip rule; the gate mapping; `gh pr create --draft`; the green-baseline rule; the
-green/failing stop split; re-verify on the shipped commit; the assertion-failure red rule and
+two blocker kinds; re-verify on the shipped commit; the assertion-failure red rule and
 `red n/a — new interface`; pass twice on head; `Partial`; the `implement-spec` intake mode and
 attended fallback; the renumbered steps. Existing assertions stay green.
 
