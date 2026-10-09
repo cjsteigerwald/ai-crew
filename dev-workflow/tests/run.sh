@@ -267,7 +267,7 @@ if [ -f "$INTAKE_SKILL" ]; then
   [ "$lines" -lt 500 ] || ifail "intaking-work-items/SKILL.md: $lines lines (keep under 500; push detail into supporting files)"
 
   # Supporting files exist and are linked one level deep from SKILL.md.
-  for support in checklist.md template.md chain-superpowers.md chain-mattpocock.md; do
+  for support in checklist.md template.md chain-superpowers.md chain-mattpocock.md run-modes.md; do
     [ -f "$INTAKE_DIR/$support" ] || ifail "intaking-work-items/$support not found"
     grep -qF "]($support)" "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: does not link $support"
   done
@@ -317,6 +317,28 @@ if [ -f "$INTAKE_SKILL" ]; then
   grep -qF '## Verification evidence' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: missing the Verification evidence section"
   grep -qF '## Run log' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: missing the Run log section"
   grep -qF 'Ready | Partial | Delivered' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: Status missing Partial / Delivered"
+
+  grep -qF '## Run mode' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the Run mode section"
+  grep -qF 'Skip on the run-mode question means attended' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the run-mode Skip rule"
+  grep -qF '`unattended` is the default' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the run-mode default"
+  grep -qF 'plan-skip go-ahead' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: plan-skip rule missing the pre-authorization"
+  grep -qF 'draft PR already open' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: cancel rule missing the open-draft-PR case"
+  grep -qF 'pre-authorizes exactly two outward actions' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the go's pre-authorization"
+  grep -qF 'gh pr create --draft' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the draft PR command"
+  grep -qF 'is the seam confirmation' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: gate mapping missing the tdd seam answer"
+  grep -qF 'answers gate 8' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: gate mapping missing opening-pull-requests gate 8"
+  grep -qF 'a gate the sitting did not answer' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the unanswered-gate stop"
+  grep -qF '## Preflight' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing Preflight"
+  grep -qF 'baseline is green' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the green-baseline rule"
+  grep -qF 'permission mode' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: preflight missing the permission-mode check"
+  grep -qF '## Stop conditions' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing Stop conditions"
+  grep -qF 'implementation blocker' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the implementation-blocker path"
+  grep -qF 'publication blocker' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the publication-blocker path"
+  grep -qF 'a seam not in the AC→test table' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the missing-seam stop"
+  grep -qF 'before every go' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: preflight not required before every go"
+  grep -qF 'stop locally' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the local-stop path"
+  grep -qF 'PushNotification' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the notification channel"
+  grep -qF 'continue from the Run log' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing resume-from-Run-log"
 
   # Public-repo hygiene: no organisation-specific ticket project or skill
   # names in this skill (they don't resolve from a public checkout).

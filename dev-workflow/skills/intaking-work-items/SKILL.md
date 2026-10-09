@@ -65,6 +65,8 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
     standard, without plan-implementation's approved-plan prerequisite. The PR body states
     "Intake: plan skipped". On the mattpocock chain the user still runs
     `/mattpocock-skills:implement` — see [chain-mattpocock.md](chain-mattpocock.md).
+    In unattended mode the plan-skip go-ahead comes after Preflight passes and carries the same
+    pre-authorization and gate answers as plan approval.
   - **Skipped requirements doc → still write a stub doc** at `docs/specs/<KEY>-requirements.md`:
     Status, source link, "requirements not gap-checked" (if so), the skipped steps, the
     **Gap table at skip** (if step 2 ran), and — whenever step 3 ran — the
@@ -85,7 +87,8 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
   `> Status: CANCELLED at step <n> on <date> — incomplete`, Status `Cancelled` — or the deletion
   of that doc if the user asks. Never create a doc on cancel. If the marker edit fails, say so.
   Never post to Jira or GitHub on cancel, and invoke no chained skill. Report in a few lines what
-  was done, what was written locally, and that nothing is pending.
+  was done, what was written locally, and that nothing is pending. If a draft PR already open
+  exists, cancel leaves it untouched and names it in the report; closing it needs a separate yes.
 - **Resume:** if `docs/specs/<KEY>-requirements.md` already exists when intake starts, read it and
   show its status and gap/decision state, then ask: **resume, or start over** with a fresh doc. On
   resume, **always refetch and diff against the snapshot**:
@@ -99,6 +102,14 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
   - A CANCELLED doc is never revived silently: ask first (resume it, or start over with a fresh
     doc). Resuming it resets Status to `Draft`, removes the CANCELLED first line, and logs the
     resume in the decision log.
+
+## Run mode
+
+- Two modes: `unattended` and `attended`. `unattended` is the default; attended keeps today's
+  checkpoint between each stage.
+- Chosen at step 3, recorded in the doc's `**Run mode:**`. The sitting answers every downstream
+  gate in advance; Preflight runs before every go.
+- Modes, gate mapping, Preflight, stop conditions, and the Run log: [run-modes.md](run-modes.md).
 
 ## 0. Repo procedure first
 
@@ -197,6 +208,10 @@ Present the result as one table, then the questions you will ask, in order.
   evidence column and go to step 4. The gate still ran; it just had nothing to block.
 
 If the user asked only "is this ticket ready?", stop here with the table and the open questions.
+
+After the gate, ask one `AskUserQuestion`: unattended (recommended) / attended / Skip. Record the
+answer in `**Run mode:**`. Skip on the run-mode question means attended. See
+[run-modes.md](run-modes.md).
 
 ## 4. Write the requirements doc
 
