@@ -6,7 +6,7 @@ description: >
   acceptance criteria, blocks on clarifying questions until every gap is closed
   or explicitly deferred, writes docs/specs/<KEY>-requirements.md, offers
   confirmed writebacks to the ticket, then chains design, plan, implementation
-  (superpowers, mattpocock-skills or sdlc-process, the user's choice) — unattended after one
+  (superpowers, mattpocock-skills or sdlc-process [attended], the user's choice) — unattended after one
   sitting by default — verifies each AC, opens a draft PR, closes out on
   return. Use when starting work on an existing ticket — "start work on
   PROJ-571", "pick up issue #12", "bring in this ticket", "work on
@@ -123,8 +123,9 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
 - An unmet repo gate is a blocker, not a gap to clarify away: record it and stop where the repo says to.
 - Respect repo rules about **when a GitHub issue may exist** — some repos forbid creating it until the
   Jira ticket enters a sprint. Intake never creates an issue or ticket on its own — on the
-  mattpocock chain (step 6), issues are created only by commands the user types; at most it notes
-  that one is missing and points at the repo's rule.
+  mattpocock chain (step 6), issues are created only by commands the user types; on the
+  sdlc-process chain, only via `sdlc-process:to-tickets` after the user's per-issue confirmation;
+  at most intake notes that one is missing and points at the repo's rule.
 - This skill never skips or waives step 0 on its own. The **user** may override it, but only with
   the second confirmation described in **Controls** — the only step that needs one.
 
@@ -275,9 +276,10 @@ implement, then goes to step 7 (Verify) and step 8 (Ship).
    - **Repo rules forbid issues now** (a step-0 rule such as "no GitHub issue until the Jira ticket
      is in a sprint"): say the mattpocock path is unavailable for this ticket and offer
      superpowers. A step-0 override follows **Controls**' second-confirmation rule.
-   If sdlc-process is chosen but not installed, say so and re-ask without it. It does not use the
-   mattpocock tracker gates above: it runs attended only, keeps its own gates, and its tracker
-   contract is in [chain-sdlc-process.md](chain-sdlc-process.md) (publication to GitHub or elsewhere
+   If sdlc-process is chosen but not installed, say so and re-ask without it. Only the mattpocock
+   *setup* gates above are excluded: it runs attended only, keeps its own gates, and a step-0 repo
+   rule forbidding issues still applies (publication is then a hold; proceeding needs the step-0
+   second confirmation in **Controls**). Its tracker contract is in [chain-sdlc-process.md](chain-sdlc-process.md) (publication to GitHub or elsewhere
    needs the user's explicit per-action confirmation).
 4. **Skip** means no chain: apply the plan-skip rule in **Controls** — warn once, record
    "Intake: chain skipped — no design/plan", get an explicit go-ahead, implement directly against
@@ -330,8 +332,11 @@ user chose "no doc at all", the PR body also carries the stub doc's content.
 - **mattpocock chain:** the PR body also lists the spec issue (none if `to-spec` was skipped) and
   each ticket issue it delivers (`Refs owner/repo#N` each; a closing keyword only where the repo
   allows a merge to close it).
+- **sdlc-process chain:** `Refs owner/repo#N` for each issue sdlc-process published (same
+  closing-keyword rule), or "sdlc-process: no tickets published".
 
-**Unattended mode.** `opening-pull-requests` gate 8 is pre-answered by the go (recorded in the Run
+**Unattended mode.** (Never on the sdlc-process chain: it is always attended, so push and draft PR
+each need a live confirmation.) `opening-pull-requests` gate 8 is pre-answered by the go (recorded in the Run
 log), and gate 9 runs `gh pr create --draft`. A lint/test failure inside it is a step-7 failure. If
 gate 2's rebase or a review fix changes the tree, step 7 re-runs on the commit Ship pushes. The PR
 body carries the step-7 evidence table.

@@ -6,8 +6,11 @@ step 7 (Verify).
 ## Attended only
 
 This chain runs attended: sdlc-process's readiness, policy-review and publication gates need a live
-human. If the run mode is unattended, say so once, switch to attended for step 6, and record "Run
-mode: attended (sdlc-process chain)" in the Run log. There is no "go unattended?" question here.
+human. If the run mode is unattended, say so once and switch to attended for the rest of the run
+(steps 6–9): set the requirements doc's `**Run mode:**` field to `attended` and log the reason
+("Run mode: attended (sdlc-process chain)") in the Run log. There is no "go unattended?" question
+here, and no unattended pre-authorization applies on this chain — step 8's push and draft PR each
+need a live confirmation.
 
 ## Precondition
 
@@ -57,18 +60,27 @@ readiness, policy-review or publication gates.
 4. **Tickets — the plan stage.**
    - `sdlc-process:to-spec` is skipped by default (the requirements doc is the spec) unless the user
      explicitly confirms publishing one.
-   - If decomposition is needed, run `sdlc-process:to-tickets`. In a repo with no tracker config,
-     instruct it to use its **Local files** mode (`.scratch/<KEY>/issues/NN-<slug>.md`) and do not
-     prompt for `/setup-matt-pocock-skills`. In a repo whose tracker config is GitHub, to-tickets
-     publishes issues — a publication needing the user's explicit confirmation first, else use Local
-     files mode. In all cases, never publish to GitHub without the user's explicit confirmation.
+   - Under sdlc-process, decomposition means GitHub issues published by `sdlc-process:to-tickets`
+     (its bundled tracker doc applies regardless of the target repo; there is no local-file
+     fallback and no competing backlog). Run it only after the user's per-issue confirmation —
+     never publish to GitHub without the user's explicit confirmation, issue by issue. If the
+     user declines, or GitHub access is missing, that is a hold: relay it (resolve / switch chain
+     / cancel), or the user may take **Skip `to-tickets`** under the plan-skip rule.
+   - A step-0 repo rule forbidding issues (e.g. "no GitHub issue until the Jira ticket is in a
+     sprint") still applies: publication is then a hold, and proceeding needs the step-0 second
+     confirmation (Controls).
    - Every ticket cites the `AC-n` it satisfies. Check coverage: every active AC is cited by at least
      one ticket and no ticket cites a non-active AC. Take any gap back to the user. Record the
-     ticket files or published issue links (each with `AC-n`) in **Chain artifacts**.
-5. **Implement.** Route `sdlc-process:implement` → `sdlc-process:tdd` → `sdlc-process:code-review`,
-   always prefixed. Give `implement` the requirements doc (and tickets, if any) and the settled AC
-   list as the only scope. Commit the implementation candidate to the work branch BEFORE each
-   `sdlc-process:code-review` call (its diff is `<review base>...HEAD`), and pass the `review base`
+     published issue links (each with `AC-n`) in **Chain artifacts**.
+5. **Implement.** The router is expected to select `sdlc-process:implement` →
+   `sdlc-process:tdd` → `sdlc-process:code-review` after its readiness/start checks (intake does
+   not dictate the sequence); always prefixed. Give `implement` the requirements doc (and
+   tickets, if any) and the settled AC list as the only scope.
+   `sdlc-process:code-review` diffs committed trees (`<review base>...HEAD`), so the candidate is
+   committed locally on the work branch (unpushed) before each call; if sdlc-process's
+   orchestrator first reviews a pinned uncommitted patch ("every build wave gets a conformance
+   review before its commit"), that satisfies it too — either way nothing is pushed. Record this
+   in the Run log. Re-record the `review base` after any rebase. Pass the `review base`
    AND the path `docs/specs/<KEY>-requirements.md` as the spec to every code-review call. No PR,
    push, ready, close or closing keywords — intake step 8 owns the draft PR (pushing still needs
    the user's go per step 8).
@@ -87,9 +99,10 @@ The **Controls** in SKILL.md apply, with these specifics:
   - **Skip `to-tickets`** is the plan-skip rule: warn once, record it, get an explicit go-ahead.
     The Implement stage still runs, with the settled AC list as the only scope. The PR body states
     "Intake: plan skipped".
-- **Cancel:** stop and invoke no further `sdlc-process` skill. Local ticket files already written
-  and any sdlc-process records created are reported (path or link each), not deleted.
-- **Resume:** the doc's `Chain:` field and **Chain artifacts** (work branch, ticket files, holds,
+- **Cancel:** stop and invoke no further `sdlc-process` skill. Issues already published and any
+  sdlc-process records created are reported (link or path each), nothing deleted.
+- **Resume:** the doc's `Chain:` field and **Chain artifacts** (work branch, published issues, holds,
   last completed stage) record where the chain stopped. After the usual refetch-and-diff, restart at
   the first incomplete stage; AC rows reopened by the diff invalidate the tickets that cite them —
-  regenerate those through `sdlc-process:to-tickets` and record the superseded ones.
+  regenerate those through `sdlc-process:to-tickets` (again with per-issue confirmation) and record
+  the superseded ones.

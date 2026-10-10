@@ -114,7 +114,7 @@ skipped".>
 
 <Filled in step 6. superpowers: the design doc path and the plan path (or the approved bounded
 task list). mattpocock: the spec issue (`owner/repo#N`) and the ticket issues (`owner/repo#N` —
-`AC-n` each), plus any superseded tickets. sdlc-process: the work branch, the ticket files or
+`AC-n` each), plus any superseded tickets. sdlc-process: the work branch, the
 published issue links (each with `AC-n`), sdlc-process holds and their resolutions, and any
 superseded tickets. Every chain: **Last completed stage:** <stage, or
 "none">. Before step 6: "None — chain not started".>
