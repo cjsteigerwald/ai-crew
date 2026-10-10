@@ -21,8 +21,8 @@ The sitting answers every downstream gate in advance. Record each answer in the 
 - Plan approval answers `plan-implementation`'s commit/push/PR prompt and answers gate 8 of
   `opening-pull-requests`.
 - On the mattpocock chain there is no plan approval: an explicit "go unattended?" question after
-  the `to-tickets` coverage check is the equivalent go. The sdlc-process chain does the same,
-  after its local-ticket coverage check (or before implement if none).
+  the `to-tickets` coverage check is the equivalent go. The sdlc-process chain is attended only — no
+  go-unattended question; its gates are answered live (see chain-sdlc-process.md).
 
 The go pre-authorizes exactly two outward actions: pushing the work branch, and opening one draft
 PR with `gh pr create --draft` after step 7 (Verify) and the full review chain pass.

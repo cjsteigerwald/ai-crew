@@ -257,9 +257,11 @@ implement, then goes to step 7 (Verify) and step 8 (Ship).
 **Choosing the chain.**
 1. Read the **target** repo's `docs/agents/issue-tracker.md`, if present. Recommend mattpocock
    only when it configures GitHub issues for the target repo (its `owner/repo` matches
-   `gh repo view --json nameWithOwner`). Recommend sdlc-process only when the `sdlc-process`
-   plugin is installed (`sdlc-process:sdlc-process` is available) AND the target repo uses it
-   (e.g. its docs name it) or the user named it; otherwise recommend superpowers.
+   `gh repo view --json nameWithOwner`). Recommend sdlc-process when the user named it, or when the
+   `Skill` tool lists `sdlc-process:sdlc-process` AND the target's `AGENTS.md`, `CLAUDE.md` or
+   `docs/agents/issue-tracker.md` mentions `sdlc-process`; it outranks mattpocock when both match.
+   If the user names it but it is not installed, say so and recommend per the other rules.
+   Otherwise recommend superpowers. sdlc-process is attended only.
 2. Ask once (`AskUserQuestion`): superpowers / mattpocock / sdlc-process / **Skip**, the
    recommendation first and labelled as such. That is the 4-option limit; cancel is typed via
    "Other" (see **Controls**).
@@ -274,9 +276,9 @@ implement, then goes to step 7 (Verify) and step 8 (Ship).
      is in a sprint"): say the mattpocock path is unavailable for this ticket and offer
      superpowers. A step-0 override follows **Controls**' second-confirmation rule.
    If sdlc-process is chosen but not installed, say so and re-ask without it. It does not use the
-   mattpocock tracker gates above: its tracker contract is in
-   [chain-sdlc-process.md](chain-sdlc-process.md) (Jira or the GitHub issue; nothing published to
-   GitHub, no tickets created).
+   mattpocock tracker gates above: it runs attended only, keeps its own gates, and its tracker
+   contract is in [chain-sdlc-process.md](chain-sdlc-process.md) (publication to GitHub or elsewhere
+   needs the user's explicit per-action confirmation).
 4. **Skip** means no chain: apply the plan-skip rule in **Controls** — warn once, record
    "Intake: chain skipped — no design/plan", get an explicit go-ahead, implement directly against
    the settled AC list (active AC only, same verification standard) after Preflight passes and
