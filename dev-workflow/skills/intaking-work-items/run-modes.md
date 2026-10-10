@@ -15,7 +15,7 @@ Skip on the run-mode question means attended.
 The sitting answers every downstream gate in advance. Record each answer in the doc's Run log.
 
 - The approved AC→test table is the seam confirmation `tdd` requires. It names each test's seam
-  and what it catches and misses, and is handed to every implementer, on both chains, as the
+  and what it catches and misses, and is handed to every implementer, on every chain, as the
   confirmed seam list.
 - The review base: the merge-base of the integration branch with main, recorded in the Run log.
 - Plan approval answers `plan-implementation`'s commit/push/PR prompt and answers gate 8 of

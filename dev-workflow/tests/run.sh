@@ -318,6 +318,8 @@ if [ -f "$INTAKE_SKILL" ]; then
   grep -qF 'review base' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the review base"
   grep -qF 'Always use the `sdlc-process:` prefix' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the prefix rule"
   grep -qF 'Never answer a sdlc-process gate on the user' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the no-answering-gates rule"
+  grep -qF 'no local-file' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the no-local-file-fallback rule"
+  grep -qF 'Never on the sdlc-process chain' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the step-8 unattended exclusion for the sdlc-process chain"
   grep -qF 'sdlc-process' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: missing the sdlc-process chain artifacts"
   grep -qF 'sdlc-process' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the sdlc-process note"
 
