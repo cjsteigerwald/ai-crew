@@ -267,7 +267,7 @@ if [ -f "$INTAKE_SKILL" ]; then
   [ "$lines" -lt 500 ] || ifail "intaking-work-items/SKILL.md: $lines lines (keep under 500; push detail into supporting files)"
 
   # Supporting files exist and are linked one level deep from SKILL.md.
-  for support in checklist.md template.md chain-superpowers.md chain-mattpocock.md run-modes.md verify.md; do
+  for support in checklist.md template.md chain-superpowers.md chain-mattpocock.md chain-sdlc-process.md run-modes.md verify.md; do
     [ -f "$INTAKE_DIR/$support" ] || ifail "intaking-work-items/$support not found"
     grep -qF "]($support)" "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: does not link $support"
   done
@@ -308,6 +308,20 @@ if [ -f "$INTAKE_SKILL" ]; then
   grep -qF '**Chain:**' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: missing the '**Chain:**' header field"
   grep -qF 'Never replicate these skills' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: missing the 'Never replicate' rule for user-only mattpocock skills"
   grep -qF 'mattpocock path needs GitHub issues' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the GitHub-only gate for the mattpocock chain"
+  grep -qF 'sdlc-process:sdlc-process' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the sdlc-process:sdlc-process chain entry"
+  grep -qF 'sdlc-process:implement' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the sdlc-process:implement route"
+  grep -qF 'sdlc-process:code-review' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the sdlc-process:code-review route"
+  grep -qF 'never publish to GitHub' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the no-GitHub-publish rule"
+  grep -qF 'Attended only' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the attended-only rule"
+  grep -qF 'per-issue confirmation' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the per-issue confirmation rule"
+  grep -qF 'steps 6–9' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the attended-persists rule"
+  grep -qF 'review base' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the review base"
+  grep -qF 'Always use the `sdlc-process:` prefix' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the prefix rule"
+  grep -qF 'Never answer a sdlc-process gate on the user' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the no-answering-gates rule"
+  grep -qF 'no local-file' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the no-local-file-fallback rule"
+  grep -qF 'Never on the sdlc-process chain' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the step-8 unattended exclusion for the sdlc-process chain"
+  grep -qF 'sdlc-process' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: missing the sdlc-process chain artifacts"
+  grep -qF 'sdlc-process' "$INTAKE_DIR/run-modes.md" || ifail "intaking-work-items/run-modes.md: missing the sdlc-process note"
 
   grep -qF '**Access and environment**' "$INTAKE_DIR/checklist.md" || ifail "intaking-work-items/checklist.md: missing the Access and environment row"
   grep -qF 'agent-verifiable' "$INTAKE_DIR/checklist.md" || ifail "intaking-work-items/checklist.md: missing the agent-verifiable / person-only AC tag"

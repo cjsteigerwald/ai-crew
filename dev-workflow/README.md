@@ -10,7 +10,7 @@ two domain specialists.
 
 | Skill | Purpose |
 |---|---|
-| `intaking-work-items` | Takes a Jira ticket or GitHub issue to ready-to-build: fetch context, gap-analyze story/scope/requirements/AC, block on clarifying questions, write `docs/specs/<KEY>-requirements.md`, offer confirmed writebacks, then chain design → plan → implement through the superpowers or mattpocock-skills chain (user's choice) — unattended after one sitting by default — verify each AC, open a draft PR, and close out on return. |
+| `intaking-work-items` | Takes a Jira ticket or GitHub issue to ready-to-build: fetch context, gap-analyze story/scope/requirements/AC, block on clarifying questions, write `docs/specs/<KEY>-requirements.md`, offer confirmed writebacks, then chain design → plan → implement through the superpowers, mattpocock-skills or sdlc-process [attended] chain (user's choice) — unattended after one sitting by default — verify each AC, open a draft PR, and close out on return. |
 | `opening-pull-requests` | The ordered gate sequence before and during PR creation: branch hygiene, sync, lint/test, CI mirror, review-tier decision, review chain, ticket references, confirm, create, verify. |
 | `plan-implementation` | Orchestrated implementation of an approved plan through tiered worker lanes — decompose, route, spec, verify, close. |
 | `authoring-incident-docs` | Produces RCA, findings, and runbook artifacts with correct placement, metadata, and section structure. |

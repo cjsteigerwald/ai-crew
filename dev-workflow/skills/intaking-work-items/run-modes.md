@@ -15,13 +15,14 @@ Skip on the run-mode question means attended.
 The sitting answers every downstream gate in advance. Record each answer in the doc's Run log.
 
 - The approved AC→test table is the seam confirmation `tdd` requires. It names each test's seam
-  and what it catches and misses, and is handed to every implementer, on both chains, as the
+  and what it catches and misses, and is handed to every implementer, on every chain, as the
   confirmed seam list.
 - The review base: the merge-base of the integration branch with main, recorded in the Run log.
 - Plan approval answers `plan-implementation`'s commit/push/PR prompt and answers gate 8 of
   `opening-pull-requests`.
 - On the mattpocock chain there is no plan approval: an explicit "go unattended?" question after
-  the `to-tickets` coverage check is the equivalent go.
+  the `to-tickets` coverage check is the equivalent go. The sdlc-process chain is attended only — no
+  go-unattended question; its gates are answered live (see chain-sdlc-process.md).
 
 The go pre-authorizes exactly two outward actions: pushing the work branch, and opening one draft
 PR with `gh pr create --draft` after step 7 (Verify) and the full review chain pass.
