@@ -12,7 +12,7 @@ never leave `TBD`. No secrets, tokens, or credential values anywhere in the doc.
 **Fetched:** <YYYY-MM-DD, required — resume diffs comments and changes against this date> — ticket status `<status>`, sprint `<sprint or none>`, estimate `<value or none>`
 **Intake by:** <name> with the `dev-workflow:intaking-work-items` skill
 **Status:** <Draft | Ready | Partial | Delivered | Cancelled> — <last completed step; skipped steps and what each lost, e.g. "gap analysis skipped — requirements not gap-checked">
-**Chain:** <superpowers | mattpocock | — (not yet chosen)>
+**Chain:** <superpowers | mattpocock | sdlc-process | — (not yet chosen)>
 **Run mode:** <unattended | attended>
 
 > Snapshot of the ticket on the fetched date plus the decisions below. If the ticket changes,
