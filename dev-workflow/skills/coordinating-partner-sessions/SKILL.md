@@ -66,10 +66,15 @@ says which call to make when; it does not restate the table.
   otherwise the row's `state` (`working`, `blocked`, `done`) if alive, and `done nopid` if it
   ended. Exit `10` is a normal no-op.
 - **Rebind** (after every wake or relaunch): `--resume <sessionId> --bg --name <name>` may start a
-  copy with a new `id` and `sessionId`. Read agents, take the newest alive row named `<KEY>-<n>`,
-  and run `ledger.sh session "$L" <n> <name> <sessionId>`.
+  copy with a new `id` and `sessionId`. Read agents and take the newest alive row whose name is
+  the issue's recorded `sessionName` or the `--name` just used. If its name or `sessionId` differs
+  from the ledger's, run `ledger.sh session "$L" <n> <name> <sessionId>`.
 - **Arm** = `SendMessage` to `<KEY>-<n>` with `notify_when_idle: true` and no message. Note the
   time. A notice is one-shot and expires after 12 hours.
+- **`STATUS?` guard.** In your working notes, keep per partner whether `ledger.sh message` has
+  accepted (exit `0` or `10`) a message from it since your last `STATUS? #n` to it. Send a new
+  `STATUS? #n` to an alive partner only if none was ever sent, or none was accepted since the
+  last one; otherwise Arm only. This stops a `STATUS?` / `STARTED` / idle loop.
 - **Wake** = `cd <worktree> && claude --resume <sessionId> --bg --name <KEY>-<n> "<line>"` (same
   generation), then Rebind and Arm.
 - **Deliver `<line>` to `<to>`**: `SendMessage` to `<to>`. If `<to>` is absent from `ListAgents`
@@ -126,8 +131,10 @@ and the issue numbers published for the ticket. Partner names are `<KEY>-<n>`; p
         `STATUS? #<n>`. A wake that fails: `ledger.sh event "$L" <n> wake-failed`, failure path.
    3. Arm every live partner (registrations from before the restart are gone).
    4. **skip steps 3–5**; continue at step 6, and run step 9 on the requeued claims. If `canary`
-      is still `pending`, send the launched issue `STATUS? #n` (if not sent above): its reply passes
-      both canary legs (step 6).
+      is still `pending`, rerun the canary legs on the launched issue as in step 6, each direction
+      with its own background `sleep 600` timer and the same expiry rules. Leg 2's `STATUS? #n` is
+      the one sent for its `status` line above (or send it now); start leg 2's timer with it. Any
+      reply that `ledger.sh message` accepts passes both legs.
 
 ## 3. Read the issues
 
@@ -183,10 +190,11 @@ canary below; launch the rest only after `canary-passed`.
 5. **Launch.** `cd <worktree> && claude --bg --name <KEY>-<n> --permission-mode <mode>
    "$(cat "$W/brief-<n>.md")"`, with this session's own permission mode. If the command fails:
    `ledger.sh event "$L" <n> launch-failed <id>` and tell the user.
-6. **Record.** Read agents; take the newest alive row named `<KEY>-<n>`. Run
-   `ledger.sh event "$L" <n> launch <id> <sessionId>` (prints `launched`). If the row's name is
-   not exactly `<KEY>-<n>`, also run `ledger.sh session`. No row after a second read: leave the
-   intent open and ask the user (resume's `reconcile` settles it).
+6. **Record.** Read agents; take the newest alive row whose name is `<KEY>-<n>` (the intent's
+   recorded name, which is also the launch's `--name`). Run
+   `ledger.sh event "$L" <n> launch <id> <sessionId>` with that row's `sessionId` (prints
+   `launched`). No row after a second read: leave the intent open and ask the user (resume's
+   `reconcile` settles it).
 7. **Arm.**
 
 **Canary** (the first launch of the run, decided by the ledger's `canary`):
@@ -209,11 +217,11 @@ canary below; launch the rest only after `canary-passed`.
    leg 1, `crossSessionInbound` or the permission class on this session; leg 2, the same on the
    partner's side (its worktree). Launch nothing until the user has fixed it and asks to continue;
    then Wake the canary with `STATUS? #n` and run both legs again.
-7. **The canary issue ends** (`failed`, dropped or cancelled) before `canary-passed`: stop
-   launching and ask the user. Options: relaunch it (failure path) and rerun both legs; pick
-   another issue as the canary, where on their explicit say-so you run `ledger.sh event "$L" <n>
-   canary-passed` and then launch only that one issue and rerun both legs before any other launch
-   (the ledger no longer enforces it); or cancel the ticket.
+7. **The canary issue ends** (`failed`) before `canary-passed`: stop launching and ask the user.
+   Offer only two options: relaunch the **same** issue (failure path, Relaunch: a new generation),
+   then rerun both legs, each with its own `sleep 600` timer; or stop (cancel the ticket). Never
+   run `canary-passed` on this path, and do not offer drop or handled-it-themselves for the
+   canary issue: the ledger then refuses every other launch until a canary passes.
 
 ## 7. Wait
 
@@ -304,7 +312,8 @@ After every terminal change, run `ledger.sh done "$L"`. Exit `1`: not finished, 
 **Idle notice** for partner `n` (one-shot; it only means a turn ended). Read agents for its row:
 
 - Alive and `blocked` (waiting on the user), or alive and `working`: Arm only.
-- Alive and `done`, with no `DONE` received for this generation: send `STATUS? #n`, then Arm.
+- Alive and `done`, with no `DONE` received for this generation: apply the `STATUS?` guard, then
+  Arm.
 - **Ended**, issue `done-claimed` or `verifying`: no wake; the persisted claim is verifiable from
   git and proceeds. Issue `blocked-on #m` or `cancelled`: nothing more (Record observations
   already dropped its moot `CANCEL`).
@@ -328,9 +337,9 @@ Ask the user:
   user-merged`. It records `merged` only if the issue branch tip is an ancestor of the ticket head
   (exit `30` otherwise: tell the user).
 - **Drop:** ask the reason, `ledger.sh event "$L" <n> drop "<reason>"`. It prints `cancelled` and
-  `dependents=<list>`. Per dependent, ask: drop it too (`drop`), or remove the edge
-  (`ledger.sh event "$L" <d> edge-remove`, valid for a `blocked-on` dependent only; a `pending`
-  dependent can only be dropped). Send the outbox.
+  `dependents=<list>`. Per dependent `d`, ask: drop it too (`drop`), or remove the edge with
+  `ledger.sh event "$L" <d> edge-remove <n>` (a `pending` or `blocked-on #n` dependent stays or
+  becomes `pending` without that blocker; then run step 6). Send the outbox.
 - **Cancel the ticket:** ask the reason, `ledger.sh event "$L" <n> cancel-ticket "<reason>"`
   (any `n`; every non-terminal issue becomes `cancelled`). Send the outbox (`CANCEL` to live
   partners), then step 10.

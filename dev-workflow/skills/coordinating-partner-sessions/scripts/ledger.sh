@@ -466,7 +466,8 @@ cmd_event() {
         edge="$(grep '^cycle:' "$TMPD/edge" | head -n 1)"
         [ -n "$edge" ] || die "frontier.sh --check-edge failed: $(cat "$TMPD/edge")"
       fi ;;
-    edge-remove|wake-failed|canary-passed|user-merged) [ "$#" -eq 0 ] || usage ;;
+    edge-remove) [ "$#" -eq 0 ] || { [ "$#" -eq 1 ] && is_num "$a1"; } || usage ;;
+    wake-failed|canary-passed|user-merged) [ "$#" -eq 0 ] || usage ;;
     drop|cancel-ticket) [ "$#" -le 1 ] || usage ;;
     json)
       # `json done nopid`: the row has ended (no pid); a bare `done` may be idle and alive.

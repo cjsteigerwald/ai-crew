@@ -178,7 +178,8 @@ Two events are not rows of the transition table:
 | `verifying` | Gate fails, fewer than 3 failures in this generation | `rework-n/3` (sends `REWORK`) | `event <n> gate fail <evidence>` |
 | `verifying` | Gate fails for the third time in this generation | `failed` (reason: rework budget) | `event <n> gate fail <evidence>` |
 | `blocked-on #m` | `#m` becomes `merged` | `pending` (relaunched with a fresh brief, new generation, fresh branch and worktree) | automatic, in the write that merges `#m` |
-| `blocked-on #m` | `#m` is or becomes `failed` or `cancelled`; user removes the edge | `pending` | `event <n> edge-remove` |
+| `blocked-on #m` | `#m` is or becomes `failed` or `cancelled`; user removes the edge | `pending` | `event <n> edge-remove [<m>]` (a given `<m>` must be `m`) |
+| `pending` | A blocker `#m` is or becomes `failed` or `cancelled`; user removes the edge | `pending` (edge gone) | `event <n> edge-remove <m>` (exit 10 if no such edge; bare call exits 30) |
 | `blocked-on #m` | `#m` is or becomes `failed` or `cancelled`; user drops this issue too | `cancelled` | `event <n> drop [reason]` |
 | working | `FAILED`, or `--json` shows `failed`, or a wake fails (of a `stopped` partner, or to deliver `REWORK`/`RESYNC`), or the woken partner replies `FAILED` | `failed` | `message`; `event <n> json failed`; `event <n> wake-failed` |
 | `done-claimed`, `verifying` | `--json` shows `failed` or `stopped` | unchanged (the persisted claim is verifiable from git and proceeds) | `event <n> json failed\|stopped` (exit 10) |

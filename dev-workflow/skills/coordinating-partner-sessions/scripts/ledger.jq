@@ -200,13 +200,26 @@ elif $op == "event" then (
       | ok([.issues[$n].status])
     end
 
+  # blocked-on #m: optional <m> must be m; back to pending. pending: <m> names
+  # the edge to remove (e.g. its blocker was dropped); the status stays pending.
   elif $ev == "edge-remove" then
-    if (blocked($st) | not) then refuse("edge-remove needs #\($n) blocked-on, it is \($st)")
-    else
+    if blocked($st) then
       ($st | ltrimstr("blocked-on #") | tonumber) as $m
-      | .issues[$n].status = "pending"
-      | .issues[$n].blockers |= map(select(. != $m))
-      | ok(["pending"])
+      | if $a1 != "" and ($a1 | tonumber) != $m then refuse("edge-remove #\($a1): #\($n) is blocked on #\($m)")
+        else
+          .issues[$n].status = "pending"
+          | .issues[$n].blockers |= map(select(. != $m))
+          | ok(["pending"])
+        end
+    elif $st == "pending" then
+      if $a1 == "" then refuse("edge-remove on pending #\($n) needs the blocker <m>")
+      elif ((.issues[$n].blockers // []) | index([($a1 | tonumber)])) == null then
+        noop("#\($n) has no edge to #\($a1)")
+      else
+        .issues[$n].blockers |= map(select(. != ($a1 | tonumber)))
+        | ok(["pending"])
+      end
+    else refuse("edge-remove needs #\($n) blocked-on or pending, it is \($st)")
     end
 
   elif $ev == "drop" then

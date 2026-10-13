@@ -932,6 +932,34 @@ ev 1 gate fail "fail 3"
 expect_st "rework_resets_per_generation third" 1 failed
 echo "ok: rework_resets_per_generation"
 
+# ---------------------------------------------------------------- edge_remove_pending
+# A pending dependent of a dropped issue can have that edge removed (stays
+# pending); blocked-on accepts no <m> or its own m only.
+setup edgepend "[$(iss 1),$(iss 2 '[1]'),$(iss 3 '[1]')]"
+ev 1 drop "out of scope"
+expect_rc "edge_remove_pending drop" 0
+ev 2 edge-remove 1
+expect_rc "edge_remove_pending pending" 0
+expect_out_line() { printf '%s\n' "$OUT" | grep -qx "$2" || fail "$1: expected line '$2', got '$OUT'"; }
+expect_out_line "edge_remove_pending pending" pending
+expect_st "edge_remove_pending pending" 2 pending
+[ "$(jq -c '.issues["2"].blockers' "$L")" = "[]" ] || fail "edge_remove_pending: edge 2->1 not removed"
+ev 2 edge-remove 1
+expect_rc "edge_remove_pending repeat" 10
+ev 3 edge-remove
+expect_rc "edge_remove_pending bare on pending" 30
+ev 3 edge-remove x
+expect_rc "edge_remove_pending bad m" 2
+seed_blocked 3 1
+ev 3 edge-remove 2
+expect_rc "edge_remove_pending blocked-on other m" 30
+expect_st "edge_remove_pending blocked-on other m" 3 "blocked-on #1"
+ev 3 edge-remove 1
+expect_rc "edge_remove_pending blocked-on own m" 0
+expect_st "edge_remove_pending blocked-on own m" 3 pending
+[ "$(jq -c '.issues["3"].blockers' "$L")" = "[]" ] || fail "edge_remove_pending: edge 3->1 not removed"
+echo "ok: edge_remove_pending"
+
 # ================================================================ message, session, reconcile
 KISS="[$(iss 9),$(iss 12),$(iss 13)]"
 H42="3333333333333333333333333333333333333333"
