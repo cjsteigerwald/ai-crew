@@ -42,7 +42,7 @@ per Jira ticket through intake steps 7-8.
    `claude-crew:claude-implementer-opus` with an `escalate:` line, read-only.
 2. Get the user's approval of the reviewed plan.
 3. Execute it subagent-driven: Task 1 sonnet, Task 2 opus (escalated), Task 3 sonnet,
-   Task 4 only if the user chose spec option (a).
+   Task 4 (spec sync plus the external-blocker sentence) runs: the user chose (a) and yes.
 4. Whole-branch full chain (verifier plus the Opus adversarial pass).
 5. Ask the user before any push or PR.
 6. The user runs the live trial. Live-only checks:
@@ -58,10 +58,11 @@ per Jira ticket through intake steps 7-8.
    - three new `claude stop` cases: an idle partner's row loses its `pid`; `--resume` after a stop
      keeps the `sessionId`; stopping a busy partner leaves its worktree usable
 
-## Open user decisions (unanswered as of 2026-10-13)
+## User decisions (answered 2026-10-13)
 
-- Spec drift: (a) update the spec to match the code, recommended, or (b) note the drift in the PR.
-- Add the external-blocker sentence to the spec: yes or no.
+- Spec drift: **(a) update the spec to match the code.** The hardening plan's Task 4 (spec sync) runs.
+- External-blocker sentence: **yes.** Task 4 also adds one sentence to the spec saying an issue blocked by an open issue outside the ticket is not launched until that issue is closed.
+- Branch push: approved once on 2026-10-13. Later pushes still need the user's go each time.
 
 ## Process notes for the next session
 

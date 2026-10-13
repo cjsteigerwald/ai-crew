@@ -161,9 +161,9 @@ Root cause, verified: a partner is an interactive background session. On `CANCEL
 
 ---
 
-### Task 4: Sync the spec — CONDITIONAL
+### Task 4: Sync the spec
 
-Run only if the user answers **(a) update the spec**. If **(b)**, skip this task and list the drift in the PR body instead.
+The user chose **(a) update the spec** on 2026-10-13, so this task runs.
 
 **Files:** Modify `docs/superpowers/specs/2026-10-12-partner-sessions-design.md`.
 
@@ -174,7 +174,7 @@ Run only if the user answers **(a) update the spec**. If **(b)**, skip this task
   - relaunch evidence — `priorPid` (CX2) and "stop every alive session first" (Task 3);
   - the stop procedure (Task 3);
   - the lock-tool requirement (`/usr/bin/lockf` or util-linux `flock`) in Global Constraints / preflight.
-- [ ] **Step 2:** Do **not** add the external-blocker sentence (separate open question).
+- [ ] **Step 2:** Add one sentence to the spec's dependency/frontier section (user decision, 2026-10-13): an issue blocked by an open issue outside the ticket is not launched until that issue is closed. Blockers outside the ticket are recorded in `init` as `{n, closed}`.
 - [ ] **Step 3:** `bash scripts/scrub-check.sh --check-overbroad --allow scripts/scrub-allow.txt .` → exit 0; `/bin/bash dev-workflow/tests/run.sh` → `PASSED`.
 - [ ] **Step 4: Commit** `docs(dev-workflow): sync partner-session spec with hardened ledger and lifecycle`.
 
