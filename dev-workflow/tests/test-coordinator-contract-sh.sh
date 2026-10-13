@@ -48,6 +48,19 @@ ledger() {
   OUT="$(cd "$R" && "$BASH" "$LSH" "$@" 2>"$T/err")"
   RC=$?
   ERR="$(cat "$T/err")"
+  case "$1" in
+    init|intent|event|message|session|reconcile)
+      if [ "$RC" -eq 0 ]; then assert_outbox_invariant "$2" "$*"; fi ;;
+  esac
+}
+# assert_outbox_invariant <ledger> <call> — every work entry is of its issue's
+# current gen while that issue is resync-requested or rework-*; no CANCEL is
+# older than the issue's current gen.
+assert_outbox_invariant() {
+  jq -e '.issues as $is | all(.outbox[]; ($is[(.n | tostring)]) as $i
+         | if (.line | startswith("CANCEL #")) then .gen >= $i.gen
+           else .gen == $i.gen and ($i.status == "resync-requested" or ($i.status | startswith("rework-"))) end)' \
+    "$1" >/dev/null || fail "outbox invariant violated after '$2': $(jq -c .outbox "$1")"
 }
 # frontier — frontier.sh on the ledger; sets OUT (one issue per line), RC.
 frontier() {

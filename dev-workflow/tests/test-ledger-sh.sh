@@ -34,11 +34,29 @@ ERR=""
 RC=0
 R=""
 L=""
-# run <args...> — runs ledger.sh in $R; sets OUT, ERR, RC.
-run() {
+# run_raw <args...> — runs ledger.sh in $R; sets OUT, ERR, RC.
+run_raw() {
   OUT="$(cd "$R" && "$BASH" "$LSH" "$@" 2>"$T/err")"
   RC=$?
   ERR="$(cat "$T/err")"
+}
+LASTCMD=""
+# assert_outbox_invariant <ledger> — every work entry is of its issue's current gen
+# while that issue is resync-requested or rework-*; no CANCEL is older than the
+# issue's current gen.
+assert_outbox_invariant() {
+  jq -e '.issues as $is | all(.outbox[]; ($is[(.n | tostring)]) as $i
+         | if (.line | startswith("CANCEL #")) then .gen >= $i.gen
+           else .gen == $i.gen and ($i.status == "resync-requested" or ($i.status | startswith("rework-"))) end)' \
+    "$1" >/dev/null || fail "outbox invariant violated after '$LASTCMD': $(jq -c .outbox "$1")"
+}
+# run — run_raw, then the outbox invariant after an rc-0 mutating call.
+run() {
+  run_raw "$@"
+  case "$1" in
+    init|intent|event|message|session|reconcile)
+      if [ "$RC" -eq 0 ]; then LASTCMD="$*"; assert_outbox_invariant "$2"; fi ;;
+  esac
 }
 
 g() { git -C "$R" "$@"; }
@@ -114,10 +132,13 @@ jset() {
   expr="$1"; shift
   jq "$@" "$expr" "$L" >"$T/seed.json" && cat "$T/seed.json" >"$L"
 }
-# seed <n> <status> — set a status; a live seed gets gen >= 1.
+# seed <n> <status> — set a status; a live seed gets gen >= 1. A seed outside
+# resync-requested/rework-* drops that issue's RESYNC/REWORK entries (outbox invariant).
 seed() {
   jset '.issues[$n].status = $s
-        | if (.issues[$n].gen == 0) and ($s != "pending") then .issues[$n].gen = 1 else . end' \
+        | if (.issues[$n].gen == 0) and ($s != "pending") then .issues[$n].gen = 1 else . end
+        | if $s == "resync-requested" or ($s | startswith("rework-")) then .
+          else .outbox |= map(select((.n == ($n | tonumber) and ((.line | startswith("CANCEL #")) | not)) | not)) end' \
     --arg n "$1" --arg s "$2"
 }
 # seed_blocked <n> <m> — `blocked-on #m` with m in .blockers.
@@ -1776,6 +1797,105 @@ ev 13 drop
 run outbox "$L"
 [ -z "$OUT" ] || fail "cancel_failed_session: pending drop queued '$OUT'"
 echo "ok: cancel_failed_session"
+
+# ---------------------------------------------------------------- outbox invariant (stale work purged)
+nowork() { # <name> <n> — the outbox holds no REWORK/RESYNC for #n
+  run_raw outbox "$L"
+  printf '%s\n' "$OUT" | grep -Eq "(REWORK|RESYNC) #$2( |\$)" && fail "$1: outbox has work for #$2 (got '$OUT')"
+  return 0
+}
+
+ksetup sgp
+klaunch 12
+msg K-12 "STARTED #12 gen=1"
+msg K-12 "$DONE12"
+ev 12 queue-check ok
+ev 12 gate fail "fix the tests"
+expect_outbox "stale_gen_work_purged queued" "12${TAB}1${TAB}K-12${TAB}REWORK #12 fix the tests"
+ev 12 json failed
+nowork "stale_gen_work_purged failed" 12
+run intent "$L" relaunch 12 K-12 "$T/wt-12-r" test-x-12 "$H40"
+ev 12 relaunch "$(intent_id)" sid-12b
+expect_rc "stale_gen_work_purged relaunch" 0
+nowork "stale_gen_work_purged relaunch" 12
+msg K-12 "STARTED #12 gen=2"
+msg K-12 "DONE #12 gen=2 test-x-12 $H40 synced=$H41"
+kag "$T/ag-sgp.json" K-12:sid-12b:working:4242
+run reconcile "$L" "$T/ag-sgp.json"
+expect_no_line_prefix "stale_gen_work_purged reconcile" "resend 12"
+echo "ok: stale_gen_work_purged"
+
+ksetup ump
+klaunch 12
+seed 12 done-claimed
+ev 12 queue-check ok
+ev 12 gate fail "fix it"
+expect_outbox "user_merged_purges_work queued" "12${TAB}1${TAB}K-12${TAB}REWORK #12 fix it"
+commit_on test-x-12 ump12
+g merge -q --ff-only test-x-12
+seed 12 failed
+ev 12 user-merged
+expect_rc "user_merged_purges_work" 0
+expect_st "user_merged_purges_work" 12 merged
+nowork "user_merged_purges_work" 12
+echo "ok: user_merged_purges_work"
+
+ksetup fcp
+klaunch 12
+klaunch 13
+seed 12 failed
+jset '.outbox = [{n: 12, gen: 1, to: "K-12", line: "RESYNC #12 abc"}]'
+ev 12 drop
+expect_rc "failed_and_cancelled_purge_work drop" 0
+nowork "failed_and_cancelled_purge_work drop" 12
+seed 13 resync-requested
+jset '.outbox = [{n: 13, gen: 1, to: "K-13", line: "RESYNC #13 abc"}]'
+ev 0 cancel-ticket
+expect_rc "failed_and_cancelled_purge_work cancel-ticket" 0
+nowork "failed_and_cancelled_purge_work cancel-ticket" 13
+expect_outbox "failed_and_cancelled_purge_work cancel-ticket cancel" "13${TAB}1${TAB}K-13${TAB}CANCEL #13"
+ksetup fcq
+klaunch 13
+seed 13 resync-requested
+jset '.outbox = [{n: 13, gen: 1, to: "K-13", line: "RESYNC #13 abc"}]'
+ev 13 json failed
+expect_rc "failed_and_cancelled_purge_work json failed" 0
+nowork "failed_and_cancelled_purge_work json failed" 13
+echo "ok: failed_and_cancelled_purge_work"
+
+ksetup bcp
+klaunch 12
+klaunch 13
+ev 12 stuck-accept 13
+expect_rc "blocked_cancel_purged_on_relaunch accept" 0
+expect_outbox "blocked_cancel_purged_on_relaunch queued" "12${TAB}1${TAB}K-12${TAB}CANCEL #12"
+seed 13 verifying
+run intent "$L" merge 13 "$H40" "$H41"
+ev 13 gate merged "$(intent_id)" ok
+expect_rc "blocked_cancel_purged_on_relaunch merged" 0
+expect_st "blocked_cancel_purged_on_relaunch pending" 12 pending
+run intent "$L" launch 12 K-12 "$T/wt-12-2" test-x-12 "$H40"
+ev 12 launch "$(intent_id)" sid-12b
+expect_rc "blocked_cancel_purged_on_relaunch relaunch" 0
+run_raw outbox "$L"
+printf '%s\n' "$OUT" | grep -Fq "CANCEL #12" && fail "blocked_cancel_purged_on_relaunch: stale CANCEL kept (got '$OUT')"
+kag "$T/ag-bcp.json" K-12:sid-12b:working:4242
+run reconcile "$L" "$T/ag-bcp.json"
+expect_no_line_prefix "blocked_cancel_purged_on_relaunch reconcile" "resend 12"
+echo "ok: blocked_cancel_purged_on_relaunch"
+
+ksetup rrs
+klaunch 12
+jset '.issues["12"].gen = 2 | .issues["12"].status = "started"
+      | .outbox = [{n: 12, gen: 1, to: "K-12", line: "REWORK #12 x"}]'
+kag "$T/ag-rrs.json" K-12:sid-12:working:4242
+run_raw reconcile "$L" "$T/ag-rrs.json"
+expect_rc "reconcile_repairs_stale_work" 0
+nowork "reconcile_repairs_stale_work" 12
+expect_no_line_prefix "reconcile_repairs_stale_work resend" "resend 12"
+grep -q 'outbox-stale-purged n=12 gen=1' "$(dirname "$L")/ledger.log" || fail "reconcile_repairs_stale_work: no outbox-stale-purged in ledger.log"
+assert_outbox_invariant "$L"
+echo "ok: reconcile_repairs_stale_work"
 
 if [ "$FAIL" -ne 0 ]; then exit 1; fi
 echo "all ledger tests passed"

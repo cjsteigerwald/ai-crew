@@ -697,6 +697,8 @@ cmd_reconcile() {
   if ! jq -e --slurpfile a "$TMPD/new.json" '. == $a[0]' "$L" >/dev/null; then
     write_state "$TMPD/new.json"
   fi
+  jq -r '.purged[] | "outbox-stale-purged n=\(.n) gen=\(.gen)"' "$TMPD/res.json" |
+    while IFS= read -r pl; do logl "$pl"; done
   jq -r '.out[]' "$TMPD/acts.json"
   logl "reconcile -> $(jq -r '.out | join("; ")' "$TMPD/acts.json")"
 }

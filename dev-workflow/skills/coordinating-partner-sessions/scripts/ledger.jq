@@ -75,6 +75,10 @@ def outbox_drop_cancel($k):
 def outbox_clear_gen($k; $g):
   .outbox |= map(select((.n == ($k | tonumber) and .gen == $g
                          and ((.line | startswith("CANCEL #")) | not)) | not));
+# Drop every work entry (RESYNC/REWORK) of issue $k. CANCEL entries stay: their
+# lifecycle is the session's (outbox_drop_cancel, reconcile).
+def outbox_purge_work($k):
+  .outbox |= map(select((.n == ($k | tonumber) and ((.line | startswith("CANCEL #")) | not)) | not));
 # Record launch/relaunch intent $in as launched with session $sid, closing it.
 # Shared by `event launch|relaunch` and `reconcile`: gen+1, the session joins the
 # issue's session history, any new generation resets the rework count.
@@ -85,13 +89,17 @@ def record_launch($k; $in; $sid):
                   | .sessions = ((.sessions // []) + [{gen: $in.gen, name: $in.sessionName, sessionId: $sid}])
                   | .rework = 0
                   | if $in.kind == "relaunch" then .reason = null else . end)
-  | close_intent($in.id; "launched");
+  | close_intent($in.id; "launched")
+  # Work commands and CANCELs of older generations are stale for the new session.
+  | outbox_purge_work($k)
+  | .outbox |= map(select((.n == ($k | tonumber) and (.line | startswith("CANCEL #")) and .gen < $in.gen) | not));
 # The one transition to merged: in the same write, every `blocked-on #k` issue becomes pending.
 def to_merged($k; $sha):
   ("blocked-on #" + $k) as $b
   | .issues[$k].status = "merged"
   | .issues[$k].mergeSha = $sha
-  | .issues |= with_entries(if .value.status == $b then .value.status = "pending" else . end);
+  | .issues |= with_entries(if .value.status == $b then .value.status = "pending" else . end)
+  | outbox_purge_work($k);
 
 # ------------------------------------------------------------------ intent launch|relaunch
 if $op == "intent-launch" then
@@ -199,7 +207,7 @@ elif $op == "event" then (
       | .issues[$n].gateResults += [{gen: $i.gen, result: "fail", text: $a2}]
       | .issues[$n].rework = $k
       | if $k >= 3 then
-          .issues[$n].status = "failed" | .issues[$n].reason = "rework budget" | ok(["failed"])
+          .issues[$n].status = "failed" | .issues[$n].reason = "rework budget" | outbox_purge_work($n) | ok(["failed"])
         else
           .issues[$n].status = "rework-\($k)/3"
           | outbox_put($n; "REWORK #\($n) \($a2)" | sub(" $"; ""))
@@ -255,13 +263,14 @@ elif $op == "event" then (
       | cancel_intent_session($n)
       | .issues[$n].status = "cancelled"
       | .issues[$n].reason = (if $a1 == "" then null else $a1 end)
+      | outbox_purge_work($n)
       | close_issue_intents($n; "cancelled")
       | ok(["cancelled", "dependents=\($deps)"])
     end
 
   elif $ev == "json" then
     if $a1 == "failed" and active($n) then
-      .issues[$n].status = "failed" | .issues[$n].reason = "session failed" | ok(["failed"])
+      .issues[$n].status = "failed" | .issues[$n].reason = "session failed" | outbox_purge_work($n) | ok(["failed"])
     # Ended = no pid (ruling T6-C1): `done` with a pid is an idle live session,
     # so `done` drops the CANCEL only when the coordinator passes `nopid`.
     elif ($a1 == "failed" or $a1 == "stopped" or ($a1 == "done" and $a2 == "nopid"))
@@ -272,7 +281,7 @@ elif $op == "event" then (
     end
 
   elif $ev == "wake-failed" then
-    if active($n) then .issues[$n].status = "failed" | .issues[$n].reason = "wake failed" | ok(["failed"])
+    if active($n) then .issues[$n].status = "failed" | .issues[$n].reason = "wake failed" | outbox_purge_work($n) | ok(["failed"])
     elif $st == "failed" then noop("#\($n) already failed")
     else refuse("wake-failed needs #\($n) launched, started, rework or resync-requested, it is \($st)")
     end
@@ -293,6 +302,7 @@ elif $op == "event" then (
           | cancel_intent_session($k)
           | .issues[$k].status = "cancelled"
           | .issues[$k].reason = (if $a1 == "" then null else $a1 end)
+          | outbox_purge_work($k)
           | close_issue_intents($k; "cancelled"))
         | ok(["cancelled"])
       end
@@ -343,7 +353,7 @@ elif $op == "message" then (
           end
         elif $mkind == "FAILED" then
           if active($n) or $claimed then
-            $cl | .issues[$n].status = "failed" | .issues[$n].reason = ("FAILED: " + $mreason) | ok(["failed"])
+            $cl | .issues[$n].status = "failed" | .issues[$n].reason = ("FAILED: " + $mreason) | outbox_purge_work($n) | ok(["failed"])
           elif $st == "failed" then noop("#\($n) already failed")
           else refuse("FAILED on #\($n) \($st)")
           end
@@ -426,6 +436,16 @@ elif $op == "reconcile" then (
           end
       end)
   | .issues |= with_entries(if .value.status == "verifying" then .value.status = "done-claimed" else . end)
+  # Outbox invariant: a work entry is for the issue's current gen while it is in
+  # resync-requested or rework-*. Anything else is stale; collect {n, gen} for the log.
+  | . as $s0
+  | def stale_work($s):
+      ((.line | startswith("CANCEL #")) | not)
+      and ($s.issues[(.n | tostring)] as $i
+           | $i == null or .gen != $i.gen
+             or (($i.status == "resync-requested" or ($i.status | startswith("rework-"))) | not));
+    [ .outbox[] | select(stale_work($s0)) | {n, gen} ] as $purged
+  | .outbox |= map(select(stale_work($s0) | not))
   | . as $s
   | .outbox |= map(select(
       if (.line | startswith("CANCEL #")) then
@@ -433,7 +453,7 @@ elif $op == "reconcile" then (
         entry_to($s) as $to
         | $to != null and any($ag[]; .name == $to and alive)
       else true end))
-  | ok([]))
+  | ok([]) + {purged: $purged})
 
 # Read-only, on the reconciled state: requeue (claimSeq order), resend <n>
 # <to-session> <line> (every outbox entry, verbatim), status (every other live
