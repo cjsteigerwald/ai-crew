@@ -189,11 +189,12 @@ persisted claims, gate results, rework count, and outbox.
   with `state` not in {`stopped`, `failed`}). A missing or empty `holder` is not live. A caller that
   finds a live lock held by another session stops and tells the user. Otherwise it takes the lock
   over exclusively: it creates a `takeover` directory beside the lock with `mkdir` (only one
-  contender succeeds), re-checks that the holder is still not live, writes a new holder with its own
-  nonce to a temp file and renames it into place, re-reads it to confirm its own nonce, removes
-  `takeover`, and logs the takeover (old holder, time). A leftover `takeover` directory whose owner
-  is not live (or that has no owner and is older than 60 s) is removed once and the takeover
-  retried. Every ledger write first re-checks that the
+  contender succeeds) and immediately writes its own session ID to `takeover/owner`, re-checks that
+  the holder is still not live, writes a new holder with its own nonce to a temp file and renames it
+  into place, re-reads it to confirm its own nonce, removes `takeover`, and logs the takeover (old
+  holder, time). A leftover `takeover` directory whose owner is not live (or that has no owner and is
+  older than 60 s, which only a crash between the `mkdir` and the `owner` write can leave) is removed
+  once and the takeover retried. Every ledger write first re-checks that the
   holder's nonce is its own; a coordinator that has lost the lock stops.
 - **Atomic writes.** Every update writes a temp file and renames it over the ledger, so a crash never
   leaves a half-written ledger. A status change and everything that must accompany it (the outbox
@@ -210,7 +211,9 @@ persisted claims, gate results, rework count, and outbox.
 - **Outbox.** A `RESYNC`, `REWORK` or `CANCEL` is recorded in the issue's outbox, with its generation
   and full text, in the same write as the transition that requires it; the coordinator sends it
   afterwards. The entry is cleared when that partner's next valid message for the same generation
-  arrives (or, for `CANCEL`, when the session is gone). On resume, every outbox entry is resent
+  arrives (or, for `CANCEL`, when the session is absent from `claude agents --json` or has ended,
+  dropped in the same write by `reconcile` or by recording that observation). On resume, every
+  remaining outbox entry is resent
   verbatim; partners treat a repeated coordinator message as idempotent.
 - **Generation per issue.** Each launch or relaunch of an issue's partner increments its generation;
   the ledger records the session name, full `sessionId`, and generation. Every partner → coordinator
