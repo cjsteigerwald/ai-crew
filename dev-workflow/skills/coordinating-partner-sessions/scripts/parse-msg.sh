@@ -4,6 +4,11 @@
 #   parse-msg.sh <line>            validate a message line
 #   parse-msg.sh --frame <raw>     validate a whole <cross-session-message> frame
 #
+# --frame: whitespace and newlines around the frame and around its body are
+# trimmed; the body must then be one message line. The open tag is
+# <cross-session-message from="..."> with from first; further name="value"
+# attributes after it are allowed (values without quotes, < or >) and ignored.
+#
 # Exit 0: key=value lines on stdout. Exit 1: error=<reason> on stderr, nothing
 # on stdout. Message text is only ever held in variables: no eval, never
 # interpolated into a command.
@@ -26,6 +31,14 @@ RE_SYNCED='^synced=([0-9a-f]{40})$'
 RE_BRANCH='^[a-z0-9][a-z0-9._/-]*$'
 RE_NEEDS='^needs=#([0-9]+)$'
 RE_FROM='^[A-Za-z0-9][A-Za-z0-9._-]*$'
+
+# trim <text> — <text> without leading and trailing whitespace (incl. CR, LF).
+trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
 
 # parse_line <line> — prints key=value lines; exits 1 on any violation.
 parse_line() {
@@ -71,6 +84,8 @@ parse_line() {
       if [[ "$first" =~ $RE_NEEDS ]]; then
         needs="${BASH_REMATCH[1]}"
         if [[ "$rest" == *" "* ]]; then rest="${rest#* }"; else rest=""; fi
+      else
+        case "$first" in needs=*) die "bad needs" ;; esac
       fi
       [ -n "$rest" ] || die "missing reason"
       printf 'kind=%s\nissue=%s\ngen=%s\n' "$kind" "$issue" "$gen"
@@ -89,8 +104,8 @@ parse_line() {
 
 if [ "$1" = "--frame" ]; then
   [ $# -eq 2 ] || die "usage: parse-msg.sh --frame <raw>"
-  raw="$2"
-  OPEN_RE='^<cross-session-message from="([^"]*)">'
+  raw="$(trim "$2")"
+  OPEN_RE='^<cross-session-message from="([^"]*)"([[:space:]]+[A-Za-z_][A-Za-z0-9_.:-]*="[^"<>]*")*[[:space:]]*>'
   CLOSE='</cross-session-message>'
   [[ "$raw" =~ $OPEN_RE ]] || die "not a cross-session-message frame"
   from="${BASH_REMATCH[1]}"; open="${BASH_REMATCH[0]}"
@@ -101,6 +116,7 @@ if [ "$1" = "--frame" ]; then
   case "$body" in
     *"<cross-session-message"*|*"$CLOSE"*) die "more than one frame" ;;
   esac
+  body="$(trim "$body")"
   # Validate fully before printing anything, so failure leaves stdout empty.
   parsed="$(parse_line "$body")" || exit 1
   printf 'from=%s\n%s\n' "$from" "$parsed"

@@ -114,5 +114,40 @@ run --frame '<cross-session-message from="ABC-12">STARTED #12</cross-session-mes
 { [ "$RC" -eq 1 ] && [ -z "$OUT" ]; } || fail "frame bad body: rc=$RC out=$OUT"
 echo "ok: frame rejections"
 
+# Ruling FV2: whitespace and newlines around the body are trimmed; extra
+# attributes after from="…" are accepted; from stays validated.
+run --frame "$(printf '<cross-session-message from="ABC-12">\n  STARTED #12 gen=1\n</cross-session-message>\n')"
+if [ "$RC" -ne 0 ]; then fail "frame multi-line: rc $RC ($ERR)"; else
+  has_line from=ABC-12 && has_line kind=STARTED && has_line gen=1 || fail "frame multi-line: got $OUT"
+  echo "ok: frame multi-line"
+fi
+run --frame "$(printf '\n<cross-session-message from="ABC-12">\r\n\tDONE #12 gen=2 abc-x-12 %s synced=%s \r\n</cross-session-message>\n \t\n' "$SHA" "$SYNC")"
+if [ "$RC" -ne 0 ]; then fail "frame CRLF and tabs: rc $RC ($ERR)"; else
+  has_line "sha=$SHA" || fail "frame CRLF and tabs: got $OUT"
+  echo "ok: frame CRLF and tabs"
+fi
+run --frame '<cross-session-message from="ABC-12" sent="2026-10-12T10:00:00Z" id="m-1">STARTED #12 gen=1</cross-session-message>'
+if [ "$RC" -ne 0 ]; then fail "frame extra attribute: rc $RC ($ERR)"; else
+  [ "$(printf '%s\n' "$OUT" | sed -n 1p)" = "from=ABC-12" ] || fail "frame extra attribute: first line not from=ABC-12: $OUT"
+  echo "ok: frame extra attribute"
+fi
+run --frame "$(printf '<cross-session-message from="ABC-12">\nSTARTED #12\ngen=1\n</cross-session-message>')"
+{ [ "$RC" -eq 1 ] && [ -z "$OUT" ]; } || fail "frame newline inside the body line: rc=$RC out=$OUT"
+run --frame "$(printf '<cross-session-message from="ABC-12">\nSTARTED #12 gen=1\nDONE #12 gen=1 abc-x-12 %s synced=%s\n</cross-session-message>' "$SHA" "$SYNC")"
+{ [ "$RC" -eq 1 ] && [ -z "$OUT" ]; } || fail "frame two body lines: rc=$RC out=$OUT"
+run --frame '<cross-session-message from="a b" sent="x">STARTED #12 gen=1</cross-session-message>'
+{ [ "$RC" -eq 1 ] && [ -z "$OUT" ]; } || fail "frame bad from with extra attribute: rc=$RC out=$OUT"
+run --frame '<cross-session-message sent="x" from="ABC-12">STARTED #12 gen=1</cross-session-message>'
+{ [ "$RC" -eq 1 ] && [ -z "$OUT" ]; } || fail "frame attribute before from: rc=$RC out=$OUT"
+run --frame '<cross-session-message from="ABC-12"sent="x">STARTED #12 gen=1</cross-session-message>'
+{ [ "$RC" -eq 1 ] && [ -z "$OUT" ]; } || fail "frame attribute without a space: rc=$RC out=$OUT"
+run --frame '<cross-session-message from="ABC-12" x="a>STARTED #12 gen=1">STARTED #12 gen=1</cross-session-message>'
+{ [ "$RC" -eq 1 ] && [ -z "$OUT" ]; } || fail "frame attribute with '>': rc=$RC out=$OUT"
+echo "ok: frame trim and attribute rejections"
+
+# A malformed needs= token is rejected, not read as reason text.
+expect_bad "STUCK malformed needs" "STUCK #12 gen=1 needs=9 waits on schema"
+expect_bad "STUCK needs= empty" "STUCK #12 gen=1 needs= waits on schema"
+
 if [ "$FAIL" -ne 0 ]; then exit 1; fi
 echo "all parse-msg tests passed"

@@ -249,6 +249,8 @@ A partner message arrives as `<cross-session-message from="<name>">…</cross-se
    - `10`: a repeat or restated state; nothing to do. If it prints `ask-user=…` (a `STUCK` or
      `SCOPE` on a `done-claimed` or `verifying` issue), tell the user; the claim proceeds.
    - `20` (`reason=`): rejected and logged (wrong sender, generation or branch). Change nothing.
+     A reason starting `bad frame` is a frame-shape mismatch (the frame as delivered does not
+     match the expected `<cross-session-message from="…">` shape): tell the user, with the reason.
    - `30`: refused. A `DONE` with a new sha while the issue is `done-claimed` or `verifying` is
      refused: tell the user; the gate verifies the claimed sha. Any other refusal: tell the user.
    - `40`: lost lock, stop. `2`: a coordinator bug, stop.
