@@ -1,7 +1,7 @@
 ---
 name: performance-reviewer
 description: Specialist reviewer for runtime performance and resource usage. Audits changes for N+1 query patterns, unbounded loops, blocking I/O on hot paths, missing pagination, inefficient data structures, memory leaks, and async/concurrency correctness. Opt-in — invoke for PRs touching request paths, queries, or latency-sensitive code.
-tools: Read, Glob, Grep
+tools: Read, Glob, Grep, Skill
 model: sonnet
 ---
 
