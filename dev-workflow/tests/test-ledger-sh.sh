@@ -841,26 +841,105 @@ for s in pending launched started "blocked-on #2" done-claimed verifying rework-
 done
 echo "ok: no_stranded_status"
 
-# ---------------------------------------------------------------- write_after_takeover
-# A takeover that lands between a writer's owner check and its mv: the writer
-# re-reads the holder after the mv, logs write-after-takeover and exits 40.
-setup wat
-agents "$T/ag-wat.json" "sid-coord=$DEADPID" "S9=$$"
+# ---------------------------------------------------------------- write_fencing
+# Ruling CX1 (supersedes T5's "one last write"): the old owner passed its owner
+# check and is paused mid-write; a takeover completes and the new owner writes;
+# the old writer resumes, re-checks under the write mutex and exits 40 without
+# writing, so the new owner's state survives.
+setup wf
+agents "$T/ag-wf.json" "sid-coord=$DEADPID" "S9=$$"
+OLDTOK="$PS_OWNER"
 rm -f "$T/wpause" "$T/wpause.waiting"
 ( cd "$R" && PS_WRITE_TEST_PAUSE="$T/wpause" "$BASH" "$LSH" event "$L" 1 canary-passed >"$T/w.out" 2>"$T/w.err"
   echo $? >"$T/w.rc" ) &
 pw=$!
 w=0
 while [ ! -f "$T/wpause.waiting" ] && [ "$w" -lt 200 ]; do sleep 0.05; w=$((w + 1)); done
-[ -f "$T/wpause.waiting" ] || fail "write_after_takeover: writer never reached the pause"
-run lock "$L" S9 "$T/ag-wat.json"
-expect_rc "write_after_takeover takeover" 0
+[ -f "$T/wpause.waiting" ] || fail "write_fencing: writer never reached the pause"
+run lock "$L" S9 "$T/ag-wf.json"
+expect_rc "write_fencing takeover" 0
+NEWTOK="${OUT#owner=}"
+PS_OWNER="$NEWTOK" ev 3 drop "new owner"
+expect_rc "write_fencing new owner write" 0
+cp "$L" "$T/wf-new.json"
 touch "$T/wpause"
 wait "$pw"
-[ "$(cat "$T/w.rc")" = 40 ] || fail "write_after_takeover: writer rc $(cat "$T/w.rc"), want 40 ($(cat "$T/w.err"))"
-grep -qx 'holder=S9' "$T/w.out" || fail "write_after_takeover: expected holder=S9, got '$(cat "$T/w.out")'"
-grep -q 'write-after-takeover' "$(dirname "$L")/ledger.log" || fail "write_after_takeover: no write-after-takeover in ledger.log"
-echo "ok: write_after_takeover"
+[ "$(cat "$T/w.rc")" = 40 ] || fail "write_fencing: old writer rc $(cat "$T/w.rc"), want 40 ($(cat "$T/w.err"))"
+grep -qx 'holder=S9' "$T/w.out" || fail "write_fencing: expected holder=S9, got '$(cat "$T/w.out")'"
+cmp -s "$L" "$T/wf-new.json" || fail "write_fencing: the old writer overwrote the new owner's state"
+[ "$(jq -r .canary "$L")" = pending ] || fail "write_fencing: the old writer's canary-passed landed"
+expect_st "write_fencing new state" 3 cancelled
+[ ! -d "$(dirname "$L")/lock/write" ] || fail "write_fencing: write mutex left behind"
+PS_OWNER="$OLDTOK"
+echo "ok: write_fencing"
+
+# ---------------------------------------------------------------- write_mutex
+# lock/write/pid held by a live process: a write waits; once that process is
+# gone (kill -0 fails) the mutex is stale, removed once, and the write goes on.
+setup wm
+WMD="$(dirname "$L")/lock/write"
+sleep 30 &
+SP=$!
+mkdir "$WMD" && echo "$SP" >"$WMD/pid"
+cp "$L" "$T/wm-before.json"
+( cd "$R" && "$BASH" "$LSH" event "$L" 1 canary-passed >"$T/wm.out" 2>"$T/wm.err"; echo $? >"$T/wm.rc" ) &
+pm=$!
+sleep 1
+cmp -s "$L" "$T/wm-before.json" || fail "write_mutex: a write went past a live write mutex"
+[ ! -f "$T/wm.rc" ] || fail "write_mutex: the writer did not wait (rc $(cat "$T/wm.rc"), $(cat "$T/wm.err"))"
+kill "$SP"; wait "$SP" 2>/dev/null
+wait "$pm"
+[ "$(cat "$T/wm.rc")" = 0 ] || fail "write_mutex: writer rc $(cat "$T/wm.rc") after the holder died ($(cat "$T/wm.err"))"
+[ "$(jq -r .canary "$L")" = passed ] || fail "write_mutex: the write did not land after the holder died"
+grep -q 'write-mutex-stale-removed' "$(dirname "$L")/ledger.log" || fail "write_mutex: no write-mutex-stale-removed in ledger.log"
+[ ! -d "$WMD" ] || fail "write_mutex: write mutex left behind after the write"
+# A takeover waits for a live writer too, and goes on once the mutex is released.
+agents "$T/ag-wm.json" "sid-coord=$DEADPID" "S9=$$"
+sleep 30 &
+SP=$!
+mkdir "$WMD" && echo "$SP" >"$WMD/pid"
+rm -f "$T/wmt.rc"
+( cd "$R" && "$BASH" "$LSH" lock "$L" S9 "$T/ag-wm.json" >"$T/wmt.out" 2>"$T/wmt.err"; echo $? >"$T/wmt.rc" ) &
+pm=$!
+sleep 1
+read -r hs _ <"$(dirname "$L")/lock/holder"
+[ "$hs" = sid-coord ] || fail "write_mutex: a takeover went past a live write mutex (holder $hs)"
+rm -rf "$WMD"
+wait "$pm"
+kill "$SP"; wait "$SP" 2>/dev/null
+[ "$(cat "$T/wmt.rc")" = 0 ] || fail "write_mutex: takeover rc $(cat "$T/wmt.rc") after release ($(cat "$T/wmt.err"))"
+read -r hs _ <"$(dirname "$L")/lock/holder"
+[ "$hs" = S9 ] || fail "write_mutex: holder '$hs' after the takeover, want S9"
+# unlock takes the mutex as well.
+PS_OWNER="$(cat "$T/wmt.out")"; PS_OWNER="${PS_OWNER#owner=}"
+sleep 30 &
+SP=$!
+mkdir "$WMD" && echo "$SP" >"$WMD/pid"
+rm -f "$T/wmu.rc"
+( cd "$R" && "$BASH" "$LSH" unlock "$L" >"$T/wmu.out" 2>"$T/wmu.err"; echo $? >"$T/wmu.rc" ) &
+pm=$!
+sleep 1
+[ -f "$(dirname "$L")/lock/holder" ] || fail "write_mutex: unlock went past a live write mutex"
+rm -rf "$WMD"
+wait "$pm"
+kill "$SP"; wait "$SP" 2>/dev/null
+[ "$(cat "$T/wmu.rc")" = 0 ] || fail "write_mutex: unlock rc $(cat "$T/wmu.rc") after release ($(cat "$T/wmu.err"))"
+[ ! -d "$(dirname "$L")/lock" ] || fail "write_mutex: lock dir left after unlock"
+PS_OWNER="$OLDTOK"
+# The read is fenced too: two concurrent writes never lose an update.
+i=1
+while [ "$i" -le 5 ]; do
+  setup "wmc$i"
+  ( cd "$R" && "$BASH" "$LSH" event "$L" 2 drop a >/dev/null 2>&1 ) &
+  pa=$!
+  ( cd "$R" && "$BASH" "$LSH" event "$L" 3 drop b >/dev/null 2>&1 ) &
+  pb=$!
+  wait "$pa"; wait "$pb"
+  { [ "$(st 2)" = cancelled ] && [ "$(st 3)" = cancelled ]; } \
+    || fail "write_mutex concurrent $i: lost update (#2 $(st 2), #3 $(st 3))"
+  i=$((i + 1))
+done
+echo "ok: write_mutex"
 
 # ---------------------------------------------------------------- init_blockers_in_set
 mkrepo initv

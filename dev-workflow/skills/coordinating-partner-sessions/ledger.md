@@ -8,9 +8,9 @@ is its only writer; never edit the JSON by hand and never keep state anywhere el
 - Path: `$(git rev-parse --git-common-dir)/partner-sessions/<KEY>/ledger.json`. Get it, and create
   its directory, with `ledger.sh path <KEY>`. It lives in git metadata (the `git-common-dir`), so
   every worktree of the repository sees the same one.
-- Beside it: `lock/` (the run lock; `lock/holder` holds `<session-id> <nonce>`), `takeover/`
-  (transient, present only while a lock is being taken over) and `ledger.log` (append-only
-  diagnostics, not state).
+- Beside it: `lock/` (the run lock; `lock/holder` holds `<session-id> <nonce>`; `lock/write/`
+  is the transient write mutex), `takeover/` (transient, present only while a lock is being taken
+  over) and `ledger.log` (append-only diagnostics, not state).
 - It is never committed and never inside a working tree. What leaves it is `ledger.sh summary`,
   a Markdown table the coordinator puts in the ticket PR body.
 
@@ -138,6 +138,12 @@ Two events are not rows of the transition table:
    holder is not live is taken over.
 4. Exit 40 from any call means this coordinator lost the lock: stop.
 5. `ledger.sh unlock <ledger>` on finish.
+6. **Write mutex.** Every read-modify-write, every takeover and `unlock` hold `lock/write/`
+   (created with `mkdir`; `lock/write/pid` is the writer's own process ID) across the owner check,
+   the read and the `mv`. So a takeover never lands between a writer's owner check and its write:
+   the old writer either finishes first or re-checks after the takeover and exits 40 without
+   writing. A held mutex is waited for (about 10 s; then exit 2, or 40 from `lock`). It is stale
+   only when `kill -0 <pid>` fails (a local process check), and is then removed once.
 
 ## Exit codes
 
