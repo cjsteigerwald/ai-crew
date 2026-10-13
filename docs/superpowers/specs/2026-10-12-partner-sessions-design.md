@@ -206,7 +206,8 @@ persisted claims, gate results, rework count, and outbox.
   rename. A takeover needs the same lock, so no writer is ever between its holder check and its
   rename while the holder is replaced, and parallel calls never lose an update. The kernel releases
   the lock when the call exits, however it exits (`kill -9` included), so nothing is left to detect,
-  reap or take over. A held lock is waited for `PS_WRITE_WAIT` seconds (default 10), then the call
+  reap or take over. `lock` also removes a legacy `lock/write/` or `takeover/` directory left by an
+  earlier version. A held lock is waited for `PS_WRITE_WAIT` seconds (default 10), then the call
   prints `busy=<dir>/write.lock` and exits 41 without changing anything. Read-only calls take no
   lock. Every mutating call also checks that the holder's nonce is its own; a coordinator that has
   lost the run lock (exit 40) stops.
@@ -305,7 +306,8 @@ the user, per dependent, whether to drop it too (`cancelled`) or remove the edge
    the run and is shown to the user.
 6. **Launch the frontier.** `frontier.sh` returns the `pending` issues with every blocker `merged`,
    capped by the concurrency limit. An issue blocked by an open issue outside the ticket is not
-   launched until that issue is closed; blockers outside the ticket are recorded in `init` as
+   launched until that issue is closed (the coordinator first asks the user to wait or drop the edge
+   before writing the ledger); blockers outside the ticket are recorded in `init` as
    `{n, closed}`. On a run's first launch (no partner has yet completed the canary
    check in this ledger), use the **canary phase**:
    - Launch only the first frontier issue (sub-steps below).
@@ -517,8 +519,10 @@ options below). A relaunch starts a fresh budget.
      still open and the row still matches (same `sessionId` and `startedAt`); otherwise ignore the
      timer. Then `claude stop <id>`, with `<id>` the agents row's `id`.
   3. Read agents up to six times, 5 s apart. When the row has no `pid`, record the observation
-     (`json done nopid`), which drops the `CANCEL`, and close the note. For `stuck-accept` it is
-     recorded while the issue is still `blocked-on`.
+     (`json done nopid`), and close the note. For `stuck-accept` it is recorded while the issue is
+     still `blocked-on`. The event drops only the recorded session's `CANCEL`, and only in
+     `blocked-on` or `cancelled`: it is a no-op for a `failed` (relaunch) issue, and the next
+     `reconcile` clears an open-intent session's `CANCEL`.
   4. Still alive after the sixth read: tell the user the session's name and id and do not loop. The
      caller holds its next action (relaunch, freeing the slot, releasing the lock) until the user
      confirms the session is gone or says to proceed.
@@ -668,14 +672,17 @@ the plan and on the diff.
 - Verify a GitHub REST endpoint that lists which issues block an issue; fall back to the
   `Blocked by: #n` body line if absent.
 - Live check (about 30 seconds): does `claude --resume <sessionId> --bg --name <KEY>-<n> "<msg>"` on
-  a stopped session keep or set the display name? Per `claude --help` (2.1.296) a stopped session
-  resumes under the same ID (a copy is made only when the session is already running), and `--name`
+  a stopped session keep or set the display name? `claude --help` (2.1.296) says a resumed session
+  continues under the same ID, but a copy with a new `sessionId` is possible after `claude stop`; the
+  live trial records which happens, and the coordinator always rebinds. `--name`
   is not documented as incompatible with `--resume`. If the name is not kept, the coordinator
   re-binds on the name it reads back from `claude agents --json`, as it already does after every
   wake.
 - Set the canary timeout (flow step 6). The plan sets 600 s per leg.
 
 ## Review history
+
+*Historical record of earlier review rounds; where an entry conflicts with the sections above (e.g. mkdir/takeover locking), the sections above govern.*
 
 **Round 1** (spec at `a86d636`; `fresh-verifier` verdict BLOCK, `codex-adversary` verdict
 needs-attention). Addressed in `b44f74c`:
