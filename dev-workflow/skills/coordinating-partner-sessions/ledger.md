@@ -88,6 +88,12 @@ was written (null if absent or ended). `merge` adds `candidateSha`, `expectedHea
 - **Messages.** `ledger.sh message <ledger> <whole frame>` parses, binds (`from` equals the
   recorded session name exactly, `gen` is current, a `DONE` branch is the recorded branch) and
   applies in one call. A message restating the current state is an idempotent no-op.
+- **Message output.** The first line is the new (or unchanged) status. Extra lines:
+  - `queue=<n>` (with `done-claimed`, exit 0): a new claim; append `n` to the integration queue.
+  - `ask-user=edge <n> <m>` (exit 0): a `STUCK needs=#m` whose `#m` is not merged; the coordinator
+    checks the edge and asks the user (`stuck-accept <m>` if agreed).
+  - `ask-user=stuck <n> [needs=#<m>] <reason>` or `ask-user=scope <n> <reason>`: tell the user. Exit
+    0 on a working issue; exit 10 on a `done-claimed` or `verifying` one, whose claim proceeds.
 - **Sessions.** `ledger.sh session <ledger> <n> <name> <session-id>` rebinds a woken partner. It
   keeps gen and status and retargets pending outbox entries to the new name.
 - **Drop and cancel.** `drop` and `cancel-ticket` close the issue's open intents (outcome

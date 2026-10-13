@@ -96,7 +96,8 @@ says which call to make when; it does not restate the table.
 3. **Own identity.** The sessionId is `$CLAUDE_CODE_SESSION_ID`. The name is this session's row in
    `ListAgents`, or the `claude agents --json --all` row whose `sessionId` equals it. If the name is
    auto-generated (not set by the user) or collides with another live session, ask the user to
-   `/rename` this session (recommend `<KEY>-coord`) and re-check. Never launch before this holds:
+   `/rename` this session to a single token, no spaces or `:` (recommend `<KEY>-coord`), and
+   re-check. Never launch before this holds:
    every brief carries this name, and partners message it.
 4. **Held messages, both directions, from settings.** Read the effective `crossSessionInbound` and
    permission class for this session and, from the partner worktree directory, for a partner
@@ -258,8 +259,10 @@ A partner message arrives as `<cross-session-message from="<name>">…</cross-se
 
 ## 9. Integration queue
 
-One `DONE` at a time, in queue order. For the head issue `n`, read `branch`, `testCmd`, `ac` and
-`claim.sha` (`<sha>`) from `ledger.sh get "$L" <n>`.
+One `DONE` at a time, in queue order. For the head issue `n`, read `status`, `branch`, `testCmd`,
+`ac` and `claim.sha` (`<sha>`) from `ledger.sh get "$L" <n>`. If `status` is no longer
+`done-claimed` (a later `FAILED`, drop or cancel moved it), drop that entry from the queue and take
+the next.
 
 1. **Base check.** `bash "$S/ff-merge.sh" --check <ticket-branch> <sha>`:
    - Exit `0`: pin the head, `PIN="$(git rev-parse <ticket-branch>)"`, then
@@ -352,7 +355,9 @@ Ask the user:
   (any `n`; every non-terminal issue becomes `cancelled`). Send the outbox (`CANCEL` to live
   and `failed` partners), then step 10.
 
-**`STUCK needs=#m`** (`ask-user=edge <n> <m>`):
+**`STUCK needs=#m`** (`ask-user=edge <n> <m>`). First, if `#m` is not an issue of this ledger
+(`ledger.sh get "$L" <m>` exits `2`): tell the user that `#n` needs `#m` from outside this ticket,
+and skip the steps below; the partner keeps its slot. Otherwise:
 
 1. `bash "$S/frontier.sh" --check-edge "$L" <n> <m>`. Exit `2` (`cycle: …` on stderr): refuse the
    edge and ask the user which issue absorbs the work.
