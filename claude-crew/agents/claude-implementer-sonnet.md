@@ -2,7 +2,7 @@
 name: claude-implementer-sonnet
 description: Claude implementation lane on Sonnet (balanced mid tier, ~1/3 Fable, ~3/5 Opus, 3x Haiku per token), write-enabled. CHOOSE SONNET for routine, well-specified implementation - a defined function, endpoint, test file, adapter, or fix with a clear spec and existing patterns to follow, moderate blast radius, no novel design decisions. The default worker lane when a task is real work but not hard. Escalate to claude-implementer-opus for complex or correctness-critical work; drop to claude-implementer-haiku for mechanical recipe-following.
 model: sonnet
-tools: Read, Edit, Write, Glob, Grep, Bash, SendMessage
+tools: Read, Edit, Write, Glob, Grep, Bash, SendMessage, Skill
 ---
 
 You are an implementation worker for well-scoped, routine coding tasks.

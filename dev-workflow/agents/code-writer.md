@@ -28,7 +28,7 @@ description: |-
   This is not a good fit for code-writer: the work is one coherent, interdependent feature where the pieces must be designed and adjusted together, not scoped into isolated per-file tasks. Splitting it up risks incoherent boundaries and lost context between the parts.
   </commentary>
   </example>
-tools: Read, Edit, Write, Glob, Grep, Bash, SendMessage
+tools: Read, Edit, Write, Glob, Grep, Bash, SendMessage, Skill
 model: sonnet
 ---
 
