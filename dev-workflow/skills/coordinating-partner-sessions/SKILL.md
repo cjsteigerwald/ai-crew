@@ -99,9 +99,9 @@ says which call to make when; it does not restate the table.
      (by its `sessionId`, else by name). Ignore the trigger if the note is closed. If the row's
      `pid` differs from the noted `pid`, the noted process ended: close the note with no ledger
      write, tell the user a new process now runs that session, and do not stop it without their
-     confirmation. If the row is absent or has no `pid`, go to step 3. Otherwise
-     `claude stop <id>`, where `<id>` is the `id` of that row, matched by recorded `sessionId`,
-     else by name.
+     confirmation. If they confirm, run Stop a session from step 1 for that row. If the row is
+     absent or has no `pid`, go to step 3. Otherwise `claude stop <id>`, where `<id>` is the `id`
+     of that row, matched by recorded `sessionId`, else by name.
   3. Read agents up to 6 times, 5 s apart. When the row has no `pid`:
      `ledger.sh event "$L" <n> json done nopid`, and close the note. For `stuck-accept`, record it
      while the issue is still `blocked-on`, which drops the `CANCEL`. That event drops only the
@@ -372,9 +372,8 @@ session reaches step 3, step 2 closed it, or the user answers its step-4 hold. O
 
 **Idle notice** for partner `n` (one-shot; it only means a turn ended). Read agents for its row:
 
-- A "stop pending" note is open for this issue, and the row has the noted `pid`, or has ended:
-  follow Stop a session step 2, not the branches below. A row with a different `pid` takes the
-  branches below.
+- A "stop pending" note is open for this issue: follow Stop a session step 2, whatever the row's
+  `pid`, not the branches below.
 - Alive and `blocked` (waiting on the user), or alive and `working`: Arm only.
 - Alive and `done`, with no `DONE` received for this generation: apply the `STATUS?` guard, then
   Arm.

@@ -348,9 +348,9 @@ the user, per dependent, whether to drop it too (`cancelled`) or remove the edge
 10. **When every issue is `merged` or `cancelled`:**
     - In both cases below, before the run lock is released, every open stop-pending note is
       finished: its Stop a session reaches step 3, step 2 closed it, or the user answers its
-      step-4 hold. Otherwise
-      its `json done nopid` write after the release exits 40 (for example, the last issue is
-      dropped, the run is ready to hand back, and its stop still waits on `sleep 300`).
+      step-4 hold. Otherwise its `json done nopid` write after the release exits 40 (for example,
+      the last issue is dropped, the run is ready to hand back, and its stop still waits on
+      `sleep 300`).
     - If every issue is `cancelled`, treat it as **cancel the ticket** (Error handling): release the
       lock and tell the user; no hand-back.
     - Otherwise, for each `cancelled` issue, mark its AC `deferred` in the settled AC list with the
@@ -527,9 +527,9 @@ options below). A relaunch starts a fresh budget.
      its `sessionId`, else by name). Ignore the trigger if the note is closed. If the row's `pid`
      differs from the noted `pid`, the noted process ended: close the note with no ledger write,
      tell the user a new process now runs that session, and do not stop it without their
-     confirmation. If the row is absent or has no `pid`, go to step 3. Otherwise
-     `claude stop <id>`, with `<id>` the `id` of that row, matched by recorded `sessionId`, else by
-     name.
+     confirmation. If they confirm, run Stop a session from step 1 for that row. If the row is
+     absent or has no `pid`, go to step 3. Otherwise `claude stop <id>`, with `<id>` the `id` of
+     that row, matched by recorded `sessionId`, else by name.
   3. Read agents up to six times, 5 s apart. When the row has no `pid`, record the observation
      (`json done nopid`), and close the note. For `stuck-accept` it is recorded while the issue is
      still `blocked-on`. The event drops only the recorded session's `CANCEL`, and only in
