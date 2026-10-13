@@ -27,11 +27,14 @@
 # Write lock: every mutating call, and `lock`, holds an exclusive OS lock on
 # write.lock (`lockf -s` on macOS/BSD, `flock -w` on Linux) on this process's
 # own fd 9, from before its owner check until it exits. The kernel drops it when
-# the process ends, however it ends (SIGKILL included), so there is nothing to
-# reap, and no takeover or second writer can land between a writer's owner check
-# and its mv. A held lock is waited for PS_WRITE_WAIT seconds (default 10, an
-# integer >= 1), then exit 41 with busy=<dir>/write.lock. Read-only subcommands
-# take no lock (mv keeps the ledger a whole snapshot).
+# the process, and any child still holding fd 9, has exited, however it ends
+# (SIGKILL included), so there is nothing to reap, and no takeover or second
+# writer can land between a writer's owner check and its mv. Children (jq,
+# frontier.sh) are synchronous and short; git runs with fd 9 closed, so a
+# helper it spawns cannot inherit the lock. A held lock is waited for
+# PS_WRITE_WAIT seconds (default 10, an integer >= 1), then exit 41 with
+# busy=<dir>/write.lock and a "busy" log line. Read-only subcommands take no
+# lock (mv keeps the ledger a whole snapshot).
 #
 # `message` takes the whole <cross-session-message from="…">…</…> frame as one
 # argument and hands it to parse-msg.sh --frame as argv; a frame that fails to
@@ -45,8 +48,9 @@
 # `done` exits 1 for "not done".
 #
 # PS_WRITE_TEST_PAUSE=<file> (tests only): a mutating call, holding the write
-# lock, pauses after its owner check and before its read until <file> exists
-# (about 10 s at most); it first writes its own $$ to <file>.waiting. PS_LOCKF
+# lock, pauses in begin_write, after its owner check (need_ledger has already
+# validated the ledger) and before it reads the state it changes, until <file>
+# exists (about 10 s at most); it first writes its own $$ to <file>.waiting. PS_LOCKF
 # (tests only) replaces /usr/bin/lockf. Both are inert unless set.
 #
 # Never calls claude or gh; free text is passed to jq with --arg, never evaluated.
@@ -69,7 +73,7 @@ is_sha() { [ "${#1}" -eq 40 ] && case "$1" in *[!0-9a-f]*) return 1 ;; *) return
 is_branch() {
   case "$1" in [a-z0-9]*) ;; *) return 1 ;; esac
   case "$1" in *[!a-z0-9._/-]*) return 1 ;; esac
-  git check-ref-format --branch "$1" >/dev/null 2>&1
+  git check-ref-format --branch "$1" >/dev/null 2>&1 9>&-
 }
 # A session ID or name: non-empty, no whitespace, no ':'.
 is_word() {
@@ -146,8 +150,9 @@ WLOCKED=0
 # take_write_lock — an exclusive OS lock on $D/write.lock, held on this
 # process's own fd 9 until it exits (the kernel drops it on any exit, SIGKILL
 # included; no lock-tool process outlives the acquisition). Waits
-# PS_WRITE_WAIT seconds, then prints busy= and exits 41. Children (jq,
-# frontier.sh) inherit fd 9 and exit before this process does.
+# PS_WRITE_WAIT seconds, then logs and prints busy= and exits 41. Children (jq,
+# frontier.sh) inherit fd 9 and exit before this process does; git runs with
+# 9>&- so nothing it spawns (an fsmonitor daemon) keeps the lock.
 take_write_lock() {
   [ -d "$D" ] || die "no ledger directory $D (run ledger.sh path first)"
   wait="${PS_WRITE_WAIT:-10}"
@@ -157,11 +162,11 @@ take_write_lock() {
   rc=0
   if [ -x "${PS_LOCKF:-/usr/bin/lockf}" ]; then   # macOS / BSD
     "${PS_LOCKF:-/usr/bin/lockf}" -s -t "$wait" 9 || rc=$?
-    if [ "$rc" -eq 75 ]; then echo "busy=$lf"; exit 41; fi   # EX_TEMPFAIL = timed out
+    if [ "$rc" -eq 75 ]; then logl "busy ${CMD:-write}"; echo "busy=$lf"; exit 41; fi   # EX_TEMPFAIL = timed out
     [ "$rc" -eq 0 ] || die "lockf failed (rc $rc) on $lf"
   elif command -v flock >/dev/null 2>&1; then     # Linux util-linux
     flock -w "$wait" 9 || rc=$?
-    if [ "$rc" -eq 1 ]; then echo "busy=$lf"; exit 41; fi     # timed out
+    if [ "$rc" -eq 1 ]; then logl "busy ${CMD:-write}"; echo "busy=$lf"; exit 41; fi     # timed out
     [ "$rc" -eq 0 ] || die "flock failed (rc $rc) on $lf"
   else
     die "a lock tool is required: /usr/bin/lockf (macOS) or flock (util-linux)"
@@ -398,8 +403,8 @@ apply() {
 cmd_intent() {
   [ "$#" -ge 3 ] || usage
   set_paths "$1"; kind="$2"; n="$3"
-  take_write_lock
   CMD="intent $kind #$n"
+  take_write_lock
   need_ledger
   begin_write
   is_num "$n" || usage
@@ -450,8 +455,8 @@ cmd_intent() {
 cmd_event() {
   [ "$#" -ge 3 ] || usage
   set_paths "$1"; n="$2"; ev="$3"; shift 3
-  take_write_lock
   CMD="event #$n $ev"
+  take_write_lock
   need_ledger
   begin_write
   is_num "$n" || usage
@@ -497,8 +502,8 @@ cmd_event() {
     gd="$(cd "$D/../.." && pwd -P)" || die "cannot resolve the git dir"
     br="$(jq -r --arg n "$n" '.issues[$n].branch' "$L")"
     tb="$(jq -r '.ticketBranch' "$L")"
-    tip="$(git --git-dir="$gd" rev-parse -q --verify "refs/heads/$br^{commit}" 2>/dev/null)" || tip=""
-    if [ -n "$tip" ] && git --git-dir="$gd" merge-base --is-ancestor "$tip" "refs/heads/$tb" 2>/dev/null; then
+    tip="$(git --git-dir="$gd" rev-parse -q --verify "refs/heads/$br^{commit}" 2>/dev/null 9>&-)" || tip=""
+    if [ -n "$tip" ] && git --git-dir="$gd" merge-base --is-ancestor "$tip" "refs/heads/$tb" 2>/dev/null 9>&-; then
       anc="yes"
     fi
   fi
@@ -515,7 +520,7 @@ cmd_event() {
 ticket_head() {
   gd="$(cd "$D/../.." && pwd -P)" || return 0
   tb="$(jq -r '.ticketBranch' "$L")" || return 0
-  git --git-dir="$gd" rev-parse -q --verify "refs/heads/$tb^{commit}" 2>/dev/null || true
+  git --git-dir="$gd" rev-parse -q --verify "refs/heads/$tb^{commit}" 2>/dev/null 9>&- || true
 }
 
 # ------------------------------------------------------------------ messages
@@ -523,8 +528,8 @@ ticket_head() {
 cmd_message() {
   [ "$#" -eq 2 ] || usage
   set_paths "$1"; raw="$2"
-  take_write_lock
   CMD="message"
+  take_write_lock
   need_ledger
   begin_write
   tmpdir
@@ -562,8 +567,8 @@ cmd_message() {
 cmd_session() {
   [ "$#" -eq 4 ] || usage
   set_paths "$1"; n="$2"; name="$3"; sid="$4"
-  take_write_lock
   CMD="session #$n"
+  take_write_lock
   need_ledger
   begin_write
   is_num "$n" || usage
@@ -580,8 +585,8 @@ cmd_session() {
 cmd_reconcile() {
   [ "$#" -eq 2 ] || usage
   set_paths "$1"; AG="$2"
-  take_write_lock
   CMD="reconcile"
+  take_write_lock
   need_ledger
   begin_write
   [ -f "$AG" ] && jq -e 'type == "array"' "$AG" >/dev/null 2>&1 || die "agents.json must be a JSON array: $AG"
@@ -600,7 +605,7 @@ cmd_reconcile() {
     gd="$(cd "$D/../.." && pwd -P)" || die "cannot resolve the git dir"
     while read -r id cand; do
       is_sha "$cand" || continue
-      git --git-dir="$gd" merge-base --is-ancestor "$cand" "$th" 2>/dev/null && printf '%s\n' "$id" >>"$TMPD/anc"
+      git --git-dir="$gd" merge-base --is-ancestor "$cand" "$th" 2>/dev/null 9>&- && printf '%s\n' "$id" >>"$TMPD/anc"
     done <"$TMPD/mi"
   fi
   anc="$(jq -R . "$TMPD/anc" | jq -cs .)" || die "internal error"
@@ -665,7 +670,7 @@ cmd="${1:-}"
 [ "$#" -gt 0 ] && shift
 case "$cmd" in
   path) cmd_path "$@" ;;
-  lock) cmd_lock "$@" ;;
+  lock) CMD=lock; cmd_lock "$@" ;;
   unlock) CMD=unlock; cmd_unlock "$@" ;;
   init) CMD=init; cmd_init "$@" ;;
   get) cmd_get "$@" ;;

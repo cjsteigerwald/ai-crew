@@ -20,6 +20,13 @@ jobs:
           sudo apt-get update && sudo apt-get install -y jq
           # ledger.sh's write lock: util-linux flock ships with the runner image.
           flock --version
+          # The descriptor form ledger.sh uses (SKILL preflight probe), so a flock
+          # without fd support fails here with its cause, not as ledger test failures.
+          f="$(mktemp)"
+          exec 9>>"$f"
+          flock -n 9 || { echo "flock cannot lock a file descriptor (flock -n 9 failed); ledger.sh needs fd-form flock" >&2; exit 1; }
+          exec 9>&-
+          rm -f "$f"
       - name: Run tests
         run: |
           set -euo pipefail
@@ -96,6 +103,13 @@ jobs:
           /bin/bash --version | head -1
           # ledger.sh's write lock: macOS ships /usr/bin/lockf.
           ls -l /usr/bin/lockf
+          # The descriptor form ledger.sh uses (SKILL preflight probe), so a lockf
+          # without fd support fails here with its cause, not as ledger test failures.
+          f="$(mktemp)"
+          exec 9>>"$f"
+          /usr/bin/lockf -s -t 0 9 || { echo "/usr/bin/lockf cannot lock a file descriptor (lockf -s -t 0 9 failed); ledger.sh needs fd-form lockf" >&2; exit 1; }
+          exec 9>&-
+          rm -f "$f"
       - name: Run tests
         run: |
           set -euo pipefail

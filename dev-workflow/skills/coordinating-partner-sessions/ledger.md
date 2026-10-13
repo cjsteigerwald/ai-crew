@@ -161,8 +161,10 @@ Two events are not rows of the transition table:
    for their whole run, from before the owner check through the read and the `mv`: `lockf -s`
    (macOS, `/usr/bin/lockf`) or `flock -w` (Linux, util-linux) on the call's own open file
    descriptor. So a takeover or a second writer never lands between a writer's owner check and
-   its write, and parallel calls never lose an update. The kernel releases the lock when the call
-   exits, however it exits (`kill -9` included): there is no stale lock to detect or remove. A
+   its write, and parallel calls never lose an update. The kernel releases the lock when the call,
+   and any child still holding the descriptor, has exited, however it exits (`kill -9` included):
+   there is no stale lock to detect or remove. Its children (`jq`, `frontier.sh`) are synchronous
+   and short, and `git` runs with the descriptor closed, so nothing it spawns keeps the lock. A
    held lock is waited for `PS_WRITE_WAIT` seconds (default 10), then the call prints
    `busy=<dir>/write.lock` and exits 41 without changing anything. Read-only calls (`path`, `get`,
    `outbox`, `slots`, `done`, `summary`) take no lock; the `mv` keeps the ledger a whole snapshot.

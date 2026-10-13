@@ -840,7 +840,38 @@ touch "$T/pause-busy"
 wait "$PW"
 [ "$(cat "$T/pause-busy.rc")" = 0 ] || fail "busy_timeout_41: the paused writer rc $(cat "$T/pause-busy.rc") ($(cat "$T/pause-busy.err"))"
 [ "$(jq -r .canary "$L")" = passed ] || fail "busy_timeout_41: the paused writer's write did not land"
+grep -q 'busy event #2 drop' "$(dirname "$L")/ledger.log" || fail "busy_timeout_41: no busy line in ledger.log"
 echo "ok: busy_timeout_41"
+
+# ---------------------------------------------------------------- takeover_blocked_by_paused_writer
+# A takeover of a dead holder waits for the holder's in-flight write: `lock`
+# takes the write lock before it reads lock/holder.
+mkrepo tkpw
+run path TEST; L="$OUT"
+agents "$T/ag-s1live.json" "S1=$$"
+run lock "$L" S1 "$T/ag-s1live.json"
+expect_rc "takeover_blocked_by_paused_writer S1 lock" 0
+PS_OWNER="${OUT#owner=}"; export PS_OWNER
+printf '%s\n' "$ISS3" >"$T/issues.json"
+run init "$L" TEST tk TEST-coord S1 "$T/issues.json"
+expect_rc "takeover_blocked_by_paused_writer init" 0
+start_paused tkpw event "$L" 1 canary-passed
+hold0="$(cat "$(dirname "$L")/lock/holder")"
+agents "$T/ag-tkpw.json" "S1=$DEADPID" "S2=$$"
+PS_WRITE_WAIT=1 run lock "$L" S2 "$T/ag-tkpw.json"
+expect_rc "takeover_blocked_by_paused_writer blocked" 41
+[ "$(cat "$(dirname "$L")/lock/holder")" = "$hold0" ] || fail "takeover_blocked_by_paused_writer: holder changed while the writer was paused"
+touch "$T/pause-tkpw"
+wait "$PW"
+[ "$(cat "$T/pause-tkpw.rc")" = 0 ] || fail "takeover_blocked_by_paused_writer: the paused writer rc $(cat "$T/pause-tkpw.rc") ($(cat "$T/pause-tkpw.err"))"
+[ "$(jq -r .canary "$L")" = passed ] || fail "takeover_blocked_by_paused_writer: the paused writer's write did not land"
+run lock "$L" S2 "$T/ag-tkpw.json"
+expect_rc "takeover_blocked_by_paused_writer takeover" 0
+case "$(cat "$(dirname "$L")/lock/holder")" in
+  "S2 "*) ;;
+  *) fail "takeover_blocked_by_paused_writer: holder is not S2 ($(cat "$(dirname "$L")/lock/holder"))" ;;
+esac
+echo "ok: takeover_blocked_by_paused_writer"
 
 # ---------------------------------------------------------------- lock_held_until_writer_exits
 setup held
@@ -1886,6 +1917,26 @@ expect_no_line_prefix "reconcile_repairs_stale_work resend" "resend 12"
 grep -q 'outbox-stale-purged n=12 gen=1' "$(dirname "$L")/ledger.log" || fail "reconcile_repairs_stale_work: no outbox-stale-purged in ledger.log"
 assert_outbox_invariant "$L"
 echo "ok: reconcile_repairs_stale_work"
+
+# record_launch_purges_work: a stale work entry at the issue's current gen
+# (seeded past the invariant) is gone once the issue is launched again.
+ksetup rlp
+jset '.issues["12"].status = "pending" | .issues["12"].gen = 1
+      | .outbox = [{n: 12, gen: 1, to: "K-12", line: "REWORK #12 stale"}]'
+run_raw intent "$L" launch 12 K-12 "$T/wt-12-rlp" test-x-12 "$H40"
+expect_rc "record_launch_purges_work pending intent" 0
+run_raw event "$L" 12 launch "$(intent_id)" sid-12b
+expect_rc "record_launch_purges_work pending launch" 0
+nowork "record_launch_purges_work pending" 12
+jset '.issues["12"].status = "failed"
+      | .outbox = [{n: 12, gen: 2, to: "K-12", line: "RESYNC #12 stale"}]'
+run_raw intent "$L" relaunch 12 K-12 "$T/wt-12-rlp" test-x-12 "$H40"
+expect_rc "record_launch_purges_work failed intent" 0
+run_raw event "$L" 12 relaunch "$(intent_id)" sid-12c
+expect_rc "record_launch_purges_work failed relaunch" 0
+nowork "record_launch_purges_work failed" 12
+assert_outbox_invariant "$L"
+echo "ok: record_launch_purges_work"
 
 if [ "$FAIL" -ne 0 ]; then exit 1; fi
 echo "all ledger tests passed"

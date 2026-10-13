@@ -143,8 +143,8 @@ Success:
 - **Ledger write lock.** Every mutating `ledger.sh` call takes an exclusive kernel lock on
   `write.lock`, held on the call's own file descriptor with `/usr/bin/lockf -s` (macOS) or util-linux
   `flock -w` (Linux). The tool must support locking a descriptor; `ledger.sh` has no fallback and
-  exits 2 when neither tool is present. The kernel drops the lock when the process exits, however it
-  exits.
+  exits 2 when neither tool is present. The kernel drops the lock when the process, and any child
+  still holding the descriptor, has exited, however it exits.
 - **`claude stop <id>`** ends a running background session; `<id>` is the `id` of its
   `claude agents --json` row. A `CANCEL` message alone leaves an idle partner alive with its `pid`.
 - **Unverified:** the docs describe no parent/spawner relationship; a partner reaches the
@@ -205,8 +205,10 @@ persisted claims, gate results, rework count, and outbox.
   file descriptor (`lockf -s` / `flock -w`) from before the holder check through the read and the
   rename. A takeover needs the same lock, so no writer is ever between its holder check and its
   rename while the holder is replaced, and parallel calls never lose an update. The kernel releases
-  the lock when the call exits, however it exits (`kill -9` included), so nothing is left to detect,
-  reap or take over. `lock` also removes a legacy `lock/write/` or `takeover/` directory left by an
+  the lock when the call, and any child still holding the descriptor, has exited, however it exits
+  (`kill -9` included), so nothing is left to detect, reap or take over. The call's children (`jq`,
+  `frontier.sh`) are synchronous and short; `git` runs with the descriptor closed, so a helper it
+  spawns cannot inherit the lock. `lock` also removes a legacy `lock/write/` or `takeover/` directory left by an
   earlier version. A held lock is waited for `PS_WRITE_WAIT` seconds (default 10), then the call
   prints `busy=<dir>/write.lock` and exits 41 without changing anything. Read-only calls take no
   lock. Every mutating call also checks that the holder's nonce is its own; a coordinator that has
