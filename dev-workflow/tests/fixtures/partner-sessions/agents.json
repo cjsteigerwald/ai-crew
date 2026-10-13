@@ -1,0 +1,44 @@
+[
+  {
+    "pid": 1001,
+    "id": "id-coord",
+    "cwd": "<cwd>",
+    "kind": "background",
+    "startedAt": 1700000000000,
+    "sessionId": "sid-coord",
+    "name": "TEST-coord",
+    "status": "busy",
+    "state": "working"
+  },
+  {
+    "pid": 1002,
+    "id": "id-1",
+    "cwd": "<cwd>",
+    "kind": "background",
+    "startedAt": 1700000001000,
+    "sessionId": "sid-1",
+    "name": "TEST-1",
+    "status": "idle",
+    "state": "done"
+  },
+  {
+    "pid": 1003,
+    "id": "id-2",
+    "cwd": "<cwd>",
+    "kind": "background",
+    "startedAt": 1700000002000,
+    "sessionId": "sid-2",
+    "name": "TEST-2",
+    "status": "idle",
+    "state": "blocked"
+  },
+  {
+    "id": "id-3",
+    "cwd": "<cwd>",
+    "kind": "background",
+    "startedAt": 1700000003000,
+    "sessionId": "sid-3",
+    "name": "TEST-3",
+    "state": "done"
+  }
+]

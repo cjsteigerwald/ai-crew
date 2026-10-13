@@ -434,3 +434,40 @@ Not automatable: partners talk to the user and the run spans `claude agents`. Th
 ## Review chain
 
 Full tier (skill definitions, new scripts, CI, more than 150 lines): `dev-workflow:fresh-verifier` and `dev-workflow:codex-adversary` in one message on this plan before Task 1 (done: plan at `7c7a62b`, findings folded into this revision), a quick re-check of this revision, and both on the full diff before the PR (intake-style `opening-pull-requests` gates). Every push needs the user's confirmation.
+
+---
+
+## Spike results
+
+Recorded on Claude Code as installed 2026-10-12. Session IDs are placeholders (`sid-*`, `TEST-*`); fixtures live in `dev-workflow/tests/fixtures/partner-sessions/`.
+
+### 1. GitHub blockers endpoint
+
+- Read command (Task 9 uses it verbatim): `gh api repos/<owner>/<repo>/issues/<n>/dependencies/blocked_by`
+- Observed: `gh api repos/cjsteigerwald/ai-crew/issues/1/dependencies/blocked_by` returned HTTP 200 with `[]`. The endpoint exists (no 404), so the native-dependency read path is available; the primary path stands, not the `Blocked by: #n` body-line fallback.
+- Not observed: a non-empty response. The repo has no issues (`gh issue list --state all` returned `[]`) and creating a throwaway pair is a GitHub write, so it was not done. **Needs user-run verification:** create two throwaway issues A and B, add the edge with the write command below, run the read command against A, confirm the array holds objects with `number` and `state` (`open`/`closed`), then close both.
+- Write command (documented at `docs/agents/issue-tracker.md:68`, not run): `gh api --method POST repos/<owner>/<repo>/issues/<n>/dependencies/blocked_by -F issue_id=<blocker-db-id>`
+- Trim for the coordinator: `jq '[.[] | {number, state}]'`. Fixture `blocked_by.json` has that shape (`[{"number":12,"state":"open"},{"number":13,"state":"closed"}]`); its values are illustrative, built from the documented response shape, not captured.
+- Fallback if a repo returns 404: parse body lines matching `^Blocked by: #[0-9]+(, *#[0-9]+)*$`.
+
+### 2. `claude agents --json --all` shape
+
+A JSON array. Entry fields: `id` (8-hex short id, accepted by `claude stop|rm|attach|logs`), `sessionId` (full UUID), `name`, `cwd`, `kind` (`background`), `startedAt` (epoch ms), `state`, and, only for live processes, `pid` and `status`. Observed `state` values: `done`, `working`, `blocked`. Observed `status` values: `idle`, `busy`.
+
+- **Liveness field is `pid`.** It is present while the session process is alive and absent once stopped. Observed after `claude stop`: the entry stayed listed, lost `pid` and `status`, and kept `state: "done"`. So `state` alone does not distinguish stopped from finished: a stopped session shows `done`. Liveness = `pid` present. The spec fallback (listed with `state` not in {`stopped`,`failed`}) is not usable, since neither value was observed.
+- Fixture `agents.json` carries four entries: working with pid (`TEST-coord`), idle-done with pid (`TEST-1`), blocked with pid (`TEST-2`), stopped with no pid (`TEST-3`). `cwd` is replaced with `<cwd>`.
+
+### 2b. Coordinator's own sessionId
+
+The environment variable `CLAUDE_CODE_SESSION_ID` holds the session's own UUID and matches the `sessionId` of that session's entry in `claude agents --json --all` (confirmed by exact match against one entry). Task 9 preflight: read `$CLAUDE_CODE_SESSION_ID`; fall back to the `--json --all` entry whose `name` equals the coordinator's name when it is unset (a session without a name has no fallback, so the coordinator must be named, as the spec requires). Caveat: the variable was read from a subagent's shell and matched the parent session's entry; the main-session value was not separately checked.
+
+### 3. `--resume` + `--name`
+
+Run with one throwaway session (`ps-spike-a`):
+
+1. `claude --bg --name ps-spike-a "reply OK then stop"` printed `backgrounded · <id> · ps-spike-a`; after about 20 s the entry showed `state: done`, `status: idle`.
+2. `claude stop <id>` printed `stopped <id>`; the entry stayed listed without `pid`.
+3. `claude --resume <sessionId> --bg --name ps-spike-b "reply OK"` printed `note: session <id> is already running in the background, so this started a copy as <id2>`, then `backgrounded · <id2> · ps-spike-b`.
+4. `claude agents --json --all`: the resumed entry had a NEW `id` and a NEW `sessionId` (not equal to the original) and `name` `ps-spike-b`, with `pid` and `state: done`. The original entry was unchanged (`ps-spike-a`, no `pid`).
+
+Result: resuming a session right after `claude stop` forked a new session rather than reusing the sessionId, because the CLI still considered the original "already running". The `--name` flag is honoured on resume. Not determined: whether waiting longer after `stop` (or `claude rm` first) makes `--resume` reuse the sessionId. Task 9's relaunch must therefore record the sessionId from `--json` after launch and must not assume it is stable across a relaunch. Both spike sessions were stopped and removed with `claude stop` and `claude rm`; `claude agents --json --all` no longer lists either.
