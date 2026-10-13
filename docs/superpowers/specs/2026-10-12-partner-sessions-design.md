@@ -61,7 +61,8 @@ Success:
    backstop. Chosen over polling `claude agents --json` on a timer because it wakes the coordinator
    only when something happened. Polling *can* tell a partner waiting on the user (`blocked`) from
    one working (`working`) (`agent-view.md`, `--json` states), so on every wake the coordinator reads
-   `claude agents --json` as the source of truth for partner liveness. Also chosen over an external
+   `claude agents --json` as the source of truth for partner liveness: a row is alive only while it
+   has a `pid`; a session has ended when its row is absent or has no `pid`. Also chosen over an external
    Agent SDK script (outside the skill and plugin model `dev-workflow` uses).
 9. **Fast-forward-only merges** (added after review, approved): a partner's tested branch is merged
    only if it already contains the current ticket head.
@@ -110,6 +111,9 @@ Success:
 - `claude agents --json` reports `state` as `working`, `blocked` (waiting on the user, with
   `waitingFor`), `done` (turn finished normally), `failed` or `stopped` (agent-view). Unattached
   sessions that are idle or awaiting a reply are stopped after about an hour, and under low memory.
+  Observed on 2.1.296: liveness is the row's `pid`. A `done` row with a `pid` is idle and alive; a
+  stopped session shows `done` without a `pid`; `failed` and `stopped` were never reported, so they
+  are accepted but not relied on.
 - Subagents may nest up to three layers below the main conversation
   ([sub-agents](https://code.claude.com/docs/en/sub-agents.md)). Partners are top-level sessions, so
   sdlc-process's own dispatches keep their full depth.
@@ -185,10 +189,10 @@ persisted claims, gate results, rework count, and outbox.
 - **Single writer.** Only one coordinator runs per ticket, enforced by a run lock (`lock/`, a
   directory created with `mkdir`, holding a `holder` file with the coordinator's session ID and a
   random nonce). The lock is **live** if the holder's session ID equals the caller's own, or is
-  listed in `claude agents --json` with a live process (where no process field is reported: listed
-  with `state` not in {`stopped`, `failed`}). A missing or empty `holder` is not live. A caller that
-  finds a live lock held by another session stops and tells the user. Otherwise it takes the lock
-  over exclusively: it creates a `takeover` directory beside the lock with `mkdir` (only one
+  listed in `claude agents --json` with a live process (a `pid` that passes `kill -0`; where no
+  `pid` is reported: listed with `state` not in {`stopped`, `failed`, `done`}). A missing or empty
+  `holder` is not live. A caller that finds a live lock held by another session stops and tells
+  the user. Otherwise it takes the lock over exclusively: it creates a `takeover` directory beside the lock with `mkdir` (only one
   contender succeeds) and immediately writes its own session ID to `takeover/owner`, re-checks that
   the holder is still not live, writes a new holder with its own nonce to a temp file and renames it
   into place, re-reads it to confirm its own nonce, removes `takeover`, and logs the takeover (old
@@ -211,10 +215,9 @@ persisted claims, gate results, rework count, and outbox.
 - **Outbox.** A `RESYNC`, `REWORK` or `CANCEL` is recorded in the issue's outbox, with its generation
   and full text, in the same write as the transition that requires it; the coordinator sends it
   afterwards. The entry is cleared when that partner's next valid message for the same generation
-  arrives (or, for `CANCEL`, when the session is absent from `claude agents --json` or has ended,
-  dropped in the same write by `reconcile` or by recording that observation). On resume, every
-  remaining outbox entry is resent
-  verbatim; partners treat a repeated coordinator message as idempotent.
+  arrives (or, for `CANCEL`, when the session has ended, i.e. its `claude agents --json` row is
+  absent or has no `pid`; dropped in the same write by `reconcile` or by recording that
+  observation). On resume, every remaining outbox entry is resent verbatim; partners treat a repeated coordinator message as idempotent.
 - **Generation per issue.** Each launch or relaunch of an issue's partner increments its generation;
   the ledger records the session name, full `sessionId`, and generation. Every partner → coordinator
   line carries `gen=<g>`, and every intent and outbox entry records its generation. A wake of a
@@ -291,8 +294,9 @@ the user, per dependent, whether to drop it too (`cancelled`) or remove the edge
    - Record `canary: passed` in the ledger, then launch the rest of the frontier.
    - Each leg has a timeout (the plan sets 600 s). When it expires, read `claude agents --json` for
      the canary: `working` or `blocked` (still busy, or waiting on the user) restarts the timer and
-     tells the user the canary is still running; only a canary that has ended (`done`, `stopped` or
-     `failed`) without the expected message is a failed leg.
+     tells the user the canary is still running; a `done` row with a `pid` is idle, not ended. Only a
+     canary that has ended (row absent or without a `pid`) without the expected message is a failed
+     leg.
    - If a leg fails, stop launching: tell the user which leg failed and the likely setting (`crossSessionInbound` or a
      permission-class mismatch on the receiving side), and launch nothing more until the user has
      fixed it and asked to continue. The canary partner keeps running.
@@ -429,7 +433,8 @@ Run against the pinned head and `<sha>`. All four must pass; results are recorde
    worktree the coordinator creates (never the partner's worktree). The partner's report does not
    count.
 3. **Every AC has evidence.** A lighter per-issue check than intake step 7's `verify.md`: each AC of
-   the issue maps to a test or a `file:line` in the diff from the partner's start SHA to `<sha>`.
+   the issue maps to a test or a `file:line` in `git diff <pinned ticket head>..<sha>` (exactly what
+   the merge adds; the partner's start SHA would also count sibling changes merged in by a RESYNC).
    Step 7 still runs the full `verify.md` on the whole ticket branch.
 4. **Independent review.** A `dev-workflow:fresh-verifier` checks the diff against the issue's AC,
    including whether it strays outside the issue.
@@ -443,9 +448,10 @@ options below). A relaunch starts a fresh budget.
 - **Idle notice.** An idle notice only means a turn ended; it triggers a check of that partner in
   `claude agents --json`:
   - `blocked` (waiting on the user): re-register `notify_when_idle`; nothing else.
-  - `done` with no `DONE` received: send `STATUS? #n` and re-register.
+  - `done` with a `pid` (idle, alive) and no `DONE` received: send `STATUS? #n` and re-register.
   - `working`: re-register.
-  - `stopped`: not terminal. Wake it with
+  - Ended (row absent or without a `pid`, which is how a `stopped` session shows): not terminal.
+    Wake it with
     `claude --resume <sessionId> --bg --name <KEY>-<n> "STATUS? #n"` (same generation), record the
     new name and `sessionId`, and re-register. Mark `failed` only if the wake fails or the partner
     replies `FAILED`.
