@@ -1,3 +1,12 @@
+---
+id: dev-workflow-intake-chain-choice-spec
+type: spec
+status: draft
+owner: dev-workflow
+representation: canonical
+canonical: docs/work/initiatives/dev-workflow/workstreams/intake-chain/intake-chain-choice.spec.md
+---
+
 # intaking-work-items: choose the superpowers or mattpocock chain — design
 
 - **Date:** 2026-10-07
@@ -24,7 +33,7 @@ shared PR stage are identical for both.
   `grill-with-docs`, `wayfinder`, `triage` and `setup-matt-pocock-skills` with
   `disable-model-invocation: true` (frontmatter line 4 of each `SKILL.md`).
   (2026-10-09: intake now invokes the user-level `implement-spec` in intake mode — see
-  docs/superpowers/specs/2026-10-09-intake-agentic-run-design.md.)
+  docs/work/initiatives/dev-workflow/workstreams/intake-chain/intake-agentic-run.spec.md.)
 - Claude cannot launch them: a `Skill` call to `mattpocock-skills:to-spec` returns
   "cannot be used with Skill tool due to disable-model-invocation. Ask the user to run
   /mattpocock-skills:to-spec themselves … Do not replicate this skill's workflow by other means".

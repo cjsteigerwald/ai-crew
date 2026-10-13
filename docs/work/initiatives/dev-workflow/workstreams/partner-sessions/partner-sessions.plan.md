@@ -1,6 +1,15 @@
+---
+id: dev-workflow-partner-sessions-plan
+type: plan
+status: draft
+owner: dev-workflow
+representation: canonical
+canonical: docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions.plan.md
+---
+
 # Partner-session coordinator — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Historical: built with an SDD ledger before 2026-10-13; new work follows sdlc-process.
 
 **Goal:** Add `dev-workflow:coordinating-partner-sessions`, which intake's sdlc-process chain calls at stage 5 to run one attended `sdlc-process:sdlc-process` partner session per GitHub issue — in parallel where the blocked-by graph allows, verified and fast-forward-merged into the ticket branch one at a time — and hand back to intake steps 7–8 for one draft PR.
 
@@ -8,7 +17,7 @@
 
 **Tech Stack:** Markdown skill files; bash 3.2-compatible scripts using `git` and `jq` (≥1.6); behavioural tests in the style of `dev-workflow/tests/test-audit-sh.sh`; `grep -qF` pins in `dev-workflow/tests/run.sh`. Run everything with `bash dev-workflow/tests/run.sh` (prints `PASSED`, exits 0); on macOS also `/bin/bash dev-workflow/tests/run.sh`.
 
-**Spec:** `docs/superpowers/specs/2026-10-12-partner-sessions-design.md` (approved at `3566c05`; revised in this plan's commit for the plan review, including Decision 13). The transition table, ledger, message protocol, merge rule, verification gate, error handling and preflight sections are normative; every task below cites them.
+**Spec:** `docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions.spec.md` (approved at `3566c05`; revised in this plan's commit for the plan review, including Decision 13). The transition table, ledger, message protocol, merge rule, verification gate, error handling and preflight sections are normative; every task below cites them.
 
 ## Global Constraints
 
@@ -47,7 +56,7 @@
 Non-code. Results go in a `## Spike results` section appended to this plan, plus fixtures later tasks consume.
 
 **Files:**
-- Modify: `docs/superpowers/plans/2026-10-12-partner-sessions.md` (append `## Spike results`)
+- Modify: `docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions.plan.md` (append `## Spike results`)
 - Create: `dev-workflow/tests/fixtures/partner-sessions/agents.json` — the shape of a real `claude agents --json --all` sample; every `sessionId` replaced with a non-UUID placeholder (`sid-coord`, `sid-1`, `sid-2`, …), names with `TEST-coord`, `TEST-1`, …; no paths, no other identifiers.
 - Create: `dev-workflow/tests/fixtures/partner-sessions/blocked_by.json` — the step 1 response trimmed to `[{"number":<n>,"state":"open|closed"}]` only.
 
@@ -61,7 +70,7 @@ Non-code. Results go in a `## Spike results` section appended to this plan, plus
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add docs/superpowers/plans/2026-10-12-partner-sessions.md dev-workflow/tests/fixtures/partner-sessions/
+git add docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions.plan.md dev-workflow/tests/fixtures/partner-sessions/
 git commit -m "docs(dev-workflow): record partner-session spike results and fixtures"
 ```
 
@@ -413,7 +422,7 @@ A scripted run of the coordinator's script contract, with fake session observati
 
 ### Task 12: Live trial (manual, run by the user before release)
 
-Not automatable: partners talk to the user and the run spans `claude agents`. The orchestrator prepares the checklist and the scratch ticket; the user runs it and records evidence in `docs/superpowers/plans/2026-10-12-partner-sessions.md` under `## Live trial results`.
+Not automatable: partners talk to the user and the run spans `claude agents`. The orchestrator prepares the checklist and the scratch ticket; the user runs it and records evidence in `docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions.plan.md` under `## Live trial results`.
 
 - [ ] **Step 1: Setup (user confirms each GitHub write).** A throwaway requirements doc and ticket branch; three issues A, B (natively blocked by A), C (independent) in a scratch repo or this one.
 - [ ] **Step 2: Mis-set inbound (scratch run first).** Set the partner side's `crossSessionInbound` so messages are held; start the coordinator. Expected: preflight names the setting, or the canary stops with the failed leg named; nothing else launches. Restore the setting.

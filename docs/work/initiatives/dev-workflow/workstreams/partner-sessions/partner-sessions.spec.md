@@ -1,3 +1,12 @@
+---
+id: dev-workflow-partner-sessions-spec
+type: spec
+status: draft
+owner: dev-workflow
+representation: canonical
+canonical: docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions.spec.md
+---
+
 # coordinating-partner-sessions: one sdlc-process partner session per GitHub issue — design
 
 - **Date:** 2026-10-12

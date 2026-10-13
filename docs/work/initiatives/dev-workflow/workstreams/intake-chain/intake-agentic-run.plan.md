@@ -1,6 +1,15 @@
+---
+id: dev-workflow-intake-agentic-run-plan
+type: plan
+status: draft
+owner: dev-workflow
+representation: canonical
+canonical: docs/work/initiatives/dev-workflow/workstreams/intake-chain/intake-agentic-run.plan.md
+---
+
 # Intake unattended run, AC verification, and close-out — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Historical: built with an SDD ledger before 2026-10-13; new work follows sdlc-process.
 
 **Goal:** Let `intaking-work-items` run unattended from the go to a draft PR, verify every agent-verifiable AC with evidence on the shipped commit, stop safely on blockers, and close out on the user's return.
 
@@ -8,7 +17,7 @@
 
 **Tech Stack:** Markdown skill files; bash test harness — run with `bash dev-workflow/tests/run.sh` (prints `PASSED` and exits 0 when clean).
 
-**Spec:** `docs/superpowers/specs/2026-10-09-intake-agentic-run-design.md` (revision 3). Read its Decisions 1-12 before starting; every content step below cites them.
+**Spec:** `docs/work/initiatives/dev-workflow/workstreams/intake-chain/intake-agentic-run.spec.md` (revision 3). Read its Decisions 1-12 before starting; every content step below cites them.
 
 ## Global Constraints
 
@@ -180,7 +189,7 @@
 
 ### Task 5: Step 9 close-out, description, docs, version
 
-**Files:** Modify `SKILL.md` (new `## 9. Close-out` before `## Gotchas`); `docs/superpowers/specs/2026-10-07-intake-chain-choice-design.md:23` (append a dated note: intake now invokes the user-level `implement-spec`, see the 2026-10-09 design); `dev-workflow/.claude-plugin/plugin.json:3` and `.claude-plugin/marketplace.json:51` → `0.1.6`; Test `run.sh`.
+**Files:** Modify `SKILL.md` (new `## 9. Close-out` before `## Gotchas`); `docs/work/initiatives/dev-workflow/workstreams/intake-chain/intake-chain-choice.spec.md:23` (append a dated note: intake now invokes the user-level `implement-spec`, see the 2026-10-09 design); `dev-workflow/.claude-plugin/plugin.json:3` and `.claude-plugin/marketplace.json:51` → `0.1.6`; Test `run.sh`.
 
 - [ ] **Step 1: Failing assertions**
 

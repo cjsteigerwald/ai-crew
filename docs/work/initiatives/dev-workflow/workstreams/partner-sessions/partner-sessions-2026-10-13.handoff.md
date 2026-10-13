@@ -1,3 +1,12 @@
+---
+id: dev-workflow-partner-sessions-2026-10-13-handoff
+type: handoff
+status: draft
+owner: dev-workflow
+representation: canonical
+canonical: docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions-2026-10-13.handoff.md
+---
+
 # Handoff — partner-session coordinator (2026-10-13)
 
 **Resume:** `continue dev-workflows`
@@ -15,9 +24,9 @@ per Jira ticket through intake steps 7-8.
 - Worktree: `.claude/worktrees/partner-sessions-design`, branch `feat/partner-sessions-design`.
 - Remote: origin has only the early spec commits (up to `3566c05`); 32 local commits are
   unpushed (count at the start of this handoff commit).
-- Spec (binding): `docs/superpowers/specs/2026-10-12-partner-sessions-design.md`
-- Original plan: `docs/superpowers/plans/2026-10-12-partner-sessions.md`
-- Hardening plan: `docs/superpowers/plans/2026-10-13-partner-sessions-hardening.md`
+- Spec (binding): `docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions.spec.md`
+- Original plan: `docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions.plan.md`
+- Hardening plan: `docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions-hardening.plan.md`
 - SDD ledger (git-ignored, in the worktree): `.superpowers/sdd/2026-10-12-partner-sessions/progress.md`.
   It holds 62 `Ruling:` lines and the deferred minors.
 - The hardening plan gets its own SDD workspace under `.superpowers/sdd/` (via `sdd-workspace`).
@@ -72,12 +81,10 @@ per Jira ticket through intake steps 7-8.
   - the review tiers: full chain for skill and CI changes
   - ask before every push. The user kept the remote branch, but approves each push separately.
 - The sidkik SDLC observer is active and flags scope and approval gaps.
-- SDD conventions: the `task-brief` and `review-package` scripts under the superpowers 6.4.2
-  `subagent-driven-development` skill's `scripts/` directory. Run them as separate plain commands from
-  the worktree root; the worktree guard rejects compound shell lines.
+> Historical: built with an SDD ledger before 2026-10-13; new work follows sdlc-process.
 - Push: `git -c credential.helper='!gh auth git-credential' push` (memory note).
 
 ## Suggested skills
 
-`superpowers:subagent-driven-development`, `dev-workflow:fresh-verifier`,
+`dev-workflow:fresh-verifier`,
 `dev-workflow:opening-pull-requests`.

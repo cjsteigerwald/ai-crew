@@ -1,3 +1,12 @@
+---
+id: dev-workflow-intake-agentic-run-spec
+type: spec
+status: draft
+owner: dev-workflow
+representation: canonical
+canonical: docs/work/initiatives/dev-workflow/workstreams/intake-chain/intake-agentic-run.spec.md
+---
+
 # intaking-work-items: unattended run, AC verification, and close-out — design
 
 - **Date:** 2026-10-09 (revised the same day after the full-tier plan review)

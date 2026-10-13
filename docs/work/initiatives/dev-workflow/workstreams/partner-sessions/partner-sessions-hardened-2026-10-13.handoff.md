@@ -1,12 +1,21 @@
+---
+id: dev-workflow-partner-sessions-hardened-2026-10-13-handoff
+type: handoff
+status: draft
+owner: dev-workflow
+representation: canonical
+canonical: docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions-hardened-2026-10-13.handoff.md
+---
+
 # Handoff — partner-session coordinator, hardening done (2026-10-13, second)
 
-**Resume:** `continue dev-workflows`. Supersedes `2026-10-13-partner-sessions.md` (its steps 1-4 are done).
+**Resume:** `continue dev-workflows`. Supersedes `partner-sessions-2026-10-13.handoff.md` (its steps 1-4 are done).
 
 ## Where things are
 
 - Worktree `.claude/worktrees/partner-sessions-design`, branch `feat/partner-sessions-design`.
 - Nothing pushed since `3566c05`. The user approves each push separately.
-- Hardening plan: `docs/superpowers/plans/2026-10-13-partner-sessions-hardening.md`, reviewed and approved at `c8b148e`.
+- Hardening plan: `docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions-hardening.plan.md`, reviewed and approved at `c8b148e`.
 - SDD ledger (git-ignored): `.superpowers/sdd/2026-10-13-partner-sessions-hardening/progress.md`. It holds 9 `Ruling:` lines, the deferred minors and the review packages.
 
 ## State
@@ -49,4 +58,4 @@
 ## Process notes
 
 - The global delegation gate, read budget and review tiers apply. Ask before every push.
-- Run SDD scripts from `~/.claude/plugins/cache/superpowers-marketplace/superpowers/6.4.2/skills/subagent-driven-development/scripts/` as separate plain commands.
+> Historical: built with an SDD ledger before 2026-10-13; new work follows sdlc-process.

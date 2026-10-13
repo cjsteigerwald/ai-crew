@@ -1,6 +1,15 @@
+---
+id: dev-workflow-partner-sessions-hardening-plan
+type: plan
+status: draft
+owner: dev-workflow
+representation: canonical
+canonical: docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions-hardening.plan.md
+---
+
 # Partner-session ledger and lifecycle hardening Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Historical: built with an SDD ledger before 2026-10-13; new work follows sdlc-process.
 
 **Goal:** Close the four findings the adversarial re-check left open on `feat/partner-sessions-design` (HEAD `5061c1d`): stale work commands resent forever, a pid-reuse wedge of the write mutex, the stale-reap lost update, and "CANCEL and wait" never ending.
 
@@ -8,7 +17,7 @@
 
 **Tech Stack:** bash 3.2 (macOS `/bin/bash`), BSD/GNU tools, jq 1.6+, the OS lock command (`/usr/bin/lockf` on macOS, util-linux `flock` on Linux), Claude Code ≥ 2.1.236.
 
-**Spec:** `docs/superpowers/specs/2026-10-12-partner-sessions-design.md` (binding). Prior plan: `docs/superpowers/plans/2026-10-12-partner-sessions.md`. Findings and rulings: `.superpowers/sdd/2026-10-12-partner-sessions/progress.md` (git-ignored).
+**Spec:** `docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions.spec.md` (binding). Prior plan: `docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions.plan.md`. Findings and rulings: `.superpowers/sdd/2026-10-12-partner-sessions/progress.md` (git-ignored).
 
 ## Global Constraints
 
@@ -145,7 +154,7 @@ Root cause, verified: a partner is an interactive background session. On `CANCEL
 - Modify: `dev-workflow/skills/coordinating-partner-sessions/partner-brief.md` (`:86`)
 - Modify: `dev-workflow/skills/coordinating-partner-sessions/ledger.md` (Rules → Outbox, one line)
 - Modify: `dev-workflow/tests/run.sh` (pins)
-- Modify: `docs/superpowers/plans/2026-10-12-partner-sessions.md` Task 12 live trial (three cases)
+- Modify: `docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions.plan.md` Task 12 live trial (three cases)
 
 **Interfaces:**
 - Consumes: `ledger.sh event <n> json done nopid` (drops the recorded session's CANCEL; unchanged); `intent relaunch … <agents.json>` (priorPid; unchanged).
@@ -179,7 +188,7 @@ Root cause, verified: a partner is an interactive background session. On `CANCEL
 
 The user chose **(a) update the spec** on 2026-10-13, so this task runs.
 
-**Files:** Modify `docs/superpowers/specs/2026-10-12-partner-sessions-design.md`.
+**Files:** Modify `docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions.spec.md`.
 
 - [ ] **Step 1:** Update exactly these spec topics to match the code:
   - outbox clearing — only `DONE` or `FAILED` acknowledges `REWORK`/`RESYNC` (CX4/FX-a), plus Task 1's invariant and the stale-`CANCEL` purge on relaunch;
