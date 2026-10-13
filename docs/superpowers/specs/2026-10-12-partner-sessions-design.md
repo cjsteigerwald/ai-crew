@@ -4,7 +4,7 @@
 - **Skill:** `dev-workflow/skills/coordinating-partner-sessions/` (new), called from
   `dev-workflow/skills/intaking-work-items/chain-sdlc-process.md` stage 5
 - **Status:** Approved design (parts 1–4 approved in session 2026-10-12); revised after review
-  rounds 1 and 2 (see Review history), pending user review of the revision
+  rounds 1, 2 and 3 (see Review history), pending user review of the revision
 
 ## Problem
 
@@ -71,15 +71,22 @@ Success:
     into `<ticket-branch>` at `<sha>`; its issue stays open until the ticket PR merges, by design").
     sdlc-process will still hold once at start; the user resolves that one hold per dependent issue
     in the partner session. sdlc-process's rule is not bypassed or modified.
+12. **Canary instead of a preflight messaging probe** (option b, review round 3). Replaces the
+    approved "preflight confirms messaging works". Preflight is a version check plus a settings
+    read; the first launch is a canary partner that proves real delivery both ways before any other
+    partner launches (flow step 6). No throwaway session is created.
 
 ## Platform facts relied on (code.claude.com docs, fetched 2026-10-12; local CLI 2.1.296)
 
 - `claude --bg --name <name> "<prompt>"` starts a full background session; it can dispatch
   subagents, invoke skills and use worktrees. Managed with `claude agents [--json --all]`,
   `claude attach`, `claude logs`, `claude stop`, `claude --resume <sessionId> --bg`. `--resume`
-  needs the full session UUID; on recent versions it may continue in place or start a copy under a
-  new ID ([agent-view](https://code.claude.com/docs/en/agent-view.md)). The docs do not say a
-  session name carries over to such a copy.
+  needs the full session UUID ([agent-view](https://code.claude.com/docs/en/agent-view.md)). Local
+  `claude --help` (2.1.296) for `--bg`: "With --resume <session-id>, continues that session in the
+  background under the same ID, or starts a copy and says so when the session is already running."
+  The coordinator only resumes stopped partners, so it expects the same ID; it re-reads name and
+  `sessionId` after every wake regardless. `-n, --name` is a plain session option with no stated
+  exclusion against `--resume`; whether it renames a resumed session is a live check (Open items).
 - A `--bg` session started from a shell starts the way a new `claude` session in that directory
   would: dispatch defaults are not inherited, so the permission mode must be passed explicitly
   (agent-view).
@@ -111,7 +118,9 @@ Success:
   ([cross-session-messaging](https://code.claude.com/docs/en/cross-session-messaging.md)).
 - **Sender attribution.** cross-session-messaging, "What a message looks like": "Claude receives the
   message with the sender's name and a reply address, except for a one-way cross-machine message."
-  In practice the frame is `<agent-message from="<sender name or id>">`. Names are not unique (the
+  The SendMessage tool documentation states that cross-session messages arrive wrapped as
+  `<cross-session-message from="<sender name or id>">` (subagent hand-backs use a different
+  `<agent-message from=…>` frame, which this design does not consume). Names are not unique (the
   harness adds a short identifier when several sessions share one), and `from` may be an ID when the
   sender is unnamed. Binding is therefore name-level, which is acceptable because every session runs
   as the same OS user on one machine; see Sender binding.
@@ -145,7 +154,9 @@ hand-off; `dev-workflow/.claude-plugin/plugin.json` version 0.1.7 → 0.1.8;
 it actually has (Preflight). Partner sessions `<KEY>-<n>` (`n` = issue number); partner branch
 `<key>-<slug>-<n>`; ticket branch `<key>-<slug>` (from stage 1).
 
-**Defaults.** At most 3 partners running at once. Partners launch with an explicit
+**Defaults.** At most 3 partners running at once. A **slot** is held by every issue in a live
+status (`launched`, `started`, `done-claimed`, `verifying`, `rework-n/3`, `resync-requested`); it is
+freed when the issue reaches `blocked-on`, `failed`, `merged` or `cancelled`. Partners launch with an explicit
 `--permission-mode <coordinator's mode>`; permission prompts surface as `Needs input` in
 `claude agents`. No partner pushes; the coordinator pushes the ticket branch only at intake step 8,
 with the user's confirmation.
@@ -205,34 +216,38 @@ count, and outbox.
 | `pending` | User drops the issue | `cancelled` |
 | `launched` | `STARTED` | `started` |
 | `launched`, `started`, `rework-n/3`, `resync-requested` | Valid `DONE` | `done-claimed` |
-| `launched`, `started` | `STUCK needs=#m`, `#m` unmerged, no cycle, user agrees; `CANCEL` via outbox | `blocked-on #m` |
-| `launched`, `started` | `STUCK needs=#m`, `#m` already `merged` | `resync-requested` (sends `RESYNC`) |
-| `launched`, `started` | `STUCK` without `needs=`, or user declines the new edge, or `SCOPE` | unchanged |
+| `launched`, `started`, `rework-n/3`, `resync-requested` | `STUCK needs=#m`, `#m` unmerged, no cycle, user agrees; `CANCEL` via outbox | `blocked-on #m` |
+| `launched`, `started`, `rework-n/3`, `resync-requested` | `STUCK needs=#m`, `#m` already `merged` | `resync-requested` (sends `RESYNC`) |
+| `launched`, `started`, `rework-n/3`, `resync-requested` | `STUCK` without `needs=`, or user declines the new edge, or `SCOPE` | unchanged |
+| `done-claimed`, `verifying` | `STUCK` or `SCOPE` (e.g. as a `STATUS?` reply) | unchanged; logged and surfaced to the user; the queued claim proceeds |
 | `rework-n/3`, `resync-requested` | `STARTED` (partner reworking or re-testing) | unchanged |
-| `done-claimed` | Head of queue; ticket head not an ancestor of `<sha>` | `resync-requested` |
-| `done-claimed` | Head of queue; base current | `verifying` |
+| `done-claimed` | Head of queue; `ff-merge.sh --check` returns `resync-needed` | `resync-requested` (no budget used) |
+| `done-claimed` | Head of queue; `ff-merge.sh --check` passes | `verifying` |
 | `verifying` | Gate passes; `merge-intent`; `ff-merge.sh` succeeds | `merged` |
 | `verifying` | Gate passes; `ff-merge.sh` returns `resync-needed` | `resync-requested` |
-| `verifying` | Gate fails, fewer than 3 failures so far | `rework-n/3` (sends `REWORK`) |
-| `verifying` | Gate fails for the third time | `failed` (reason: rework budget) |
-| `blocked-on #m` | `#m` becomes `merged` | `pending` (relaunched with a fresh brief, new generation) |
-| `blocked-on #m` | `#m` becomes `failed` or `cancelled`; user removes the edge | `pending` |
-| `blocked-on #m` | `#m` becomes `failed` or `cancelled`; user drops this issue too | `cancelled` |
-| Any live | `FAILED`, or `--json` shows `failed`, or a wake of a `stopped` partner fails or it replies `FAILED` | `failed` |
-| `failed` | User: relaunch (`--resume`, new generation) | `launched` |
+| `verifying` | Gate fails, fewer than 3 failures in this generation | `rework-n/3` (sends `REWORK`) |
+| `verifying` | Gate fails for the third time in this generation | `failed` (reason: rework budget) |
+| `blocked-on #m` | `#m` becomes `merged` | `pending` (relaunched with a fresh brief, new generation, fresh branch and worktree) |
+| `blocked-on #m` | `#m` is or becomes `failed` or `cancelled`; user removes the edge | `pending` |
+| `blocked-on #m` | `#m` is or becomes `failed` or `cancelled`; user drops this issue too | `cancelled` |
+| `launched`, `started`, `rework-n/3`, `resync-requested` | `FAILED`, or `--json` shows `failed`, or a wake fails (of a `stopped` partner, or to deliver `REWORK`/`RESYNC`), or the woken partner replies `FAILED` | `failed` |
+| `done-claimed`, `verifying` | `--json` shows `failed` or `stopped` | unchanged (the persisted claim is verifiable from git and proceeds) |
+| `done-claimed`, `verifying` | Partner sends `FAILED` | `failed` |
+| `failed` | User: relaunch (`--resume`, new generation, rework budget reset to 0/3) | `launched` |
 | `failed` | User: handled it themselves; coordinator verifies the issue branch tip is an ancestor of the ticket head | `merged` |
 | `failed` | User drops the issue | `cancelled` |
 | `pending`, `blocked-on #m`, any live, `failed` | User cancels the ticket (`CANCEL` via outbox to live partners) | `cancelled` |
 
-When an issue becomes `cancelled`, every issue blocked on it is re-evaluated: the coordinator asks
+The rework count belongs to a generation: a relaunch (either kind) starts the new generation at
+`0/3`. When an issue becomes `cancelled`, every issue blocked on it is re-evaluated: the coordinator asks
 the user, per dependent, whether to drop it too (`cancelled`) or remove the edge (`pending`). A
 `failed` issue's dependents stay `pending` (or `blocked-on`) until the user resolves the failure.
 
 ## Coordinator flow
 
 1. **Preflight** (see below). Stop on any failure.
-2. **Take the run lock**, create or reopen the ledger, and run resume reconciliation if the ledger
-   already exists.
+2. **Take the run lock**, create or reopen the ledger. If the ledger already exists, run resume
+   reconciliation (Error handling and resume), **skip steps 3–5**, and continue at step 6.
 3. **Read the issues** published by `to-tickets` and their blocked-by edges from GitHub (native
    dependencies, which `to-tickets` writes where available; the `Blocked by: #n` body line as
    fallback). `issue-tracker.md:68` documents the POST that creates an edge and the
@@ -244,11 +259,25 @@ the user, per dependent, whether to drop it too (`cancelled`) or remove the edge
 5. **Write the ledger** with every issue `pending`. `frontier.sh` validates the graph; a cycle stops
    the run and is shown to the user.
 6. **Launch the frontier.** `frontier.sh` returns the `pending` issues with every blocker `merged`,
-   capped by the concurrency limit. For each:
+   capped by the concurrency limit. On a run's first launch (no partner has yet completed the canary
+   check in this ledger), use the **canary phase**:
+   - Launch only the first frontier issue (sub-steps below).
+   - Wait for its `STARTED #n gen=<g>`: proves partner → coordinator delivery.
+   - Send it `STATUS? #n` and wait for its reply: proves coordinator → partner delivery.
+   - Record `canary: passed` in the ledger, then launch the rest of the frontier.
+   - If either leg fails, or no message arrives within the timeout the plan sets, stop launching:
+     tell the user which leg failed and the likely setting (`crossSessionInbound` or a
+     permission-class mismatch on the receiving side), and launch nothing more until the user has
+     fixed it and asked to continue. The canary partner keeps running.
+
+   For each launch:
    1. Check the name `<KEY>-<n>` is free with `ListAgents` (live sessions); on a collision, stop and
       ask the user.
    2. Record `launch-intent` with the next generation.
-   3. Create the worktree and branch `<key>-<slug>-<n>` from the current ticket head.
+   3. Create the worktree and branch `<key>-<slug>-<n>` from the current ticket head. If they
+      already exist from an earlier generation (a `blocked-on` relaunch), first rename the old branch
+      to `<key>-<slug>-<n>-g<old>` (partial work kept for reference), remove the old worktree, then
+      create both fresh.
    4. Fill `partner-brief.md`.
    5. `cd <partner-worktree> && claude --bg --name <KEY>-<n> --permission-mode <mode> "<brief>"`.
    6. Read the name and full `sessionId` from `claude agents --json`, record them and status
@@ -260,10 +289,14 @@ the user, per dependent, whether to drop it too (`cancelled`) or remove the edge
 9. **Integration queue.** One `DONE` at a time, in arrival order (Merge rule and Verification gate).
    A successful merge updates the ledger and launches the new frontier, including any `blocked-on`
    issue whose blocker just merged.
-10. **When every issue is `merged` or `cancelled`** (and at least one is `merged`), release the run
-    lock and hand back to intake step 7 (verify the Jira ticket's AC against the whole ticket
-    branch, using `verify.md` in full), then step 8 (review tier for the full diff, one draft PR,
-    closing keywords per Decision 3).
+10. **When every issue is `merged` or `cancelled`:**
+    - If every issue is `cancelled`, treat it as **cancel the ticket** (Error handling): release the
+      lock and tell the user; no hand-back.
+    - Otherwise, for each `cancelled` issue, mark its AC `deferred` in the settled AC list with the
+      user's reason. Release the run lock and hand back to intake step 7 (verify the Jira ticket's
+      active AC against the whole ticket branch, using `verify.md` in full), then step 8 (review tier
+      for the full diff, one draft PR). Closing keywords or `Refs` (Decision 3) cover `merged` issues
+      only; the PR body lists each `cancelled` issue as not delivered, with its reason.
 
 ## Partner flow (`partner-brief.md`)
 
@@ -315,7 +348,7 @@ coordinator → partner lines are produced by the coordinator.
 
 **Sender binding.** A partner message is accepted only if all hold, else it is rejected and logged
 before any state change:
-- the frame's `from` value is **exactly equal** to the session name recorded for that issue (no
+- the message arrived in a `<cross-session-message …>` frame, and its `from` value is **exactly equal** to the session name recorded for that issue (no
   prefix or case-insensitive match; an ID-valued `from` is rejected);
 - `gen=<g>` equals the issue's current generation;
 - for `DONE`, `<branch>` equals the issue's recorded branch.
@@ -336,15 +369,17 @@ then re-reads the name and `sessionId` from `claude agents --json` and records t
 
 ## Merge rule: fast-forward only, through a serialized queue
 
-For the `DONE` at the head of the integration queue:
-1. **Stale-base check first.** If the current ticket head is not an ancestor of `<sha>`, send
-   `RESYNC #n <head>` (via the outbox) and record `resync-requested`. This does **not** count
-   against the `REWORK` budget. The issue leaves the queue until its next `DONE`.
+All base-currency checks live in `ff-merge.sh`. For the `DONE` at the head of the integration queue:
+1. **`ff-merge.sh --check <ticket-branch> <sha>`** before anything else. If the current ticket head
+   is not an ancestor of `<sha>`, it exits with the distinct `resync-needed` code and prints the
+   head; the coordinator sends `RESYNC #n <head>` (via the outbox) and records `resync-requested`.
+   This does **not** count against the `REWORK` budget. The issue leaves the queue until its next
+   `DONE`.
 2. **Pin** the ticket head and the candidate `<sha>`, record `verifying`, and run the verification
    gate against them.
-3. **Recheck and merge.** Record `merge-intent`, then `ff-merge.sh <ticket-branch> <sha> <pinned-head>`
+3. **Merge.** Record `merge-intent`, then `ff-merge.sh <ticket-branch> <sha> <pinned-head>`
    fast-forwards only if the ticket head still equals the pinned head and is an ancestor of `<sha>`;
-   otherwise it exits with the distinct `resync-needed` code and prints the current head.
+   otherwise it exits `resync-needed` and prints the current head.
 4. Record `merged` (or `resync-requested`).
 
 Merges are serialized by the single coordinator, so each merge forces at most the other in-flight
@@ -366,7 +401,8 @@ Run against the pinned head and `<sha>`. All four must pass; results are recorde
    including whether it strays outside the issue.
 
 On a failure the coordinator sends `REWORK` (via the outbox) and records `rework-n/3`. The third
-failed gate on the same issue moves it to `failed` and asks the user (the failure options below).
+failed gate in the same generation moves the issue to `failed` and asks the user (the failure
+options below). A relaunch starts a fresh budget.
 
 ## Error handling and resume
 
@@ -378,9 +414,11 @@ failed gate on the same issue moves it to `failed` and asks the user (the failur
   - `stopped`: not terminal. Wake it with
     `claude --resume <sessionId> --bg --name <KEY>-<n> "STATUS? #n"` (same generation), record the
     new name and `sessionId`, and re-register. Mark `failed` only if the wake fails or the partner
-    replies `FAILED`. A `stopped` partner with a persisted `DONE` is not woken for that claim; its
-    `DONE` proceeds through the queue.
+    replies `FAILED`.
   - `failed`: the failure path below.
+  - For an issue in `done-claimed` or `verifying`, neither `stopped` nor `failed` changes its status:
+    the persisted claim is verifiable from git and proceeds through the queue without a wake. If it
+    then needs `REWORK` or `RESYNC`, Delivery failure applies; a failed wake moves it to `failed`.
   A notice is one-shot, so the coordinator re-registers after **every** consumed notice.
 - **Failure path** (`FAILED`, `--json` `failed`, a failed wake, or the third failed gate): mark the
   issue `failed`, keep its worktree and branch, launch nothing that depends on it, let independent
@@ -388,13 +426,17 @@ failed gate on the same issue moves it to `failed` and asks the user (the failur
   the whole ticket).
   - **Relaunch** uses `claude --resume <sessionId> --bg --name <KEY>-<n> "<generation g+1 + brief
     reminder>"`, keeping the partner's context because the failure was in its own work; record the
-    new generation, name and `sessionId`. A `blocked-on` relaunch instead starts a fresh `--bg`
-    session with a fresh brief, because its old session was cancelled before doing the work and its
-    base must be the current ticket head.
+    new generation, name and `sessionId`; the rework budget resets to `0/3`. A `blocked-on` relaunch
+    instead starts a fresh `--bg` session with a fresh brief, because its old session was cancelled
+    before doing the work and its base must be the current ticket head: the old branch is kept as
+    `<key>-<slug>-<n>-g<old>`, the old worktree is removed, and both are recreated from the current
+    ticket head (flow step 6.3). The two relaunch kinds are deliberately different.
   - **Handle it themselves:** the user tells the coordinator when done; the coordinator records
     `merged` only after verifying that the issue branch tip is an ancestor of the ticket head.
   - **Drop:** record `cancelled` and re-evaluate its dependents (transition table).
 - **`STUCK` without `needs=`:** the partner keeps its slot; the user answers in that partner.
+- **`STUCK` or `SCOPE` from a `done-claimed` or `verifying` issue:** status unchanged; logged and
+  shown to the user; the queued claim proceeds.
 - **`STUCK needs=#m`:** if `#m` is already `merged`, send `RESYNC #n <head>` instead. Otherwise
   validate the edge `#n blocked-by #m` against the ledger graph. If it would create a cycle, refuse
   it and ask the user which issue absorbs the work. Otherwise ask the user; if they agree, record the
@@ -411,11 +453,12 @@ failed gate on the same issue moves it to `failed` and asks the user (the failur
      that name). If not, ask the user to `/rename` back to it before continuing.
   3. Reconcile every open intent against git ancestry and `claude agents --json`.
   4. Re-queue every `done-claimed` and `verifying` issue that is not yet merged (a `verifying` issue
-     re-enters at the stale-base check; its gate is re-run).
+     re-enters at `ff-merge.sh --check`; its gate is re-run).
   5. Resend every outbox entry (`RESYNC`, `REWORK`, `CANCEL`) for its recorded generation.
   6. Re-register `notify_when_idle` for each live partner and send it `STATUS?`, so a `DONE` sent
      while the coordinator was down is resent (dedup drops repeats). Stopped partners follow the
      `stopped` rule above.
+  7. Continue at flow step 6 (launch the frontier); steps 3–5 are not re-run.
 - **Name collision:** checked with `ListAgents` (live sessions only), so a dead row in
   `claude agents --all` does not block a relaunch. On a live collision, stop and ask the user rather
   than message the wrong session.
@@ -430,12 +473,12 @@ failed gate on the same issue moves it to `failed` and asks the user (the failur
   name (auto-generated), or the name collides with another live session, ask the user to `/rename`
   it (recommended: `<KEY>-coord`) and re-check. Record the actual name in the ledger; every brief
   uses it.
-- **Bidirectional capability probe:** the coordinator launches a throwaway probe session, sends it a
-  message, has it message back, and registers `notify_when_idle` on it. If any step fails or is held,
-  stop. The probe session is stopped afterwards.
-- **Held messages, both directions.** If either direction would be held for approval (permission
-  class mismatch, or `crossSessionInbound` not `accept`), stop and tell the user which setting to
-  change. Never edit settings.
+- **Held messages, both directions, from settings.** Read the effective `crossSessionInbound` and
+  permission class that apply to the coordinator and, from the partner worktree's directory, to a
+  partner launched with `--permission-mode <mode>`. If either direction would be held for approval
+  (permission-class mismatch, or `crossSessionInbound` not `accept`), stop and tell the user which
+  setting to change. Never edit settings. No throwaway probe session is launched; real delivery in
+  both directions is proven by the canary phase (flow step 6, Decision 12).
 - `gh` is authenticated for the repo; the ticket branch exists and is checked out clean.
 - The filled brief contains the integration-base rule, the push/PR ban and the `gen=` rule.
 
@@ -447,18 +490,25 @@ failed gate on the same issue moves it to `failed` and asks the user (the failur
   a cancelled blocker, the concurrency cap, and a dependency cycle (must exit non-zero, never hang),
   including a cycle introduced by a new `needs=` edge.
 - `ff-merge.sh`: throwaway git repos for a clean fast-forward, a stale branch (`resync-needed`), a
-  head that moved after pinning, a diverged branch, and a nonexistent SHA.
+  head that moved after pinning, a diverged branch, and a nonexistent SHA; `--check` mode for a
+  current base (exit 0, no ref changed) and a stale base (`resync-needed`, no ref changed).
 - `parse-msg.sh`: each valid message; missing or malformed `gen=`; malformed lines, trailing prose,
   bad SHAs and refs, and shell metacharacters (`;`, `$( )`, backticks, newlines) are rejected or
   stored inert, never executed.
 - `ledger.sh`:
   - atomic write; lock contention; stale-lock takeover (dead holder) and own-lock recognition;
   - sender binding rejects another issue's session name, a near-match or ID-valued `from`, an old
-    generation, and a mismatched branch (spoofing), with a fixture pinning the
-    `<agent-message from="…">` frame format;
+    generation, a mismatched branch, and a line in a non-`cross-session-message` frame (spoofing),
+    with a fixture pinning the `<cross-session-message from="…">` frame format;
+  - the canary gate: no second launch is allowed until `canary: passed` is recorded;
   - duplicate `DONE` dropped; same-state repeats (`STARTED` on `started`) accepted as no-ops;
-  - stale `DONE` routed to `RESYNC` without consuming the `REWORK` budget; third gate failure →
-    `failed`;
+  - stale `DONE` routed to `RESYNC` without consuming the `REWORK` budget; third gate failure in a
+    generation → `failed`; a relaunch resets the budget to `0/3`;
+  - `STUCK`/`SCOPE` accepted from `rework-n/3` and `resync-requested`; on `done-claimed`/`verifying`
+    they leave the status unchanged; `--json` `failed`/`stopped` on `done-claimed`/`verifying` leaves
+    the status unchanged;
+  - slot accounting (live statuses hold a slot; `blocked-on`, `failed`, terminal free it); all issues
+    `cancelled` → cancel the ticket, no hand-back;
   - every row of the transition table, and illegal transitions refused; no reachable non-terminal
     status without an exit;
   - outbox entries recorded before send, cleared on the next valid message, resent on resume;
@@ -471,7 +521,8 @@ failed gate on the same issue moves it to `failed` and asks the user (the failur
 - the phrases `fast-forward only`, `RESYNC`, `REWORK`, `STATUS?`, `gen=`, the four verification
   checks, partners never push or open PRs, the third failed gate moves the issue to `failed`, stop on
   a name collision, the held-messages warning, `v2.1.236`, the integration base is the ticket
-  branch, the coordinator's own name is checked before launch;
+  branch, the coordinator's own name is checked before launch, `canary`, `cross-session-message`,
+  cancelled issues' AC marked `deferred`;
 - `chain-sdlc-process.md` stage 5 has the sequential-vs-parallel question and names the new skill;
 - `dev-workflow/.claude-plugin/plugin.json` version is `0.1.8`.
 
@@ -482,7 +533,10 @@ and C (independent). Expected:
 - At least one partner asks the user a question and is **not** marked `failed` while waiting.
 - At least one partner is left waiting unattended for over an hour (idle stop); the coordinator
   wakes it with `STATUS?` rather than failing it.
-- A partner's message arrives framed as `from="<KEY>-<n>"`, matching the recorded name.
+- The canary passes both legs before any other partner launches; a deliberately mis-set
+  `crossSessionInbound` (on a scratch run) makes the canary stop with the right leg named.
+- A partner's message arrives framed as `<cross-session-message from="<KEY>-<n>">`, matching the
+  recorded name.
 - At least one `RESYNC`; one draft PR covering all three.
 
 The plan carries this as a checklist.
@@ -504,11 +558,13 @@ the plan and on the diff.
 
 - Verify a GitHub REST endpoint that lists which issues block an issue; fall back to the
   `Blocked by: #n` body line if absent.
-- Verify the probe session can be launched and stopped cleanly in preflight without leaving a
-  `claude agents` row the user must clear.
-- Verify `claude --resume <sessionId> --bg` accepts `--name`, and whether a copy started under a new
-  ID keeps the name; if not, the coordinator must re-bind on the name it reads back from
-  `claude agents --json`.
+- Live check (about 30 seconds): does `claude --resume <sessionId> --bg --name <KEY>-<n> "<msg>"` on
+  a stopped session keep or set the display name? Per `claude --help` (2.1.296) a stopped session
+  resumes under the same ID (a copy is made only when the session is already running), and `--name`
+  is not documented as incompatible with `--resume`. If the name is not kept, the coordinator
+  re-binds on the name it reads back from `claude agents --json`, as it already does after every
+  wake.
+- Set the canary timeout (flow step 6).
 
 ## Review history
 
@@ -538,7 +594,7 @@ needs-attention). Addressed in `b44f74c`:
   statuses enumerated; `ListAgents` for collisions.
 
 **Round 2** (spec at `b44f74c`; `fresh-verifier` verdict BLOCK, all round-1 findings confirmed
-resolved). Addressed in this revision:
+resolved). Addressed in `17b381e`:
 - F1 coordinator name assumed → preflight reads its own name from `ListAgents`, asks the user to
   `/rename` if auto-generated or colliding; briefs use the recorded name; resume re-checks it.
 - F2 `QUERY`/`REPLY` stalling the queue → removed, with the sibling file-ownership check; checks 2–4
@@ -560,3 +616,24 @@ resolved). Addressed in this revision:
 - Sender-identity open item closed (attribution documented); residuals recorded.
 - Transition table added; every non-terminal status has an exit; `pending` added for issues not yet
   launched.
+
+**Round 3** (spec at `17b381e`; `fresh-verifier` verdict PASS-WITH-NITS, F1–F9 of round 2 confirmed
+resolved). Addressed in this revision:
+- F1 cancelled issues at hand-back → their AC marked `deferred` with the user's reason; closing
+  keywords/`Refs` cover `merged` issues only; PR body lists cancelled issues as not delivered.
+- F2 resume re-running steps 3–5 → resume skips them and continues at step 6.
+- F3 rework budget after relaunch → resets to `0/3` per generation.
+- F4 `STUCK`/`SCOPE` only from `launched`/`started` → extended to `rework-n/3` and
+  `resync-requested`; on `done-claimed`/`verifying` they leave the status unchanged and are surfaced.
+- F5 `blocked-on` relaunch reusing branch/worktree → old branch kept as `<branch>-g<old>`, old
+  worktree removed, both recreated from the current ticket head.
+- F6 all issues cancelled → treated as cancel the ticket.
+- F7 slot accounting → a slot is held by every live status.
+- F8 `--json failed` with a persisted `DONE` → status unchanged; the claim proceeds; a later
+  undeliverable `REWORK`/`RESYNC` goes through the delivery-failure path.
+- F9 "becomes" → "is or becomes".
+- YAGNI: the separate stale-base check is collapsed into `ff-merge.sh --check`. The preflight probe
+  session is removed: preflight is a version check plus a settings read, and the user chose a canary
+  phase (Decision 12) that proves real delivery both ways on the first partner.
+- Frame format corrected to `<cross-session-message from="…">` (SendMessage tool documentation).
+- `--resume` open item narrowed using `claude --help` 2.1.296; the probe-cleanup open item removed.
