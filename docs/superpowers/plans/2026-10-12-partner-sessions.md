@@ -4,38 +4,41 @@
 
 **Goal:** Add `dev-workflow:coordinating-partner-sessions`, which intake's sdlc-process chain calls at stage 5 to run one attended `sdlc-process:sdlc-process` partner session per GitHub issue — in parallel where the blocked-by graph allows, verified and fast-forward-merged into the ticket branch one at a time — and hand back to intake steps 7–8 for one draft PR.
 
-**Architecture:** The coordinator loop is prose (`SKILL.md` plus three reference files), because launching sessions, reading `claude agents --json`, `SendMessage` and talking to the user are model actions. Every decision that must come out the same way every time lives in four bash scripts under `scripts/`: `parse-msg.sh` (validate one partner line), `frontier.sh` (what to launch; cycle refusal), `ff-merge.sh` (fast-forward-only merge) and `ledger.sh` (the only writer of coordinator state: transitions, lock, intents, outbox, binding, dedup, reconciliation). The scripts never call `claude` or `gh`; the coordinator passes `claude agents --json` output in as a file, so the scripts are fully testable in CI.
+**Architecture:** The coordinator loop is prose (`SKILL.md` plus three reference files), because launching sessions, reading `claude agents --json`, `SendMessage` and talking to the user are model actions. Every decision that must come out the same way every time lives in four bash scripts under `scripts/`: `parse-msg.sh` (validate one partner frame), `frontier.sh` (what to launch; cycle refusal), `ff-merge.sh` (fast-forward-only merge) and `ledger.sh` (the only writer of coordinator state: lock, transitions, intents, outbox, binding, dedup, reconciliation). The scripts never call `claude` or `gh`; the coordinator passes `claude agents --json` output in as a file. A scripted coordinator-contract test drives the four scripts through a whole run, including a crash and resume, so the prose loop's script contract is tested end to end.
 
-**Tech Stack:** Markdown skill files; bash 3.2-compatible scripts using `git` and `jq` (≥1.6); behavioural tests in the style of `dev-workflow/tests/test-audit-sh.sh`; `grep -qF` pins in `dev-workflow/tests/run.sh`. Run everything with `bash dev-workflow/tests/run.sh` (prints `PASSED`, exits 0).
+**Tech Stack:** Markdown skill files; bash 3.2-compatible scripts using `git` and `jq` (≥1.6); behavioural tests in the style of `dev-workflow/tests/test-audit-sh.sh`; `grep -qF` pins in `dev-workflow/tests/run.sh`. Run everything with `bash dev-workflow/tests/run.sh` (prints `PASSED`, exits 0); on macOS also `/bin/bash dev-workflow/tests/run.sh`.
 
-**Spec:** `docs/superpowers/specs/2026-10-12-partner-sessions-design.md` at `3566c05` (approved). The transition table, message protocol, merge rule, verification gate, error handling and preflight sections are normative; every task below cites them.
+**Spec:** `docs/superpowers/specs/2026-10-12-partner-sessions-design.md` (approved at `3566c05`; revised in this plan's commit for the plan review, including Decision 13). The transition table, ledger, message protocol, merge rule, verification gate, error handling and preflight sections are normative; every task below cites them.
 
 ## Global Constraints
 
 - Skill directory: `dev-workflow/skills/coordinating-partner-sessions/`; scripts in its `scripts/` (repo convention: `copilot-agent-readiness/scripts/audit.sh`).
-- Scripts: bash 3.2 compatible (no associative arrays, `mapfile`, `${var,,}`) — macOS CI runs `/bin/bash`; depend only on `git`, `jq`, POSIX tools; never `eval`, never interpolate message text into a command.
+- Scripts: bash 3.2 compatible (no associative arrays, `mapfile`, `${var,,}`, `wait -n`); BSD and GNU tools both (no `sed -i` without a suffix, no `date -d`, no `readlink -f`, no `timeout`); depend only on `git`, `jq`, POSIX tools; never `eval`, never interpolate message text into a command. Scripts call each other as `"${BASH:-bash}" "$DIR/x.sh"`, and every test runs scripts with `"$BASH"`, so `/bin/bash run.sh` on macOS exercises bash 3.2 end to end.
 - Scripts never invoke `claude`, `gh` or the network. Live-session data arrives as a file argument holding `claude agents --json` output.
 - Message regexes, verbatim from the spec: `#n` `^#[0-9]+$`; `gen=<g>` `^gen=[0-9]+$`; `<sha>`/`<head>` `^[0-9a-f]{40}$`; `<branch>` `^[a-z0-9][a-z0-9._/-]*$` and passes `git check-ref-format --branch`.
-- Frame: `<cross-session-message from="<name>">…</cross-session-message>`; `from` must equal the recorded session name exactly.
+- Frame: `<cross-session-message from="<name>">…</cross-session-message>`; `from` must equal the recorded session name exactly. The coordinator passes the whole frame; `parse-msg.sh --frame` extracts `from` (this plan's design, now adopted in the spec's Message protocol).
+- `synced=<head>` in `DONE` is informational: parsed and stored, never used for a decision.
 - Statuses, verbatim: `pending`, `launched`, `started`, `blocked-on #m`, `done-claimed`, `verifying`, `rework-n/3` (stored as `rework-1/3`, `rework-2/3`), `resync-requested`, `merged`, `failed`, `cancelled`. Live = `launched`, `started`, `done-claimed`, `verifying`, `rework-n/3`, `resync-requested`.
 - Concurrency cap default `3`. Rework budget `3` per generation; relaunch resets it.
 - Names: coordinator recommended `<KEY>-coord`; partner `<KEY>-<n>`; partner branch `<key>-<slug>-<n>`; superseded branch `<key>-<slug>-<n>-g<old>`; ticket branch `<key>-<slug>`.
-- Ledger: `docs/specs/<KEY>-partners.md`, a Markdown file whose state is one fenced ```` ```json ```` block that only `ledger.sh` writes (temp file + `mv`). Run lock: directory `<git-common-dir>/partners-<KEY>.lock/` (created with `mkdir`, atomic) holding file `holder` = coordinator `sessionId`.
+- Ledger (spec Decision 13): `$(git rev-parse --git-common-dir)/partner-sessions/<KEY>/ledger.json`, plain JSON, written only by `ledger.sh` (temp file + `mv -f`). Beside it: `lock/` (run lock, holding `holder` = `<session-id> <nonce>`), `takeover/` (transient), `ledger.log` (append-only diagnostics, not state). Never in a working tree, never committed.
+- Lock ownership token: `ledger.sh lock` prints `owner=<session-id>:<nonce>`; every mutating `ledger.sh` call requires it in env `PS_OWNER` and exits `40` if it no longer matches `lock/holder`.
 - Version floors: Claude Code `v2.1.236` (`v2.1.248` on Bedrock, Vertex or Foundry, or with flag fetching off).
-- Canary timeout: `600` seconds per leg, via a background `sleep 600` Bash call as the backstop timer (decided here — Spec Open item 3; see Task 8).
+- Canary timeout: `600` seconds per leg, via a background `sleep 600` Bash call as the timer (decided here — spec Open item 3). On expiry the coordinator reads `--json`; only a canary that has ended without the expected message is a failed leg (Task 9).
+- External blockers (a `Blocked by: #n` naming an issue outside this ticket's set) extend the spec, which reads only in-ticket edges: recorded as `external`, satisfied only if closed when read; otherwise the coordinator asks the user (wait, or remove the edge) before writing the ledger.
 - `dev-workflow/.claude-plugin/plugin.json` version `0.1.7` → `0.1.8`.
 - `SKILL.md` under 500 lines; description ≤ 1024 chars.
-- Public-repo hygiene: no whole-word `ces` in `coordinating-partner-sessions/` or `intaking-work-items/` (`run.sh` already enforces it for intake). Decision 7's retrospective target is therefore written as "the workspace's ticket-creation skill (the one that created this ticket)", not by name.
+- Public-repo hygiene: no whole-word `ces` in `coordinating-partner-sessions/` or `intaking-work-items/` (`run.sh:397` enforces it for intake). Decision 7's retrospective target is written as "the workspace's ticket-creation skill (the one that created this ticket)". Fixtures carry no UUIDs, logins, avatar or HTML URLs (`scripts/scrub-patterns.sh:170` flags any UUID).
 - Every existing `run.sh` assertion stays green. Do not edit sdlc-process, superpowers or mattpocock plugin files.
 - No push, PR or GitHub write during implementation except where a step says so and the user confirms it.
 
 ## Review Focus
 
-1. **The canary partner asks the user a readiness question before `STARTED`.** Expected: the canary waits (the partner is `blocked` in `--json`), it is not a failed leg, and the user is told the canary is waiting on them in `<KEY>-<n>` (Task 8 pin; Task 5 `json_blocked_noop` test).
-2. **The ticket-branch worktree is dirty or on another branch when a merge runs** (the user edited files in the coordinator's checkout). Expected: `ff-merge.sh` exits `3` without touching anything; the coordinator tells the user and never stashes or resets (Task 4 tests).
-3. **A `Blocked by: #n` names an issue outside this ticket's set.** Expected: recorded as an external blocker; satisfied only if it was closed when read, otherwise the coordinator asks the user (wait or remove the edge) before writing the ledger; `frontier.sh` never launches an issue with an open external blocker (Task 3 test).
+1. **The canary partner asks the user a readiness question before `STARTED`, or is slow.** Expected: when the 600 s timer expires and `--json` says `blocked` or `working`, the timer restarts and the user is told; it is not a failed leg (Task 9 pins; Task 5 `json_blocked_noop`).
+2. **The ticket-branch worktree is dirty or on another branch when a merge runs** (the user edited files in the coordinator's checkout). Expected: `ff-merge.sh` exits `3` without touching anything; the coordinator tells the user and never stashes or resets. The ledger itself never makes it dirty (Task 4 tests; Task 6 `merge_with_real_ledger`).
+3. **A `Blocked by: #n` names an issue outside this ticket's set.** Expected: recorded as external; `frontier.sh` never launches an issue with an open external blocker (Task 3 test).
 4. **A partner line arrives with trailing spaces or a CRLF ending.** Expected: trailing spaces and one trailing `\r` are stripped, then validated; an embedded newline or `\r` elsewhere is rejected (Task 2 tests).
-5. **Two tickets coordinated at once in the same repo.** Expected: independent locks (`partners-<KEY>.lock`), ledgers and names; one coordinator never takes or reads the other's lock (Task 5 test).
+5. **Two tickets coordinated at once in the same repo.** Expected: independent `partner-sessions/<KEY>/` directories, locks and names; one coordinator never takes or reads the other's lock (Task 5 test).
 
 ---
 
@@ -45,15 +48,16 @@ Non-code. Results go in a `## Spike results` section appended to this plan, plus
 
 **Files:**
 - Modify: `docs/superpowers/plans/2026-10-12-partner-sessions.md` (append `## Spike results`)
-- Create: `dev-workflow/tests/fixtures/partner-sessions/agents.json` (a real `claude agents --json --all` sample, names and IDs replaced with `TEST-1`, `TEST-coord` and fake UUIDs)
-- Create: `dev-workflow/tests/fixtures/partner-sessions/blocked_by.json` (a real response from step 1, scrubbed)
+- Create: `dev-workflow/tests/fixtures/partner-sessions/agents.json` — the shape of a real `claude agents --json --all` sample; every `sessionId` replaced with a non-UUID placeholder (`sid-coord`, `sid-1`, `sid-2`, …), names with `TEST-coord`, `TEST-1`, …; no paths, no other identifiers.
+- Create: `dev-workflow/tests/fixtures/partner-sessions/blocked_by.json` — the step 1 response trimmed to `[{"number":<n>,"state":"open|closed"}]` only.
 
-**Interfaces — Produces:** the exact GitHub read command for blockers (Task 8 uses it verbatim); the field names of `claude agents --json` entries (`name`, `sessionId`, `state`, and the process-liveness field) used by Task 5's lock liveness and Task 6's reconciliation.
+**Interfaces — Produces:** the exact GitHub read command for blockers (Task 9 uses it verbatim); the field names of `claude agents --json` entries (`name`, `sessionId`, `state`, and the process-liveness field) used by Task 5's lock liveness and Task 6's reconciliation.
 
 - [ ] **Step 1: GitHub blockers endpoint.** Run `gh api repos/cjsteigerwald/ai-crew/issues/<n>/dependencies/blocked_by` against an issue that has a native blocker (create a throwaway pair only with the user's confirmation, then close both). Expected: a JSON array of issue objects with `number` and `state`. Record the command and one trimmed output. If it 404s, record that and the fallback: parse body lines matching `^Blocked by: #[0-9]+(, *#[0-9]+)*$`.
-- [ ] **Step 2: `claude agents --json` shape.** Run `claude agents --json --all`; save a scrubbed sample as the fixture. Record which field carries the process ID or liveness (expected `pid` per review round 1; if absent, record what is there).
+- [ ] **Step 2: `claude agents --json` shape.** Run `claude agents --json --all`; build the fixture from its shape as above. Record which field carries the process ID or liveness (expected `pid`); if none, record that — the liveness fallback is then "listed with `state` not in {`stopped`, `failed`}" (spec, Single writer).
 - [ ] **Step 3: `--resume` + `--name` (live, run by the orchestrator or the user, ~30 s).** `claude --bg --name ps-spike-a "reply OK then stop"`; wait for `done`; `claude stop <id>`; `claude --resume <sessionId> --bg --name ps-spike-b "reply OK"`; `claude agents --json --all`. Expected evidence: the resumed entry's `sessionId` equals the original and its `name` is `ps-spike-b` (or record what it is). Remove both with `claude rm`.
-- [ ] **Step 4: Commit.**
+- [ ] **Step 4: Verify.** `bash dev-workflow/tests/run.sh` → `ok: scrub-check clean` and `PASSED`.
+- [ ] **Step 5: Commit.**
 
 ```bash
 git add docs/superpowers/plans/2026-10-12-partner-sessions.md dev-workflow/tests/fixtures/partner-sessions/
@@ -72,13 +76,16 @@ git commit -m "docs(dev-workflow): record partner-session spike results and fixt
 - `parse-msg.sh <line>` — one argv argument. Exit `0`: prints `key=value` lines, always `kind=` (`STARTED|DONE|STUCK|SCOPE|FAILED`), `issue=<n>` (digits, no `#`), `gen=<g>`; `DONE` adds `branch=`, `sha=`, `synced=`; `STUCK` may add `needs=<m>`; `STUCK|SCOPE|FAILED` add `reason=<text>` (single line, stored verbatim). Exit `1`: invalid, `error=<reason>` on stderr, nothing on stdout.
 - `parse-msg.sh --frame <raw>` — `<raw>` is the full frame text. Exit `0`: prints `from=<name>` then the body's `key=value` lines. Exit `1` if the frame is not exactly one `<cross-session-message from="…">…</cross-session-message>` (an `<agent-message …>` frame or any other is rejected).
 
-- [ ] **Step 1: Write the failing tests** (`test-parse-msg-sh.sh`, same skeleton as `test-audit-sh.sh`: `fail()`, `FAIL` counter, exit 1 on failure). Cases and assertions:
+- [ ] **Step 1: Write the failing tests** (`test-parse-msg-sh.sh`, same skeleton as `test-audit-sh.sh`: `fail()`, `FAIL` counter, exit 1 on failure; scripts run with `"$BASH"`). Cases and assertions:
 
 | Test | Input | Expect |
 |---|---|---|
 | valid STARTED | `STARTED #12 gen=1` | rc 0; stdout has `kind=STARTED`, `issue=12`, `gen=1` |
 | valid DONE | `DONE #12 gen=2 abc-x-12 <40 hex> synced=<40 hex>` | rc 0; `branch=abc-x-12`, `sha=`, `synced=` match |
 | STUCK needs | `STUCK #12 gen=1 needs=#9 waits on schema` | `needs=9`, `reason=waits on schema` |
+| STUCK no needs | `STUCK #12 gen=1 cannot reach the test db` | rc 0; `kind=STUCK`; no `needs=` line; `reason=cannot reach the test db` |
+| valid SCOPE | `SCOPE #12 gen=1 needs three PRs` | rc 0; `kind=SCOPE`; `reason=needs three PRs` |
+| valid FAILED | `FAILED #12 gen=3 user cancelled` | rc 0; `kind=FAILED`; `gen=3`; `reason=user cancelled` |
 | missing gen | `STARTED #12` | rc 1, stdout empty |
 | bad gen | `STARTED #12 gen=x` | rc 1 |
 | short sha | DONE with 39-hex sha | rc 1 |
@@ -93,9 +100,10 @@ git commit -m "docs(dev-workflow): record partner-session spike results and fixt
 | frame ok | `<cross-session-message from="ABC-12">STARTED #12 gen=1</cross-session-message>` | rc 0; `from=ABC-12` first line |
 | frame wrong kind | same body in `<agent-message from="ABC-12">…</agent-message>` | rc 1 |
 | frame two messages | two frames concatenated | rc 1 |
+| frame metachar from | `from="a$(touch $T/f)"` | rc 1; `$T/f` does not exist |
 
 - [ ] **Step 2: Run to verify it fails.** `bash dev-workflow/tests/test-parse-msg-sh.sh` → `FAIL: … parse-msg.sh not found`, exit 1.
-- [ ] **Step 3: Implement `parse-msg.sh`.** Read the argument into a variable only; split with `read -r` / parameter expansion; validate each field with `[[ =~ ]]` against the Global Constraints regexes and `git check-ref-format --branch`; print with `printf '%s\n'`.
+- [ ] **Step 3: Implement `parse-msg.sh`.** Read the argument into a variable only; split with `read -r` / parameter expansion; validate each field with `[[ =~ ]]` against the Global Constraints regexes (`from` against `^[A-Za-z0-9][A-Za-z0-9._-]*$`) and `git check-ref-format --branch`; print with `printf '%s\n'`.
 - [ ] **Step 4: Run to verify it passes.** Same command → all `ok:` lines, exit 0.
 - [ ] **Step 5: Commit.** `git add` both files; `git commit -m "feat(dev-workflow): add parse-msg.sh for partner messages"`.
 
@@ -128,7 +136,7 @@ git commit -m "docs(dev-workflow): record partner-session spike results and fixt
 | blocked-on released | 2 `pending` (was blocked-on 1), 1 merged | `2` |
 | external open (Review Focus 3) | 1 pending, external `{"n":40,"closed":false}` | empty |
 | external closed | same, `closed:true` | `1` |
-| cycle | 1↔2 | exit 2, stderr contains `cycle:`, finishes within 5 s (`timeout`-free: run in background, `kill` after 5 s → fail) |
+| cycle | 1↔2 | exit 2, stderr contains `cycle:`; run in background, `kill` after 5 s → fail |
 | check-edge ok | 2 blocked by 1; check `3 1` | exit 0 |
 | check-edge cycle | 2 blocked by 1; check `1 2` | exit 2 |
 
@@ -145,7 +153,7 @@ git commit -m "docs(dev-workflow): record partner-session spike results and fixt
 - Create: `dev-workflow/skills/coordinating-partner-sessions/scripts/ff-merge.sh`
 - Test: `dev-workflow/tests/test-ff-merge-sh.sh`
 
-**Interfaces — Produces** (run with cwd = the worktree that has the ticket branch checked out):
+**Interfaces — Produces** (run with cwd = the worktree that has the ticket branch checked out; the strict dirty check stays — the ledger is in git metadata, so it never trips it):
 - `ff-merge.sh --check <ticket-branch> <sha>` — exit `0` if the ticket head is an ancestor of `<sha>`; exit `10` (`resync-needed`) printing `head=<sha>`; never changes a ref.
 - `ff-merge.sh <ticket-branch> <sha> <pinned-head>` — fast-forwards (`git merge --ff-only <sha>`) only if the ticket head equals `<pinned-head>` and is an ancestor of `<sha>`; exit `0` printing `head=<sha>`; exit `10` printing the current `head=`.
 - Exit `3`: the cwd does not have `<ticket-branch>` checked out, or the worktree is dirty (`git status --porcelain` non-empty). Exit `2`: argument errors, an SHA that does not match `^[0-9a-f]{40}$`, or an SHA that does not exist.
@@ -163,6 +171,7 @@ git commit -m "docs(dev-workflow): record partner-session spike results and fixt
 | malformed sha | `abc` | exit 2 |
 | dirty worktree (Review Focus 2) | untracked file in cwd | exit 3; file still there; refs unchanged |
 | wrong branch checked out | cwd on `main` | exit 3 |
+| state in git dir is clean | a file written under `$(git rev-parse --git-common-dir)/partner-sessions/K/` | clean ff exit 0 |
 
 - [ ] **Step 2: Run to verify it fails.** `bash dev-workflow/tests/test-ff-merge-sh.sh` → exit 1.
 - [ ] **Step 3: Implement** with `git merge-base --is-ancestor`, `git rev-parse --verify --quiet "<sha>^{commit}"`, `git symbolic-ref --short HEAD`, `git merge --ff-only`.
@@ -171,7 +180,9 @@ git commit -m "docs(dev-workflow): record partner-session spike results and fixt
 
 ---
 
-### Task 5: `ledger.sh` — state, lock and the transition table
+### Task 5: `ledger.sh` — state, lock, intents, outbox and the transition table
+
+Every state change, the outbox command it implies, the claim it records, the intent it closes and the dependents it releases are one atomic write (spec, Atomic writes).
 
 **Files:**
 - Create: `dev-workflow/skills/coordinating-partner-sessions/scripts/ledger.sh`
@@ -179,99 +190,133 @@ git commit -m "docs(dev-workflow): record partner-session spike results and fixt
 
 **Interfaces:**
 - Consumes: `frontier.sh --check-edge` (Task 3); `git`.
-- Produces — every subcommand takes the ledger path first; exit codes shared by all: `0` applied (prints the new status), `10` idempotent no-op, `20` message rejected (logged), `30` illegal transition refused (logged), `40` lock held by a live other session (prints `holder=`), `2` usage or I/O error.
+- Produces — the first argument after the subcommand is the ledger path (`<ledger>` = `…/partner-sessions/<KEY>/ledger.json`; lock and log are its siblings). Exit codes shared by all: `0` applied (prints the new status or requested output), `10` idempotent no-op, `20` message rejected (logged), `30` illegal transition refused (logged), `40` lock held by a live other session or `PS_OWNER` no longer matches (prints `holder=`), `2` usage or I/O error. Every mutating call requires `PS_OWNER`.
+  - `ledger.sh path <KEY>` — prints `$(git rev-parse --git-common-dir)/partner-sessions/<KEY>/ledger.json` (absolute) and creates the directory.
+  - `ledger.sh lock <ledger> <own-session-id> <agents.json>` → prints `owner=<session-id>:<nonce>`; `ledger.sh unlock <ledger>` (needs `PS_OWNER`). Protocol (spec, Single writer): `mkdir lock` → write `holder` via temp + `mv`. If `lock` exists: live = holder's ID equals own (re-issue own token), or listed in `agents.json` with a live process (`kill -0 <pid>`; no pid field → `state` not in {`stopped`,`failed`}); missing/empty `holder` = not live. Not live → `mkdir takeover` (fail → exit 40, someone else is taking over); re-check liveness; write a new holder with a fresh nonce via temp + `mv`; re-read and confirm the nonce; write `takeover/owner`, then `rm -rf takeover`; log `lock-takeover` (old holder, time). A `takeover` dir whose `owner` is not live, or with no `owner` and an mtime older than 60 s, is removed once and the takeover retried.
   - `ledger.sh init <ledger> <KEY> <ticket-branch> <coord-name> <coord-session-id> <issues.json>` — `issues.json` is `[{"n":12,"blockers":[9],"external":[],"branch":"…","testCmd":"…","ac":["AC-1"]}]`; writes every issue `pending`, `gen` 0, `canary` `pending`, `cap` 3. Refuses (exit 2) if the ledger exists.
   - `ledger.sh get <ledger> [<n>]` — the JSON state (or one issue) on stdout; the shape `frontier.sh` consumes.
-  - `ledger.sh lock <ledger> <own-session-id> <agents.json>` / `ledger.sh unlock <ledger> <own-session-id>` — lock at `$(git rev-parse --git-common-dir)/partners-<KEY>.lock/holder`. Live = holder equals own ID, or `agents.json` has an entry with that `sessionId` whose process is alive (field per Task 1; `kill -0 <pid>`). Not live → take over, append `{"event":"lock-takeover","old":…,"at":…}` to `.log`.
+  - `ledger.sh intent <ledger> launch <n> <session-name> <worktree> <branch> <base-sha>` / `ledger.sh intent <ledger> merge <n> <candidate-sha> <expected-head>` → prints `intent=<id>` (records gen). Intents are closed only by the event that records their outcome.
   - `ledger.sh event <ledger> <n> <event> [args]` — the only way statuses change. Events (one per transition-table row; spec "Transition table"):
 
-| Event | Args | Row |
+| Event | Args | Row (and what the same write also does) |
 |---|---|---|
-| `launch` | `<session-name> <session-id> <start-sha>` | `pending → launched`; gen+1; refused if a blocker is not `merged`, no slot is free, or `canary` ≠ `passed` and another issue was already launched |
-| `relaunch` | `<session-name> <session-id>` | `failed → launched`; gen+1; rework reset |
-| `queue-check` | `stale\|ok` | `done-claimed → resync-requested\|verifying` |
-| `gate` | `merged\|resync\|fail` | `verifying → merged\|resync-requested\|rework-n/3`; third `fail` in a gen → `failed` (reason `rework budget`); `merged` moves every `blocked-on #<n>` issue to `pending` |
-| `stuck-accept` | `<m>` | live → `blocked-on #m` via `--check-edge` (exit 30 + `cycle` on refusal); queues `CANCEL #n` in the outbox |
-| `edge-remove` | — | `blocked-on → pending` |
+| `launch` | `<intent-id> <session-id>` | `pending → launched`; gen+1; records name, `sessionId`, worktree, branch, start SHA from the intent; closes the intent. Refused if a blocker is not `merged`, no slot is free, or `canary` ≠ `passed` and another issue was already launched |
+| `launch-failed` | `<intent-id>` | launch errored: status stays `pending`; closes the intent |
+| `relaunch` | `<intent-id> <session-id>` | `failed → launched`; gen+1; rework reset; closes the intent |
+| `queue-check` | `stale <head>` \| `ok` | `done-claimed → resync-requested` (outbox `RESYNC #n <head>`, gen) \| `→ verifying` |
+| `gate` | `merged <intent-id>` \| `resync <head>` \| `fail [<evidence>]` | `verifying → merged` (closes the merge intent; releases dependents) \| `resync-requested` (outbox `RESYNC`) \| `rework-n/3` (outbox `REWORK #n <evidence>`); third `fail` in a gen → `failed` (reason `rework budget`) |
+| `stuck-accept` | `<m>` | live → `blocked-on #m` via `--check-edge` (exit 30 + `cycle` on refusal); appends `m` to `.blockers`; outbox `CANCEL #n` |
+| `edge-remove` | — | `blocked-on → pending`; removes the edge from `.blockers` |
 | `drop` | — | `pending\|blocked-on\|failed → cancelled`; prints `dependents=<list>` for the user decision |
 | `json` | `failed\|stopped\|blocked\|done\|working` | live (not `done-claimed`/`verifying`) + `failed` → `failed`; everything else: exit 10 (observation only) |
 | `wake-failed` | — | live (not `done-claimed`/`verifying`) → `failed` |
-| `user-merged` | — | `failed → merged` only if `git merge-base --is-ancestor <issue branch tip> <ticket-branch>`; else exit 30 |
-| `cancel-ticket` | — | (n ignored, pass `0`) every non-terminal → `cancelled`; `CANCEL` queued for each live issue |
+| `user-merged` | — | `failed → merged` only if `git merge-base --is-ancestor <issue branch tip> <ticket-branch>`; releases dependents; else exit 30 |
+| `cancel-ticket` | — | (n ignored, pass `0`) every non-terminal → `cancelled`; outbox `CANCEL` for each live issue |
 | `canary-passed` | — | (n = canary issue) sets `.canary = "passed"` |
+
+  - One shared helper performs every transition to `merged` (from `gate`, `user-merged` and Task 6's `reconcile`) and in the same write moves each `blocked-on #<n>` issue to `pending`.
+  - `ledger.sh outbox <ledger>` — prints `<n>\t<gen>\t<line>` per pending entry. Entries are added only by the events above; cleared by Task 6's `message`.
   - `ledger.sh slots <ledger>` — prints the count of issues in a live status.
   - `ledger.sh done <ledger>` — exit 0 printing `handback` when every issue is `merged`/`cancelled` and ≥1 `merged`; `cancel-ticket` when all are `cancelled`; exit 1 otherwise.
+  - `ledger.sh summary <ledger>` — Markdown table for the PR body: issue, final status, branch, merge SHA, rework and resync counts, cancellation reason.
 
-- [ ] **Step 1: Write the failing tests.** Fixture ledgers via `init` in a throwaway git repo (needed for the lock path and `user-merged`). Test names and assertions:
-  - `atomic_write`: after any `event`, no `*.tmp*` file remains next to the ledger and `jq -e .` on the fenced block succeeds; a write interrupted between temp and `mv` (simulate: leave a stray temp) leaves the previous ledger readable.
+- [ ] **Step 1: Write the failing tests.** Fixture ledgers via `path` + `init` in a throwaway git repo. Test names and assertions:
+  - `path_in_git_dir`: `path K` is under `git rev-parse --git-common-dir`; from a second worktree of the same repo it prints the same path; `git status --porcelain` is empty after `init`.
+  - `atomic_write`: after any `event`, no `*.tmp*` file remains next to the ledger and `jq -e .` succeeds; a stray temp file from an interrupted write leaves the previous ledger readable.
   - `lock_contention`: lock as `S1` (exit 0); lock as `S2` with `agents.json` listing `S1` alive (pid `$$`) → exit 40, `holder=S1`.
-  - `lock_own`: `S1` locks twice → both exit 0.
-  - `lock_stale_takeover`: holder `S1` listed with a dead pid (spawn `sleep 0 &`, `wait`, use its pid) → `S2` gets exit 0 and `.log` has `lock-takeover`.
-  - `lock_per_key` (Review Focus 5): ledgers for `AAA` and `BBB` in one repo; locks by different sessions both succeed; `ls` shows two lock dirs.
-  - `canary_gate`: launch issue 1 → 0; launch issue 2 before `canary-passed` → 30; after `canary-passed` → 0.
+  - `lock_own`: `S1` locks twice → both exit 0, same session ID in `owner=`.
+  - `lock_stale_takeover`: holder `S1` listed with a dead pid (spawn `sleep 0 &`, `wait`, use its pid) → `S2` gets exit 0; `ledger.log` has `lock-takeover`.
+  - `lock_missing_holder` (interruption between `mkdir` and the holder write): `lock/` exists with no `holder` → `S2` takes over, exit 0.
+  - `lock_no_pid_fallback`: `agents.json` entry without a pid field, `state: working` → live (exit 40); `state: stopped` → takeover.
+  - `lock_concurrent_takeover`: dead holder; two background contenders `S2`, `S3` each wait for a `go` file (barrier: poll every 0.05 s), then `lock`; after both finish, exactly one exited 0 and one 40, and `lock/holder` carries the winner's nonce. Repeat 10 times.
+  - `stale_takeover_dir`: a `takeover/` with no `owner` and mtime 120 s old (`touch -t`) → takeover proceeds; one with a live owner → exit 40.
+  - `lost_lock_refused`: `S1` locks; `S2` takes over after `S1` is listed dead; a mutating call with `S1`'s old `PS_OWNER` → exit 40, ledger bytes unchanged.
+  - `lock_per_key` (Review Focus 5): ledgers for `AAA` and `BBB` in one repo; locks by different sessions both succeed; two `partner-sessions/*/lock` dirs exist.
+  - `canary_gate`: launch issue 1 → 0; launch issue 2 before `canary-passed` → 30; after → 0.
   - `launch_blocked`: issue with unmerged blocker → 30.
+  - `launch_closes_intent`: after `intent launch` + `event launch`, `get` shows the intent closed and the worktree/branch/start SHA recorded; `launch-failed` leaves `pending` and the intent closed.
   - `slots_cap`: three live issues; `launch` a fourth → 30; `slots` prints `3`; `blocked-on`, `failed` and terminal statuses do not count.
-  - `every_row`: one assertion per row of the event table above, checking the new status string exactly (e.g. `rework-1/3`, `blocked-on #9`).
-  - `illegal_refused`: e.g. `gate merged` on `started` → 30, status unchanged, `.log` has `refused`.
+  - `every_row`: one assertion per row of the event table, checking the new status string exactly (e.g. `rework-1/3`, `blocked-on #9`) and, where the row says so, the outbox line in the same write (`RESYNC #12 <head>`, `REWORK #12 <evidence>`, `CANCEL #12`).
+  - `merged_releases_dependents`: 2 `blocked-on #1`; 1 reaches `merged` via `gate merged` → 2 is `pending`; repeat via `user-merged`.
+  - `stuck_accept_edge`: after `stuck-accept 9` on 12, `.issues["12"].blockers` contains 9; `frontier.sh` does not list 12 until 9 is `merged`.
+  - `illegal_refused`: e.g. `gate merged` on `started` → 30, status unchanged, `ledger.log` has `refused`.
   - `third_gate_fail`: three `fail`s in one gen → `failed`; after `relaunch` one `fail` → `rework-1/3`.
   - `json_on_claimed`: `json stopped` and `json failed` on `done-claimed` → exit 10, unchanged.
   - `json_blocked_noop`: `json blocked` on `launched` and on `started` → exit 10, unchanged.
   - `drop_dependents`: dropping 1 where 2 is `blocked-on #1` prints `dependents=2`.
   - `user_merged_ancestry`: branch tip merged into ticket → `merged`; not merged → 30.
   - `all_cancelled`: `cancel-ticket` then `done` prints `cancel-ticket`; one merged + rest cancelled → `handback`.
+  - `summary_table`: one merged and one cancelled issue → two rows with status, branch and reason.
   - `no_stranded_status`: for each non-terminal status, at least one event in the table moves it (table-driven loop over the statuses list).
 - [ ] **Step 2: Run to verify it fails.** `bash dev-workflow/tests/test-ledger-sh.sh` → exit 1.
-- [ ] **Step 3: Implement** the subcommands above. State edits with `jq`; write `<ledger>.tmp.$$` then `mv -f`; append every refused or rejected call to `.log` with a reason.
+- [ ] **Step 3: Implement** the subcommands above. Each mutating call: verify `PS_OWNER` against `lock/holder`, compute the whole new state with one `jq` program, write `<ledger>.tmp.$$`, `mv -f`. Append every refused or rejected call to `ledger.log` with a reason.
 - [ ] **Step 4: Run to verify it passes.** Exit 0.
-- [ ] **Step 5: Commit.** `git commit -m "feat(dev-workflow): add ledger.sh state machine and run lock"`.
+- [ ] **Step 5: Commit.** `git commit -m "feat(dev-workflow): add ledger.sh state machine, run lock, intents and outbox"`.
 
 ---
 
-### Task 6: `ledger.sh` — messages, intents, outbox and reconciliation
+### Task 6: `ledger.sh` — messages, session rebinding and reconciliation
 
 **Files:**
 - Modify: `dev-workflow/skills/coordinating-partner-sessions/scripts/ledger.sh`
 - Test: `dev-workflow/tests/test-ledger-sh.sh` (add cases)
 
 **Interfaces:**
-- Consumes: `parse-msg.sh --frame` (Task 2); Task 5's events.
+- Consumes: `parse-msg.sh --frame` (Task 2); Task 5's events, intents and outbox; `ff-merge.sh` (Task 4, in tests only).
 - Produces:
-  - `ledger.sh message <ledger> <raw-frame>` — parses with `parse-msg.sh --frame`; binds (`from` == recorded name exactly, `gen` == current gen, `DONE` branch == recorded branch) before any state change; persists a `DONE` claim on receipt; dedups `DONE` by issue+gen+sha (exit 10); same-state repeats exit 10; clears the issue's outbox entries for that gen; then applies: `STARTED` (`launched → started`; on `rework-n/3`/`resync-requested` unchanged), `DONE` (→ `done-claimed`, prints `queue=<n>`), `STUCK needs=#m` (prints `ask-user=edge <n> <m>` or, if `m` merged, queues `RESYNC` → `resync-requested`), `STUCK`/`SCOPE` (unchanged, prints `ask-user=…`), `FAILED` (→ `failed`). Rejections exit 20 with `reason=` and a `.log` entry.
-  - `ledger.sh intent <ledger> launch|merge <n> <k=v>...` → prints `intent=<id>`; `ledger.sh intent-done <ledger> <id> <outcome>`.
-  - `ledger.sh outbox-add <ledger> <n> <line>` (records gen) / `ledger.sh outbox <ledger>` (prints `<n>\t<gen>\t<line>` per pending entry).
-  - `ledger.sh reconcile <ledger> <agents.json>` — for each open intent: `merge` whose candidate is an ancestor of the ticket head → `merged`, else the issue returns to `done-claimed`; `launch` whose session appears in `agents.json` → record it `launched`, else back to `pending`. Then prints action lines for the coordinator: `requeue <n>` (every `done-claimed`/`verifying`), `resend <n> <line>` (every outbox entry), `status <n>` (every other live issue). Idempotent: running it twice prints the same actions and changes nothing the second time.
+  - `ledger.sh message <ledger> <raw-frame>` — parses with `parse-msg.sh --frame`; binds (`from` == recorded name exactly, `gen` == current gen, `DONE` branch == recorded branch) before any state change; dedups `DONE` by issue+gen+sha (exit 10); same-state repeats exit 10; in one write clears the issue's outbox entries for that gen and applies: `STARTED` (`launched → started`; on `rework-n/3`/`resync-requested` unchanged), `DONE` (claim persisted, → `done-claimed`, prints `queue=<n>`), `STUCK needs=#m` (prints `ask-user=edge <n> <m>` or, if `m` merged, → `resync-requested` with outbox `RESYNC #n <head>`), `STUCK`/`SCOPE` without a status change (prints `ask-user=…`), `FAILED` (→ `failed`). Rejections exit 20 with `reason=` and a `ledger.log` entry.
+  - `ledger.sh session <ledger> <n> <session-name> <session-id>` — records a woken partner's name and `sessionId`; gen and status unchanged; exit 0 (exit 10 if unchanged).
+  - `ledger.sh reconcile <ledger> <agents.json>` — in one write: every open `merge` intent whose candidate is an ancestor of the ticket head → `merged` (shared helper, releases dependents), else the issue returns to `done-claimed`; every open `launch` intent whose session name appears in `agents.json` → `launched` with that `sessionId`, else back to `pending`; every `verifying` → `done-claimed`; all those intents closed. Closed intents are never touched, so no issue moves backwards. Then prints action lines: `requeue <n>` (every `done-claimed`), `resend <n> <line>` (every outbox entry, verbatim), `status <n>` (every other live issue). Idempotent: a second run prints the same actions and changes no bytes.
 
 - [ ] **Step 1: Write the failing tests.**
   - `bind_other_issue`: frame `from="K-13"` carrying `#12` → 20.
-  - `bind_near_match`: `from="k-12"`, `from="K-12 "`, `from="K-1"`, ID-valued `from` → 20 each.
+  - `bind_near_match`: `from="k-12"`, `from="K-12 "`, `from="K-1"`, ID-valued `from` (`sid-1`) → 20 each.
   - `bind_old_gen`: `gen=1` after a relaunch to gen 2 → 20.
   - `bind_branch_mismatch`: `DONE` with another branch → 20.
   - `bind_wrong_frame`: `<agent-message from="K-12">…` → 20.
   - `frame_fixture`: the pinned frame `<cross-session-message from="K-12">STARTED #12 gen=1</cross-session-message>` → 0.
+  - `wake_rebinds_name`: `session 12 K-12b sid-9`; then a frame `from="K-12b"` → 0 and `from="K-12"` → 20; gen unchanged.
   - `done_persisted`: after `message DONE`, `get` shows the claim before any `queue-check`.
   - `done_dedup`: same `DONE` twice → second exit 10.
   - `same_state_noop`: `STARTED` on `started` → 10.
   - `stuck_merged_resync`: `STUCK needs=#9` with 9 merged → `resync-requested`, outbox has `RESYNC #12 <head>`.
-  - `stuck_from_rework`: `STUCK` and `SCOPE` on `rework-1/3` and `resync-requested` → accepted (0 or 10), never 30.
+  - `stuck_from_rework`: `STUCK` and `SCOPE` on `rework-1/3` and `resync-requested` → 0 or 10, never 30.
   - `stuck_on_claimed`: `STUCK` on `done-claimed` → 10, prints `ask-user=`.
   - `stale_done_free`: `queue-check stale` leaves the rework count at 0.
-  - `outbox_cleared`: after `outbox-add` RESYNC for gen 2, a valid gen-2 message clears it; a gen-1 message does not.
-  - Crash boundaries, each followed by `reconcile` and a check of status and printed actions:
-    - `crash_after_launch_intent`: intent recorded, no session in `agents.json` → `pending`.
-    - `crash_after_launch_before_record`: intent open, session present in `agents.json` → `launched`.
-    - `crash_after_merge_intent`: candidate not yet merged → `done-claimed`, `requeue`.
-    - `crash_after_merge_before_record`: candidate already an ancestor of ticket head → `merged`.
-    - `crash_during_verifying`: status `verifying` → `requeue`.
-    - `crash_after_outbox_before_send`: entry present → `resend`.
-  - `reconcile_idempotent`: second run changes no bytes in the ledger.
+  - `outbox_cleared`: after a gen-2 `RESYNC`, a valid gen-2 message clears it; a gen-1 message does not.
+  - Crash right after a transition, before any send (the transition's outbox entry is in the same write), each followed by `reconcile`, which must print `resend <n> <exact line>`: `crash_after_queue_stale`, `crash_after_gate_resync`, `crash_after_gate_fail` (line carries the evidence), `crash_after_stuck_accept` (`CANCEL`), `crash_after_cancel_ticket` (one `CANCEL` per live issue).
+  - Crash at intents:
+    - `crash_after_launch_intent`: intent open, no session in `agents.json` → `pending`, intent closed.
+    - `crash_after_launch_before_record`: intent open, session `K-12` present with `sid-12` → `launched`, `sessionId` `sid-12` recorded.
+    - `crash_after_merge_intent`: candidate not yet merged → `done-claimed`, `requeue 12`.
+    - `crash_after_merge_before_record`: candidate already an ancestor of the ticket head → `merged`, dependents released.
+  - No regression after success: `restart_after_launch_then_done` (launch recorded, then `DONE` → reconcile leaves `done-claimed`); `restart_after_launch_then_cancel` (stays `cancelled`); `restart_after_merge` (stays `merged`, no `requeue`).
+  - `crash_during_verifying`: status `verifying` → reconcile sets `done-claimed`, prints `requeue 12`; then in a real repo drive `ff-merge.sh --check` → `queue-check ok` → `intent merge` → `ff-merge.sh` → `gate merged` → `merged`. Repeat with the ticket head advanced first: `--check` exit 10 → `queue-check stale <head>` → `resync-requested` with a durable outbox `RESYNC`.
+  - `merge_with_real_ledger`: in a real repo, `path` + `init` + `lock` + `intent merge`, then `ff-merge.sh` from the ticket worktree → exit 0 (the ledger does not dirty the worktree).
+  - `reconcile_idempotent`: second run prints the same actions and changes no bytes in the ledger.
 - [ ] **Step 2: Run to verify the new cases fail.** `bash dev-workflow/tests/test-ledger-sh.sh` → the new names fail.
-- [ ] **Step 3: Implement** `message`, `intent`, `intent-done`, `outbox-add`, `outbox`, `reconcile`. `message` calls `parse-msg.sh` by absolute path with the frame as one argv argument.
+- [ ] **Step 3: Implement** `message`, `session`, `reconcile`. `message` calls `parse-msg.sh` by absolute path with the frame as one argv argument.
 - [ ] **Step 4: Run to verify it passes.** Exit 0.
-- [ ] **Step 5: Commit.** `git commit -m "feat(dev-workflow): ledger.sh message binding, intents, outbox and reconcile"`.
+- [ ] **Step 5: Commit.** `git commit -m "feat(dev-workflow): ledger.sh message binding, session rebinding and reconcile"`.
 
 ---
 
-### Task 7: Reference files — `ledger.md`, `readiness.md`, `partner-brief.md`
+### Task 7: Coordinator-contract test
+
+A scripted run of the coordinator's script contract, with fake session observations, so the sequence `SKILL.md` prescribes is exercised end to end rather than only by phrase pins.
+
+**Files:**
+- Create: `dev-workflow/tests/test-coordinator-contract-sh.sh`
+
+**Interfaces — Consumes:** all four scripts (Tasks 2–6) and `fixtures/partner-sessions/agents.json` (Task 1) as the template for fake observations.
+
+- [ ] **Step 1: Write the test.** In a throwaway repo with a ticket branch and issues 1, 2 (blocked by 1), 3: `path`, `lock`, `init`; `frontier.sh` → launch 1 as canary (`intent launch`, `event launch`), `message STARTED`, `canary-passed`, launch 3; partner commits are simulated with `git commit` on each partner branch; `message DONE` for 1 and 3; queue 1 (`--check`, `queue-check ok`, `intent merge`, `ff-merge.sh`, `gate merged`); queue 3 → `--check` exit 10 → `queue-check stale` → outbox `RESYNC`; **kill point**: discard the in-memory loop here, run `reconcile` with a fake `agents.json`, and consume every printed action (`resend`, `requeue`, `status`) the way `SKILL.md` will; partner 3 re-syncs (merge ticket head, new `DONE`); 3 merges; `frontier.sh` now lists 2; launch, `DONE`, merge 2; `done` prints `handback`; `summary` lists three merged rows; `git log` of the ticket branch contains all three partner commits. Assert the status after every step.
+- [ ] **Step 2: Run.** `bash dev-workflow/tests/test-coordinator-contract-sh.sh` → exit 0. (It is written after Tasks 2–6, so it should pass on first run; any failure is a script bug to fix in the owning task's script, with a new unit test there.)
+- [ ] **Step 3: Commit.** `git commit -m "test(dev-workflow): end-to-end coordinator contract for partner sessions"`.
+
+---
+
+### Task 8: Reference files — `ledger.md`, `readiness.md`, `partner-brief.md`
 
 **Files:**
 - Create: `dev-workflow/skills/coordinating-partner-sessions/ledger.md`, `readiness.md`, `partner-brief.md`
@@ -280,80 +325,80 @@ git commit -m "docs(dev-workflow): record partner-session spike results and fixt
 **Interfaces — Produces:** the brief's placeholders, which `SKILL.md` fills: `{{KEY}}`, `{{N}}`, `{{ISSUE_URL}}`, `{{GEN}}`, `{{SESSION_NAME}}`, `{{COORD_NAME}}`, `{{WORKTREE}}`, `{{BRANCH}}`, `{{TICKET_BRANCH}}`, `{{START_SHA}}`, `{{AC}}`, `{{TEST_CMD}}`, `{{BLOCKER_EVIDENCE}}`.
 
 - [ ] **Step 1: Write the failing pins** in `run.sh` (each `grep -qF '<phrase>' "$PS_DIR/<file>" || pfail "..."`):
-  - `ledger.md`: `## Transition table`; each of the 11 status strings; `generation`; `outbox`; `launch-intent`; `merge-intent`; `partners-<KEY>.lock`; `ledger.sh event`.
+  - `ledger.md`: `## Transition table`; each of the 11 status strings; `generation`; `outbox`; `launch-intent`; `merge-intent`; `partner-sessions/<KEY>/ledger.json`; `git-common-dir`; `never committed`; `PS_OWNER`; `ledger.sh event`.
   - `readiness.md`: `story`; `acceptance criteria`; `test command`; `a stated reason none is needed`; `ask only about what changed`.
   - `partner-brief.md`: `gen=`; `never rebase onto main`; `Never push`; `never open a PR`; `never close or edit GitHub issues`; `STATUS?`; `RESYNC`; `REWORK`; `CANCEL`; `its issue stays open until the ticket PR merges, by design`; `{{COORD_NAME}}`; `{{BLOCKER_EVIDENCE}}`.
 - [ ] **Step 2: Run to verify it fails.** `bash dev-workflow/tests/run.sh` → `FAIL: coordinating-partner-sessions/...` lines, `FAILED`.
 - [ ] **Step 3: Write the three files.**
-  - `ledger.md`: the JSON schema (fields per Task 5/6), status vocabulary, the spec's transition table verbatim with each row's `ledger.sh` event, slot rule, generation rule, outbox and intent rules, lock liveness.
+  - `ledger.md`: location and lifetime (git metadata, never committed, summary to the PR body), the JSON schema (fields per Tasks 5–6), status vocabulary, the spec's transition table verbatim with each row's `ledger.sh` event, the one-write rule, slot rule, generation rule, outbox and intent rules, lock protocol and `PS_OWNER`.
   - `readiness.md`: the mini-intake checklist (story, acceptance criteria, test approach or a stated reason none is needed, the issue's test command), the up-front mode (one sitting, every issue, close every gap before any launch) and the partner re-check mode (current code; ask only about what changed).
   - `partner-brief.md`: the spec's "Partner flow" as a fill-in template — identity, inputs, integration base (`{{TICKET_BRANCH}}`; never rebase onto main), blocker evidence, authority (local commits; may show `Needs input`), forbidden list, steps 1–5, the exact message lines with `gen=`, and the reply rules for `STATUS?`, `RESYNC`, `REWORK`, `CANCEL`.
-- [ ] **Step 4: Run to verify it passes.** `bash dev-workflow/tests/run.sh` → no `coordinating-partner-sessions` failures from these pins (the SKILL.md pins arrive in Task 8; until then gate them behind `[ -f "$PS_SKILL" ]` so this task can pass).
+- [ ] **Step 4: Run to verify it passes.** `bash dev-workflow/tests/run.sh` → no `coordinating-partner-sessions` failures.
 - [ ] **Step 5: Commit.** `git commit -m "feat(dev-workflow): partner-session ledger, readiness and brief references"`.
 
 ---
 
-### Task 8: `SKILL.md` — the coordinator loop
+### Task 9: `SKILL.md` — the coordinator loop
 
 **Files:**
 - Create: `dev-workflow/skills/coordinating-partner-sessions/SKILL.md`
-- Test: `dev-workflow/tests/run.sh` (same block), and wire the four script tests into `run.sh` the way `test-audit-sh.sh` is wired (`if bash "$HERE/test-<x>-sh.sh"; then :; else fail "…"; fi`)
+- Test: `dev-workflow/tests/run.sh` (same block), and wire the five script tests into `run.sh` the way `test-audit-sh.sh` is wired, but with the running interpreter: `if "$BASH" "$HERE/test-<x>-sh.sh"; then :; else fail "…"; fi`
 
-**Interfaces — Consumes:** every script interface (Tasks 2–6), the brief placeholders (Task 7), the blockers read command (Task 1).
+**Interfaces — Consumes:** every script interface (Tasks 2–6), the contract sequence (Task 7), the brief placeholders (Task 8), the blockers read command (Task 1).
 
 - [ ] **Step 1: Write the failing pins:**
   - frontmatter `name: coordinating-partner-sessions`; description ≤ 1024 chars; `SKILL.md` under 500 lines; links `](ledger.md)`, `](readiness.md)`, `](partner-brief.md)`; each `scripts/*.sh` exists and is executable.
-  - phrases: `fast-forward only`; `RESYNC`; `REWORK`; `STATUS?`; `gen=`; `Git state matches the claim`; `Tests pass, run by the coordinator`; `Every AC has evidence`; `dev-workflow:fresh-verifier`; `Partners never push or open PRs`; `third failed gate`; `stop and ask the user` (name collision); `held for approval`; `v2.1.236`; `v2.1.248`; `not in plan mode`; `integration base is the ticket branch`; `/rename`; `canary`; `600`; `cross-session-message`; `deferred`; `Refs`; `notify_when_idle`; `re-register`; `skip steps 3–5`; `/retro`; `skill-retrospective`.
+  - phrases: `fast-forward only`; `RESYNC`; `REWORK`; `STATUS?`; `gen=`; `Git state matches the claim`; `Tests pass, run by the coordinator`; `Every AC has evidence`; `dev-workflow:fresh-verifier`; `Partners never push or open PRs`; `third failed gate`; `stop and ask the user` (name collision); `held for approval`; `v2.1.236`; `v2.1.248`; `not in plan mode`; `integration base is the ticket branch`; `/rename`; `canary`; `600`; `only a canary that has ended`; `cross-session-message`; `deferred`; `Refs`; `notify_when_idle`; `re-register`; `skip steps 3–5`; `PS_OWNER`; `ledger.sh summary`; `after the user confirms`; `/retro`; `skill-retrospective`.
   - negative: no whole-word `ces` anywhere under `coordinating-partner-sessions/`.
 - [ ] **Step 2: Run to verify it fails.** `bash dev-workflow/tests/run.sh` → `FAILED`.
-- [ ] **Step 3: Write `SKILL.md`** following the spec's sections in order, each as an imperative section that names the script call:
+- [ ] **Step 3: Write `SKILL.md`** following the spec's sections in order, each as an imperative section that names the script call (the sequence Task 7 exercises):
   - **When to use / inputs:** called from `chain-sdlc-process.md` stage 5, or standalone with a ticket key, the ticket branch and its published issues.
   - **Preflight:** version (`claude --version` ≥ `v2.1.236`, `v2.1.248` on Bedrock/Vertex/Foundry or flag fetching off); not in plan mode; own name from `ListAgents` (auto-generated or colliding → ask the user to `/rename`, recommend `<KEY>-coord`); held messages in both directions from settings (`crossSessionInbound`, permission class) — stop and name the setting, never edit settings; `gh` auth; ticket branch checked out clean.
-  - **Steps 2–5:** lock (`ledger.sh lock`); existing ledger → check the own name still equals the recorded coordinator name (else ask the user to `/rename` back), `ledger.sh reconcile`, act on its lines, **skip steps 3–5**; read issues with the Task 1 command (fallback `Blocked by:` parse; external blockers per Review Focus 3); readiness up front (`readiness.md`); `ledger.sh init`; `frontier.sh` cycle → stop and show.
-  - **Step 6 launch + canary:** per launch: `ListAgents` name check (collision → stop and ask the user); `ledger.sh intent launch`; worktree/branch (old ones → `-g<old>`); fill `partner-brief.md`; `cd <worktree> && claude --bg --name <KEY>-<n> --permission-mode <mode> "<brief>"`; read `sessionId` from `claude agents --json`; `ledger.sh event … launch`; `SendMessage` with `notify_when_idle`. Canary: first launch only; start a background `sleep 600` as the leg timer; leg 1 passes on `STARTED`; if the idle notice arrives first and `--json` says `blocked`, tell the user the canary is waiting on them in `<KEY>-<n>` and keep waiting (not a failure; restart the timer); leg 2: `STATUS? #n` with a fresh `sleep 600`; on pass `ledger.sh event … canary-passed`; on a failed leg stop launching and name the leg and likely setting.
-  - **Steps 7–9 wait, messages, integration queue:** every wake reads `claude agents --json` to a temp file and `ledger.sh event … json <state>` for each partner; re-register `notify_when_idle` after every consumed notice and when older than ~11 h; messages go through `ledger.sh message`; act on its output lines; the queue runs one `DONE` at a time: `ff-merge.sh --check` → `queue-check`; pin head; the four gate checks (test run in a throwaway worktree at `<sha>`; per-AC evidence; `dev-workflow:fresh-verifier`); `ledger.sh intent merge`; `ff-merge.sh`; `gate merged|resync|fail`; send outbox lines (`ledger.sh outbox-add` before every `SendMessage`); delivery failure → `claude --resume <sessionId> --bg --name <KEY>-<n> "<line>"`, re-read name and `sessionId`.
-  - **Error handling:** idle-notice branches; failure options (relaunch / handled it themselves / drop / cancel the ticket); `STUCK`/`SCOPE` handling including the retrospective recommendation (the user runs `/retro` on the workspace's ticket-creation skill, then `dev-workflow:skill-retrospective`; never launched by the coordinator).
-  - **Step 10 hand-back:** `ledger.sh done`; `cancel-ticket` → release lock, tell the user; `handback` → mark each cancelled issue's AC `deferred` with the user's reason, release the lock, return to intake step 7 then 8; `Closes`/`Refs` for `merged` issues only; cancelled issues listed as not delivered.
-- [ ] **Step 4: Run to verify it passes.** `bash dev-workflow/tests/run.sh` → `ok: coordinating-partner-sessions skill present …`, all four script tests ok, `PASSED`.
+  - **Steps 2–5:** `ledger.sh path`, `ledger.sh lock` (export `PS_OWNER`; exit 40 → stop and tell the user); existing ledger → check the own name still equals the recorded coordinator name (else ask the user to `/rename` back), `ledger.sh reconcile`, act on its lines, **skip steps 3–5**; read issues with the Task 1 command (fallback `Blocked by:` parse; external blockers per Global Constraints); readiness up front (`readiness.md`); `ledger.sh init`; `frontier.sh` cycle → stop and show.
+  - **Step 6 launch + canary:** per launch: `ListAgents` name check (collision → stop and ask the user); `ledger.sh intent launch`; worktree/branch (old ones → `-g<old>`); fill `partner-brief.md`; `cd <worktree> && claude --bg --name <KEY>-<n> --permission-mode <mode> "<brief>"`; on error `event launch-failed`; read `sessionId` from `claude agents --json`; `event launch <intent> <sessionId>`; `SendMessage` with `notify_when_idle`. Canary: first launch only; start a background `sleep 600` as the leg timer; leg 1 passes on `STARTED`; leg 2: `STATUS? #n` with a fresh `sleep 600`; on timer expiry read `--json` — `working` or `blocked` restarts the timer and tells the user (`blocked` → the canary is waiting on them in `<KEY>-<n>`), only a canary that has ended without the expected message is a failed leg; on pass `event … canary-passed`; on a failed leg stop launching and name the leg and likely setting.
+  - **Steps 7–9 wait, messages, integration queue:** every wake reads `claude agents --json` to a temp file and `ledger.sh event … json <state>` for each partner; re-register `notify_when_idle` after every consumed notice and when older than ~11 h; messages go through `ledger.sh message` with the whole frame; act on its output lines; the queue runs one `DONE` at a time: `ff-merge.sh --check` → `queue-check ok|stale <head>`; pin head; the four gate checks (test run in a throwaway worktree at `<sha>`; per-AC evidence; `dev-workflow:fresh-verifier`); `ledger.sh intent merge`; `ff-merge.sh`; `gate merged <intent>|resync <head>|fail <evidence>`; then send whatever `ledger.sh outbox` lists for that issue (the transition already recorded it); delivery failure → `claude --resume <sessionId> --bg --name <KEY>-<n> "<line>"`, re-read name and `sessionId`, `ledger.sh session`.
+  - **Error handling:** idle-notice branches; failure options (relaunch / handled it themselves → `user-merged` / drop / cancel the ticket); `STUCK needs=#m` (cycle check, ask the user, `stuck-accept`, then write the edge to GitHub only after the user confirms that write); `SCOPE` handling including the retrospective recommendation (the user runs `/retro` on the workspace's ticket-creation skill, then `dev-workflow:skill-retrospective`; never launched by the coordinator).
+  - **Step 10 hand-back:** `ledger.sh done`; `cancel-ticket` → `unlock`, tell the user; `handback` → mark each cancelled issue's AC `deferred` with the user's reason, put `ledger.sh summary` in the PR body draft, `unlock`, return to intake step 7 then 8; `Closes`/`Refs` for `merged` issues only; cancelled issues listed as not delivered.
+- [ ] **Step 4: Run to verify it passes.** `bash dev-workflow/tests/run.sh` → `ok: coordinating-partner-sessions skill present …`, all five script tests ok, `PASSED`.
 - [ ] **Step 5: Commit.** `git commit -m "feat(dev-workflow): coordinating-partner-sessions coordinator skill"`.
 
 ---
 
-### Task 9: Intake integration at stage 5
+### Task 10: Intake integration at stage 5
 
 **Files:**
 - Modify: `dev-workflow/skills/intaking-work-items/chain-sdlc-process.md` (stage 5 and Controls → Resume)
-- Modify: `dev-workflow/skills/intaking-work-items/template.md` (Chain artifacts gains the partners ledger path)
+- Modify: `dev-workflow/skills/intaking-work-items/template.md` (Chain artifacts gains the partners ledger location)
 - Test: `dev-workflow/tests/run.sh` (intake block)
 
-**Interfaces — Consumes:** the skill name `dev-workflow:coordinating-partner-sessions` and its hand-back contract (Task 8 step 10).
+**Interfaces — Consumes:** the skill name `dev-workflow:coordinating-partner-sessions` and its hand-back contract (Task 9 step 10).
 
 - [ ] **Step 1: Write the failing pins** in the intake block:
-  - `chain-sdlc-process.md`: `one after another or parallel partners`; `dev-workflow:coordinating-partner-sessions`; `docs/specs/<KEY>-partners.md`; `AC of a cancelled issue are deferred`; `closing keywords and Refs cover merged issues only`; `only when two or more issues are published`.
-  - `template.md`: `<KEY>-partners.md`.
+  - `chain-sdlc-process.md`: `one after another or parallel partners`; `dev-workflow:coordinating-partner-sessions`; `partner-sessions/<KEY>/ledger.json`; `AC of a cancelled issue are deferred`; `closing keywords and Refs cover merged issues only`; `only when two or more issues are published`.
+  - `template.md`: `partner-sessions/<KEY>/ledger.json`.
   - Existing negative pin still holds: no whole-word `ces` in `intaking-work-items/`.
 - [ ] **Step 2: Run to verify it fails.** `bash dev-workflow/tests/run.sh` → intake `FAIL` lines.
-- [ ] **Step 3: Edit stage 5.** Before the router hand-off, add: when two or more issues are published, ask once — one after another (today's path, unchanged) or parallel partners. Parallel invokes `dev-workflow:coordinating-partner-sessions` with the ticket key, ticket branch, issue links and settled AC list; the coordinator owns stage 5 and returns to step 7. State the hand-back contract (deferred AC, `Refs`/`Closes` for merged issues only). Resume: if `docs/specs/<KEY>-partners.md` exists, re-invoke the coordinator (it reconciles). Record the choice in the Run log.
+- [ ] **Step 3: Edit stage 5.** Before the router hand-off, add: when two or more issues are published, ask once — one after another (today's path, unchanged) or parallel partners. Parallel invokes `dev-workflow:coordinating-partner-sessions` with the ticket key, ticket branch, issue links and settled AC list; the coordinator owns stage 5 and returns to step 7. State the hand-back contract (deferred AC, `Refs`/`Closes` for merged issues only, ledger summary in the PR body). Resume: if `$(git rev-parse --git-common-dir)/partner-sessions/<KEY>/ledger.json` exists, re-invoke the coordinator (it reconciles). Record the choice in the Run log.
 - [ ] **Step 4: Run to verify it passes.** `bash dev-workflow/tests/run.sh` → `PASSED`.
 - [ ] **Step 5: Commit.** `git commit -m "feat(dev-workflow): offer parallel partner sessions at sdlc-process stage 5"`.
 
 ---
 
-### Task 10: Version, README, CI check
+### Task 11: Version, README, CI
 
 **Files:**
-- Modify: `dev-workflow/.claude-plugin/plugin.json` (`"version": "0.1.8"`), `dev-workflow/README.md` (Skills table row `| \`coordinating-partner-sessions\` |`; intake row mentions the parallel option)
+- Modify: `dev-workflow/.claude-plugin/plugin.json` (`"version": "0.1.8"`), `dev-workflow/README.md` (Skills table row `| \`coordinating-partner-sessions\` |`; intake row mentions the parallel option), `.github/workflows/tests.yml` (macOS job)
 - Test: `dev-workflow/tests/run.sh`
 
 - [ ] **Step 1: Write the failing pins:** `grep -qF '"version": "0.1.8"' "$ROOT/.claude-plugin/plugin.json"`; `grep -qF '| \`coordinating-partner-sessions\` |' "$ROOT/README.md"`.
 - [ ] **Step 2: Run to verify it fails.** → 2 `FAIL` lines.
-- [ ] **Step 3: Edit** both files.
-- [ ] **Step 4: Verify CI coverage without editing the workflow.** `.github/workflows/tests.yml` already runs `*/tests/run.sh` on Ubuntu (installs `jq`) and macOS (`/bin/bash`), and Task 8 wires the script tests into `run.sh`. Run `/bin/bash dev-workflow/tests/run.sh` locally → `PASSED`. Run `bash scripts/scrub-check.sh --check-overbroad --allow scripts/scrub-allow.txt .` → exit 0. If the macOS runner lacks `jq` (first CI run fails with `jq: command not found`), add `brew install jq` to the macOS job and re-run — that is the only permitted CI edit.
-- [ ] **Step 5: Commit.** `git commit -m "chore(dev-workflow): bump to 0.1.8 and list coordinating-partner-sessions"`.
+- [ ] **Step 3: Edit** `plugin.json` and `README.md`. In `tests.yml`, add a step before the macOS job's `Run tests`: `command -v jq >/dev/null || brew install jq; jq --version; /bin/bash --version | head -1` (the Ubuntu job already installs `jq`). The macOS job already runs `/bin/bash "$t"` (bash 3.2, BSD tools), and Task 9's `"$BASH"` wiring keeps every script test on that interpreter.
+- [ ] **Step 4: Verify.** `/bin/bash dev-workflow/tests/run.sh` → `PASSED`; `bash scripts/scrub-check.sh --check-overbroad --allow scripts/scrub-allow.txt .` → exit 0. After the user confirms the push, the CI run's macOS log shows `GNU bash, version 3.2` and `jq-1.`, and both jobs pass.
+- [ ] **Step 5: Commit.** `git commit -m "chore(dev-workflow): bump to 0.1.8, list coordinating-partner-sessions, provision jq on macOS CI"`.
 
 ---
 
-### Task 11: Live trial (manual, run by the user before release)
+### Task 12: Live trial (manual, run by the user before release)
 
 Not automatable: partners talk to the user and the run spans `claude agents`. The orchestrator prepares the checklist and the scratch ticket; the user runs it and records evidence in `docs/superpowers/plans/2026-10-12-partner-sessions.md` under `## Live trial results`.
 
@@ -366,7 +411,8 @@ Not automatable: partners talk to the user and the run spans `claude agents`. Th
   - One partner left unattended for over an hour is stopped by the idle stop and woken with `STATUS?`, not failed.
   - At least one `RESYNC` (finish A and C close together).
   - B launches only after A is `merged` and holds once on sdlc-process's start rule until the user resolves it.
-  - Hand-back to intake step 7; one draft PR covering A, B and C with `Refs`/`Closes` per step 8's rule.
+  - `git status` in the coordinator's checkout stays clean throughout; the ledger is under `.git/partner-sessions/<KEY>/`.
+  - Hand-back to intake step 7; one draft PR covering A, B and C with `Refs`/`Closes` per step 8's rule and the ledger summary in its body.
 - [ ] **Step 4: Clean up** scratch issues, branches, worktrees and sessions (user confirms each remote deletion).
 - [ ] **Step 5: Commit** the results section: `git commit -m "docs(dev-workflow): record partner-session live trial"`.
 
@@ -374,4 +420,4 @@ Not automatable: partners talk to the user and the run spans `claude agents`. Th
 
 ## Review chain
 
-Full tier (skill definitions, new scripts, more than 150 lines): `dev-workflow:fresh-verifier` and `dev-workflow:codex-adversary` in one message on this plan before Task 1, and on the full diff before the PR (intake-style `opening-pull-requests` gates). Every push needs the user's confirmation.
+Full tier (skill definitions, new scripts, CI, more than 150 lines): `dev-workflow:fresh-verifier` and `dev-workflow:codex-adversary` in one message on this plan before Task 1 (done: plan at `7c7a62b`, findings folded into this revision), a quick re-check of this revision, and both on the full diff before the PR (intake-style `opening-pull-requests` gates). Every push needs the user's confirmation.

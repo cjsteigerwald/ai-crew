@@ -52,7 +52,8 @@ Success:
 6. **The partner resolves its own merge conflicts**, before it reports done.
 7. **One PR per Jira ticket is guidance, not a rule.** If the work looks like it needs more than one
    PR, the coordinator asks the user instead of refusing. When the cause is ticket scope, it
-   recommends a retrospective on `developer:creating-ces-tickets`: the user runs `/retro`
+   recommends a retrospective on the workspace's ticket-creation skill (the one that created this
+   ticket): the user runs `/retro`
    (user-level skill at `~/.claude/skills/retro/`, `disable-model-invocation: true`, so the model
    cannot launch it), then `dev-workflow:skill-retrospective` to apply the learnings. The
    coordinator never launches either itself.
@@ -75,6 +76,12 @@ Success:
     approved "preflight confirms messaging works". Preflight is a version check plus a settings
     read; the first launch is a canary partner that proves real delivery both ways before any other
     partner launches (flow step 6). No throwaway session is created.
+13. **The ledger lives in git metadata, never in the working tree** (user, after plan review). It
+    sits at `$(git rev-parse --git-common-dir)/partner-sessions/<KEY>/ledger.json`, with the run
+    lock and the append-only diagnostic log beside it. Git never sees it as a change, so the
+    coordinator's strict clean-worktree check before a merge still holds, and every worktree of the
+    repo resolves the same path. It is never committed; at hand-back the coordinator writes a
+    readable summary of it into the PR body.
 
 ## Platform facts relied on (code.claude.com docs, fetched 2026-10-12; local CLI 2.1.296)
 
@@ -168,29 +175,43 @@ git.
 
 ## Ledger and durable state (`ledger.md`, `ledger.sh`)
 
-The ledger `docs/specs/<KEY>-partners.md` is the single source of coordinator state. It records the
-coordinator's session name and ID, and per issue: status, blockers, generation, partner session
-name and full `sessionId`, worktree, branch, start SHA, persisted claims, gate results, rework
-count, and outbox.
+The ledger is the single source of coordinator state (Decision 13). It lives in git metadata at
+`$(git rev-parse --git-common-dir)/partner-sessions/<KEY>/ledger.json`, never in a working tree and
+never committed; the run lock (`lock/`) and an append-only diagnostic log (`ledger.log`, not state)
+sit in the same directory. It records the coordinator's session name and ID, and per issue: status,
+blockers, generation, partner session name and full `sessionId`, worktree, branch, start SHA,
+persisted claims, gate results, rework count, and outbox.
 
-- **Single writer.** Only one coordinator runs per ticket, enforced by a run lock
-  (`<git-common-dir>/partners-<KEY>.lock`, holding the coordinator's session ID). The lock is
-  **live** if the holder's session ID equals the caller's own, or appears in `claude agents --json`
-  with a live process. A caller that finds a live lock held by another session stops and tells the
-  user. Otherwise the caller takes the lock over and logs the takeover (old holder, time) in the
-  ledger.
+- **Single writer.** Only one coordinator runs per ticket, enforced by a run lock (`lock/`, a
+  directory created with `mkdir`, holding a `holder` file with the coordinator's session ID and a
+  random nonce). The lock is **live** if the holder's session ID equals the caller's own, or is
+  listed in `claude agents --json` with a live process (where no process field is reported: listed
+  with `state` not in {`stopped`, `failed`}). A missing or empty `holder` is not live. A caller that
+  finds a live lock held by another session stops and tells the user. Otherwise it takes the lock
+  over exclusively: it creates a `takeover` directory beside the lock with `mkdir` (only one
+  contender succeeds), re-checks that the holder is still not live, writes a new holder with its own
+  nonce to a temp file and renames it into place, re-reads it to confirm its own nonce, removes
+  `takeover`, and logs the takeover (old holder, time). A leftover `takeover` directory whose owner
+  is not live (or that has no owner and is older than 60 s) is removed once and the takeover
+  retried. Every ledger write first re-checks that the
+  holder's nonce is its own; a coordinator that has lost the lock stops.
 - **Atomic writes.** Every update writes a temp file and renames it over the ledger, so a crash never
-  leaves a half-written ledger.
+  leaves a half-written ledger. A status change and everything that must accompany it (the outbox
+  command it implies, the claim it records, the intent it closes, dependents it releases) are one
+  write.
 - **Intents before side effects.** Before launching a partner the coordinator records
-  `launch-intent` (issue, generation, worktree, branch, base SHA); before merging it records
-  `merge-intent` (issue, generation, candidate SHA, expected ticket head). The outcome is recorded
-  after. On resume, each open intent is reconciled against git and `claude agents --json` before any
-  message is replayed (e.g. a `merge-intent` whose candidate SHA is already an ancestor of the ticket
-  head is recorded as `merged`).
-- **Outbox.** Before sending `RESYNC`, `REWORK` or `CANCEL`, the coordinator records the message and
-  its generation in the issue's outbox. The entry is cleared when that partner's next valid message
-  for the same generation arrives (or, for `CANCEL`, when the session is gone). On resume, every
-  outbox entry is resent; partners treat a repeated coordinator message as idempotent.
+  `launch-intent` (issue, generation, session name, worktree, branch, base SHA); before merging it
+  records `merge-intent` (issue, generation, candidate SHA, expected ticket head). Recording the
+  outcome and closing the intent are one atomic write (the `launch` and `gate` events take the
+  intent ID). On resume, each **open** intent is reconciled against git and `claude agents --json`
+  before any message is replayed (e.g. a `merge-intent` whose candidate SHA is already an ancestor of
+  the ticket head is recorded as `merged`); closed intents are never replayed, so reconciliation
+  never moves an issue backwards.
+- **Outbox.** A `RESYNC`, `REWORK` or `CANCEL` is recorded in the issue's outbox, with its generation
+  and full text, in the same write as the transition that requires it; the coordinator sends it
+  afterwards. The entry is cleared when that partner's next valid message for the same generation
+  arrives (or, for `CANCEL`, when the session is gone). On resume, every outbox entry is resent
+  verbatim; partners treat a repeated coordinator message as idempotent.
 - **Generation per issue.** Each launch or relaunch of an issue's partner increments its generation;
   the ledger records the session name, full `sessionId`, and generation. Every partner → coordinator
   line carries `gen=<g>`, and every intent and outbox entry records its generation. A wake of a
@@ -265,8 +286,11 @@ the user, per dependent, whether to drop it too (`cancelled`) or remove the edge
    - Wait for its `STARTED #n gen=<g>`: proves partner → coordinator delivery.
    - Send it `STATUS? #n` and wait for its reply: proves coordinator → partner delivery.
    - Record `canary: passed` in the ledger, then launch the rest of the frontier.
-   - If either leg fails, or no message arrives within the timeout the plan sets, stop launching:
-     tell the user which leg failed and the likely setting (`crossSessionInbound` or a
+   - Each leg has a timeout (the plan sets 600 s). When it expires, read `claude agents --json` for
+     the canary: `working` or `blocked` (still busy, or waiting on the user) restarts the timer and
+     tells the user the canary is still running; only a canary that has ended (`done`, `stopped` or
+     `failed`) without the expected message is a failed leg.
+   - If a leg fails, stop launching: tell the user which leg failed and the likely setting (`crossSessionInbound` or a
      permission-class mismatch on the receiving side), and launch nothing more until the user has
      fixed it and asked to continue. The canary partner keeps running.
 
@@ -281,7 +305,7 @@ the user, per dependent, whether to drop it too (`cancelled`) or remove the edge
    4. Fill `partner-brief.md`.
    5. `cd <partner-worktree> && claude --bg --name <KEY>-<n> --permission-mode <mode> "<brief>"`.
    6. Read the name and full `sessionId` from `claude agents --json`, record them and status
-      `launched`; register `notify_when_idle`.
+      `launched` while closing the launch intent (one write); register `notify_when_idle`.
 7. **Wait.** The coordinator is woken by a partner message or an idle notice. On every wake it reads
    `claude agents --json` and re-registers any notice older than about 11 hours.
 8. **On a partner message:** apply sender binding and `parse-msg.sh` (Message protocol), clear any
@@ -293,7 +317,9 @@ the user, per dependent, whether to drop it too (`cancelled`) or remove the edge
     - If every issue is `cancelled`, treat it as **cancel the ticket** (Error handling): release the
       lock and tell the user; no hand-back.
     - Otherwise, for each `cancelled` issue, mark its AC `deferred` in the settled AC list with the
-      user's reason. Release the run lock and hand back to intake step 7 (verify the Jira ticket's
+      user's reason. Write a readable summary of the ledger (each issue's final status, branch,
+      merge SHA, rework and resync counts, and reason for any cancellation) for the PR body. Release
+      the run lock and hand back to intake step 7 (verify the Jira ticket's
       active AC against the whole ticket branch, using `verify.md` in full), then step 8 (review tier
       for the full diff, one draft PR). Closing keywords or `Refs` (Decision 3) cover `merged` issues
       only; the PR body lists each `cancelled` issue as not delivered, with its reason.
@@ -353,8 +379,13 @@ before any state change:
 - `gen=<g>` equals the issue's current generation;
 - for `DONE`, `<branch>` equals the issue's recorded branch.
 
-The coordinator copies `from` out of the message frame and passes it to `ledger.sh` as an argv
-argument; `ledger.sh` performs the comparison.
+The coordinator passes the whole received frame to `ledger.sh` as one argv argument;
+`parse-msg.sh --frame` checks the frame shape and extracts `from` in code (adopted from the plan,
+which is stricter than the coordinator copying `from` by hand), and `ledger.sh` performs the
+comparison.
+
+`synced=<head>` in `DONE` is informational (stored for diagnosis); the merge rule decides currency
+from git, not from this field.
 
 **Parsing safety.** `parse-msg.sh` takes the line as a single argv argument, never through `eval`,
 command substitution of the message, or shell interpolation. `#n` must match `^#[0-9]+$`; `gen=<g>`
@@ -440,7 +471,8 @@ options below). A relaunch starts a fresh budget.
 - **`STUCK needs=#m`:** if `#m` is already `merged`, send `RESYNC #n <head>` instead. Otherwise
   validate the edge `#n blocked-by #m` against the ledger graph. If it would create a cycle, refuse
   it and ask the user which issue absorbs the work. Otherwise ask the user; if they agree, record the
-  edge (and on GitHub), send `CANCEL #n` via the outbox, record `blocked-on #m`, free the slot, and
+  edge in the ledger (added to the issue's blockers), then write it to GitHub after the user confirms
+  that write, send `CANCEL #n` via the outbox, record `blocked-on #m`, free the slot, and
   launch the next frontier issue. If they decline, nothing changes and the partner keeps its slot.
 - **`SCOPE`:** tell the user, recommend the retrospective in Decision 7, and ask: continue with one
   PR, split (move issues out of this run: drop them), or stop (cancel the ticket).
@@ -452,8 +484,9 @@ options below). A relaunch starts a fresh budget.
   2. Check the coordinator's own name still equals the name recorded in the ledger (partners message
      that name). If not, ask the user to `/rename` back to it before continuing.
   3. Reconcile every open intent against git ancestry and `claude agents --json`.
-  4. Re-queue every `done-claimed` and `verifying` issue that is not yet merged (a `verifying` issue
-     re-enters at `ff-merge.sh --check`; its gate is re-run).
+  4. Return every `verifying` issue to `done-claimed` (its gate was interrupted), then re-queue every
+     `done-claimed` issue that is not yet merged; each re-enters at `ff-merge.sh --check` and its
+     gate is re-run.
   5. Resend every outbox entry (`RESYNC`, `REWORK`, `CANCEL`) for its recorded generation.
   6. Re-register `notify_when_idle` for each live partner and send it `STATUS?`, so a `DONE` sent
      while the coordinator was down is resent (dedup drops repeats). Stopped partners follow the
@@ -495,8 +528,16 @@ options below). A relaunch starts a fresh budget.
 - `parse-msg.sh`: each valid message; missing or malformed `gen=`; malformed lines, trailing prose,
   bad SHAs and refs, and shell metacharacters (`;`, `$( )`, backticks, newlines) are rejected or
   stored inert, never executed.
+- `ff-merge.sh`: an integration test that initializes a real ledger, records a merge intent and
+  merges successfully (the ledger, in git metadata, never dirties the worktree).
 - `ledger.sh`:
-  - atomic write; lock contention; stale-lock takeover (dead holder) and own-lock recognition;
+  - atomic write; lock contention; stale-lock takeover (dead holder, missing holder) and own-lock
+    recognition; concurrent takeover by two contenders (exactly one proceeds), including an
+    interruption between `mkdir` and the holder write; a writer that has lost the lock is refused;
+  - a transition and its outbox command in one write (crash right after the transition: reconcile
+    resends the exact command); recording an outcome closes its intent (restart after a successful
+    launch followed by `DONE` or cancel, or after a successful merge, never regresses);
+  - every transition to `merged` (gate, user-driven, reconcile) releases `blocked-on` dependents;
   - sender binding rejects another issue's session name, a near-match or ID-valued `from`, an old
     generation, a mismatched branch, and a line in a non-`cross-session-message` frame (spoofing),
     with a fixture pinning the `<cross-session-message from="…">` frame format;
@@ -564,7 +605,7 @@ the plan and on the diff.
   is not documented as incompatible with `--resume`. If the name is not kept, the coordinator
   re-binds on the name it reads back from `claude agents --json`, as it already does after every
   wake.
-- Set the canary timeout (flow step 6).
+- Set the canary timeout (flow step 6). The plan sets 600 s per leg.
 
 ## Review history
 
@@ -637,3 +678,19 @@ resolved). Addressed in this revision:
   phase (Decision 12) that proves real delivery both ways on the first partner.
 - Frame format corrected to `<cross-session-message from="…">` (SendMessage tool documentation).
 - `--resume` open item narrowed using `claude --help` 2.1.296; the probe-cleanup open item removed.
+
+**Plan review** (plan at `7c7a62b`; `fresh-verifier` verdict BLOCK, `codex-adversary` verdict
+needs-attention). Spec changes made with the plan revision:
+- Ledger in the working tree blocking the coordinator's own merges (both reviewers) → Decision 13
+  (user's choice): the ledger, lock and log live in git metadata and are never committed; a readable
+  summary goes into the PR body; the strict clean-worktree merge check stays.
+- Transition and outbox command written separately → one atomic write; recording an outcome closes
+  its intent in the same write; closed intents are never replayed.
+- Non-exclusive stale-lock takeover → `mkdir` takeover directory, re-check, nonce-confirmed holder
+  rename; every write re-checks ownership; a missing holder is not live; no-pid liveness fallback.
+- Interrupted `verifying` → returned to `done-claimed` by reconciliation before re-queueing.
+- Canary timer expiring on a busy partner → read `--json`; only an ended canary is a failed leg.
+- Every transition to `merged` releases `blocked-on` dependents; an accepted `needs=` edge joins the
+  issue's blockers and is written to GitHub after the user confirms.
+- `parse-msg.sh --frame` extracts `from` (adopted from the plan); `synced=` is informational.
+- Decision 7's retrospective target written generically (public-repo hygiene).
