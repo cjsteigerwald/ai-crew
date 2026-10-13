@@ -346,6 +346,10 @@ the user, per dependent, whether to drop it too (`cancelled`) or remove the edge
    A successful merge updates the ledger and launches the new frontier, including any `blocked-on`
    issue whose blocker just merged.
 10. **When every issue is `merged` or `cancelled`:**
+    - In both cases below, before the run lock is released, every open stop-pending note is
+      finished: its Stop a session reaches step 3, or the user answers its step-4 hold. Otherwise
+      its `json done nopid` write after the release exits 40 (for example, the last issue is
+      dropped, the run is ready to hand back, and its stop still waits on `sleep 300`).
     - If every issue is `cancelled`, treat it as **cancel the ticket** (Error handling): release the
       lock and tell the user; no hand-back.
     - Otherwise, for each `cancelled` issue, mark its AC `deferred` in the settled AC list with the
@@ -516,10 +520,13 @@ options below). A relaunch starts a fresh budget.
   launched.
   0. If no alive row matches the session has already ended: skip to step 3.
   1. Deliver `CANCEL #n` (this is the delivery of that outbox entry) and register
-     `notify_when_idle`. Keep a "stop pending" note per row with its `sessionId` and `startedAt`.
-  2. On the idle notice, or after a background `sleep 300` with no notice, act only if the note is
-     still open and the row still matches (same `sessionId` and `startedAt`); otherwise ignore the
-     timer. Then `claude stop <id>`, with `<id>` the agents row's `id`.
+     `notify_when_idle`. Keep a "stop pending" note per process: the issue, and the row's
+     `sessionId` and `pid`.
+  2. On the idle notice, or after a background `sleep 300` with no notice, read the noted row (by
+     its `sessionId`, else by name). Ignore the trigger if the note is closed, or if the row's `pid`
+     differs from the noted `pid`. If the row is absent or has no `pid`, go to step 3. Otherwise
+     `claude stop <id>`, with `<id>` the `id` of that row, matched by recorded `sessionId`, else by
+     name.
   3. Read agents up to six times, 5 s apart. When the row has no `pid`, record the observation
      (`json done nopid`), and close the note. For `stuck-accept` it is recorded while the issue is
      still `blocked-on`. The event drops only the recorded session's `CANCEL`, and only in
@@ -527,12 +534,14 @@ options below). A relaunch starts a fresh budget.
      `reconcile` clears an open-intent session's `CANCEL`.
   4. Still alive after the sixth read: tell the user the session's name and id and do not loop. The
      caller holds its next action (relaunch, freeing the slot, releasing the lock) until the user
-     confirms the session is gone or says to proceed.
+     confirms the session is gone or says to proceed. The user's answer closes the note.
+  - Before any launch or relaunch of an issue, every stop-pending note for that issue is closed.
   - **Ambiguity:** if more than one alive row matches, or a matching row's `sessionId` is not one the
     ledger recorded for the issue, list the rows and ask the user before stopping. An open launch or
     relaunch intent's session, whose `sessionId` is usually unknown, is matched by the intent's
-    recorded name and counts as launched by the coordinator. Never stop by name when the match is
-    ambiguous.
+    recorded name. That alone is not ambiguity, but the coordinator cannot prove it launched a
+    session whose launch was never recorded, so it stops that session only after the user
+    confirms. Never stop by name when the match is ambiguous.
 - **`STUCK` without `needs=`:** the partner keeps its slot; the user answers in that partner.
 - **`STUCK` or `SCOPE` from a `done-claimed` or `verifying` issue:** status unchanged; logged and
   shown to the user; the queued claim proceeds.
@@ -605,7 +614,8 @@ options below). A relaunch starts a fresh budget.
 - `ledger.sh`:
   - atomic write; run-lock contention; takeover of a dead or missing holder and own-lock
     recognition; the write lock: parallel mutating calls lose no update, a held lock exits 41 after
-    `PS_WRITE_WAIT`, a killed holder frees it; a writer that has lost the lock is refused;
+    `PS_WRITE_WAIT`, a killed holder frees it, a takeover of a dead holder waits for that holder's
+    in-flight write; a writer that has lost the lock is refused;
   - a transition and its outbox command in one write (crash right after the transition: reconcile
     resends the exact command); recording an outcome closes its intent (restart after a successful
     launch followed by `DONE` or cancel, or after a successful merge, never regresses);
@@ -625,8 +635,8 @@ options below). A relaunch starts a fresh budget.
   - every row of the transition table, and illegal transitions refused; no reachable non-terminal
     status without an exit;
   - outbox entries recorded before send, `RESYNC`/`REWORK` cleared only by `DONE` or `FAILED`, resent
-    on resume; the outbox invariant (stale entries purged, `reconcile` repairs), `CANCEL`s to
-    different sessions of one issue coexisting, and a relaunch's `priorPid` check;
+    on resume; the outbox invariant (stale entries purged, by a launch too, `reconcile` repairs),
+    `CANCEL`s to different sessions of one issue coexisting, and a relaunch's `priorPid` check;
   - crash/reconcile at each side-effect boundary (after `launch-intent` before launch, after launch
     before record, after `merge-intent` before merge, after merge before record, during
     `verifying`, after an outbox record before send).

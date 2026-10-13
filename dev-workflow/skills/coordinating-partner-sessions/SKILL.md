@@ -92,12 +92,13 @@ says which call to make when; it does not restate the table.
   `sessions[].sessionId`, or by the recorded name).
   0. **Already ended:** no alive row matches: skip steps 1-2 and go to step 3.
   1. Deliver `CANCEL #n` with `notify_when_idle`. This is the delivery of that `CANCEL`; do not
-     also send it from the outbox. Keep a "stop pending" working note per row with
-     its `sessionId` and `startedAt` (agents rows carry `id`, `sessionId`, `name`, `pid`, `state`,
+     also send it from the outbox. Keep a "stop pending" working note per process: the issue, and
+     the row's `sessionId` and `pid` (agents rows carry `id`, `sessionId`, `name`, `pid`, `state`,
      `startedAt`).
-  2. On the idle notice, or after a background `sleep 300` with no notice: act only if the note is
-     still open AND the row still matches (same `sessionId` and `startedAt`); otherwise ignore the
-     timer. Then `claude stop <id>`, where `<id>` is the agents row's `id` matched by recorded
+  2. On the idle notice, or after a background `sleep 300` with no notice, read the noted row
+     (by its `sessionId`, else by name). Ignore the trigger if the note is closed, or if the row's
+     `pid` differs from the noted `pid`. If the row is absent or has no `pid`, go to step 3.
+     Otherwise `claude stop <id>`, where `<id>` is the `id` of that row, matched by recorded
      `sessionId`, else by name.
   3. Read agents up to 6 times, 5 s apart. When the row has no `pid`:
      `ledger.sh event "$L" <n> json done nopid`, and close the note. For `stuck-accept`, record it
@@ -107,11 +108,16 @@ says which call to make when; it does not restate the table.
      `reconcile` clears it.
   4. Still alive after the sixth read: tell the user the session's name and id, and do not loop.
      The caller holds its next action (relaunch, freeing the slot, `unlock`) until the user
-     confirms the session is gone or says to proceed.
+     confirms the session is gone or says to proceed. Their answer closes the note.
+  - **Notes and launches:** before any launch or relaunch of issue `n` (step 6, Relaunch), close
+    every stop-pending note for `n`.
   - **Ambiguity:** if more than one alive row matches, or a matching row's `sessionId` is not in
-    the issue's `sessions[]` (an open-intent session is exempt: its `sessionId` is usually unknown,
-    so match it by the intent's recorded name and treat it as launched by the coordinator), list the rows to the user and ask before stopping. Never `claude
-    stop` by name when the match is ambiguous: never stop a session it did not launch.
+    the issue's `sessions[]`, list the rows to the user and ask before stopping. An open-intent
+    session is matched by the intent's recorded name (its `sessionId` is usually unknown); that
+    alone is not ambiguity, but this session cannot prove it launched a session whose launch was
+    never recorded. Show it to the user and start step 1 only after they confirm.
+    Never `claude stop` by name when the match is ambiguous:
+    never stop a session it did not launch.
   - **Resume:** a reconcile `resend <n> <to> CANCEL #n` line runs Stop a session, not a plain
     Deliver.
 - **Send the outbox** after every write that may queue a message: `ledger.sh outbox "$L"` prints
@@ -340,9 +346,15 @@ the next.
 
 After every terminal change, run `ledger.sh done "$L"`. Exit `1`: not finished, keep waiting.
 
+In both branches, before `ledger.sh unlock`, finish every open stop-pending note: its Stop a
+session reaches step 3, or the user answers its step-4 hold. Otherwise its `json done nopid`
+write after the unlock exits `40` (for example, the last issue is dropped, `done` prints
+`handback`, and its stop still waits on `sleep 300`).
+
 - **`cancel-ticket`** (every issue `cancelled`): treat it as cancelling the ticket. First list
-  any outstanding `CANCEL` lines (`ledger.sh outbox "$L"`) to the user. `ledger.sh unlock "$L"` and tell the user. No hand-back; branches and worktrees stay until the
-  user cleans them up.
+  any outstanding `CANCEL` lines (`ledger.sh outbox "$L"`) to the user. Finish every open
+  stop-pending note, then `ledger.sh unlock "$L"` and tell the user. No hand-back; branches and
+  worktrees stay until the user cleans them up.
 - **`handback`:** first list any outstanding `CANCEL` lines (`ledger.sh outbox "$L"`) to the user.
   1. For each `cancelled` issue, mark its AC `deferred` in the settled AC list, with the reason stored by `drop` or `cancel-ticket`.
      A missing reason (`ledger.sh get` shows `reason` null): ask the user for it.
@@ -350,16 +362,17 @@ After every terminal change, run `ledger.sh done "$L"`. Exit `1`: not finished, 
   3. Closing keywords cover `merged` issues only, by intake step 8's rule: `Closes #n` only where
      the repo lets a merge close the issue, otherwise `Refs owner/repo#n`. List each `cancelled`
      issue as not delivered, with its reason.
-  4. `ledger.sh unlock "$L"`, then return to intake step 7 (Verify, `verify.md` in full on the
-     ticket branch), then step 8 (review tier, one draft PR). Standalone: give the user the
-     summary and these PR-body rules.
+  4. Finish every open stop-pending note, then `ledger.sh unlock "$L"`; then return to intake
+     step 7 (Verify, `verify.md` in full on the ticket branch), then step 8 (review tier, one
+     draft PR). Standalone: give the user the summary and these PR-body rules.
 
 ## Error handling
 
 **Idle notice** for partner `n` (one-shot; it only means a turn ended). Read agents for its row:
 
-- A "stop pending" note is open for this row: follow Stop a session step 2, not the branches
-  below.
+- A "stop pending" note is open for this issue, and the row has the noted `pid`, or has ended:
+  follow Stop a session step 2, not the branches below. A row with a different `pid` takes the
+  branches below.
 - Alive and `blocked` (waiting on the user), or alive and `working`: Arm only.
 - Alive and `done`, with no `DONE` received for this generation: apply the `STATUS?` guard, then
   Arm.
@@ -393,7 +406,8 @@ Ask the user:
   (exit `30` otherwise: tell the user).
 - **Drop:** ask the reason, `ledger.sh event "$L" <n> drop "<reason>"`. It prints `cancelled` and
   `dependents=<list>`. Run Stop a session for each issue whose recorded or open-intent
-  session is alive (its step 1 delivers the `CANCEL`; do not also send the outbox for it). Per dependent `d`, ask: drop it too (`drop`), or remove the edge with
+  session is alive (its step 1 delivers the `CANCEL`; do not also send the outbox for it). Per
+  dependent `d`, ask: drop it too (`drop`), or remove the edge with
   `ledger.sh event "$L" <d> edge-remove <n>` (a `pending` or `blocked-on #n` dependent stays or
   becomes `pending` without that blocker; then run step 6).
 - **Cancel the ticket:** ask the reason, `ledger.sh event "$L" <n> cancel-ticket "<reason>"`
