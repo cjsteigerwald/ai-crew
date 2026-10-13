@@ -12,7 +12,7 @@ never leave `TBD`. No secrets, tokens, or credential values anywhere in the doc.
 **Fetched:** <YYYY-MM-DD, required — resume diffs comments and changes against this date> — ticket status `<status>`, sprint `<sprint or none>`, estimate `<value or none>`
 **Intake by:** <name> with the `dev-workflow:intaking-work-items` skill
 **Status:** <Draft | Ready | Partial | Delivered | Cancelled> — <last completed step; skipped steps and what each lost, e.g. "gap analysis skipped — requirements not gap-checked">
-**Chain:** <superpowers | mattpocock | sdlc-process | — (not yet chosen)>
+**Chain:** <sdlc-process | mattpocock | — (not yet chosen)>
 **Run mode:** <unattended | attended>
 
 > Snapshot of the ticket on the fetched date plus the decisions below. If the ticket changes,
@@ -112,8 +112,7 @@ skipped".>
 
 ## Chain artifacts
 
-<Filled in step 6. superpowers: the design doc path and the plan path (or the approved bounded
-task list). mattpocock: the spec issue (`owner/repo#N`) and the ticket issues (`owner/repo#N` —
+<Filled in step 6. mattpocock: the spec issue (`owner/repo#N`) and the ticket issues (`owner/repo#N` —
 `AC-n` each), plus any superseded tickets. sdlc-process: the work branch, the
 published issue links (each with `AC-n`), sdlc-process holds and their resolutions, and any
 superseded tickets, and, if parallel partners were chosen, the ledger location

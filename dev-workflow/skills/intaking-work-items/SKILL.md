@@ -6,7 +6,7 @@ description: >
   acceptance criteria, blocks on clarifying questions until every gap is closed
   or explicitly deferred, writes docs/specs/<KEY>-requirements.md, offers
   confirmed writebacks to the ticket, then chains design, plan, implementation
-  (superpowers, mattpocock-skills or sdlc-process [attended], the user's choice) — unattended after one
+  (sdlc-process [attended, the default] or mattpocock-skills, the user's choice) — unattended after one
   sitting by default — verifies each AC, opens a draft PR, closes out on
   return. Use when starting work on an existing ticket — "start work on
   PROJ-571", "pick up issue #12", "bring in this ticket", "work on
@@ -40,8 +40,8 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
 
 - **Announce once**, at the start: the user can say "skip <step or question>" or "cancel" at any
   point. Every `AskUserQuestion` in step 3 and every checkpoint in step 6 includes a **Skip**
-  option; "Other" lets them type cancel. Gates owned by a chained skill (e.g. brainstorming's
-  spec review) have no Skip button — the user can still type skip or cancel there, and the same
+  option; "Other" lets them type cancel. Gates owned by a chained skill (e.g. sdlc-process's
+  readiness or policy-review gates) have no Skip button — the user can still type skip or cancel there, and the same
   rules apply.
 - **Skip a gap question or checklist row:** an explicit user deferral, so it satisfies the HARD
   GATE for that row. Log it in the decision log and the deferred table as
@@ -51,9 +51,8 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
   - **A row 7/12 blocker that is a repo gate** (an unmet gate, or not in a sprint when the repo
     requires one) is not a gap: skipping it is a step-0 override and needs the second
     confirmation below.
-- **Skip a whole step** (fetch extras, gap analysis, requirements doc, writeback, brainstorming,
-  writing-plans, plan-implementation, mattpocock spec / tickets / implement, sdlc-process
-  tickets / implement, PR): allowed,
+- **Skip a whole step** (fetch extras, gap analysis, requirements doc, writeback, mattpocock
+  spec / tickets / implement, sdlc-process tickets / implement, PR): allowed,
   **with a warning, and it does not block the chain**. Warn once, in one line, about what the skip
   loses, record it, then continue to the next step. Skipping gap analysis means no gate ran: the
   doc says "requirements not gap-checked".
@@ -61,10 +60,10 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
     **Gap table at skip** section, and add each open row to Deferred as
     `Skipped by user — step 3 skipped`, so the specific open rows stay visible downstream and in
     the PR.
-  - **Plan skipped** (writing-plans, the bounded task list, or `to-tickets`): warn once and record
+  - **Plan skipped** (the bounded task list, or `to-tickets`): warn once and record
     it, then get an explicit go-ahead for implementation. Implement directly against the settled AC
     list and cover only active AC (see step 6, **Settled AC list**) to the same verification
-    standard, without plan-implementation's approved-plan prerequisite. The PR body states
+    standard, without a plan-approval prerequisite. The PR body states
     "Intake: plan skipped". On the mattpocock chain
     the Implement stage still runs, as [chain-mattpocock.md](chain-mattpocock.md) defines it (`implement-spec`
     in intake mode, or `/mattpocock-skills:implement` on the attended fallback); on the
@@ -256,27 +255,27 @@ Steps 0–5 are the same for every chain. Step 6 picks the chain that runs desig
 implement, then goes to step 7 (Verify) and step 8 (Ship).
 
 **Choosing the chain.**
-1. Read the **target** repo's `docs/agents/issue-tracker.md`, if present. Recommend mattpocock
-   only when it configures GitHub issues for the target repo (its `owner/repo` matches
-   `gh repo view --json nameWithOwner`). Recommend sdlc-process when the user named it, or when the
-   `Skill` tool lists `sdlc-process:sdlc-process` AND the target's `AGENTS.md`, `CLAUDE.md` or
-   `docs/agents/issue-tracker.md` mentions `sdlc-process`; it outranks mattpocock when both match.
-   If the user names it but it is not installed, say so and recommend per the other rules.
-   Otherwise recommend superpowers. sdlc-process is attended only.
-2. Ask once (`AskUserQuestion`): superpowers / mattpocock / sdlc-process / **Skip**, the
-   recommendation first and labelled as such. That is the 4-option limit; cancel is typed via
-   "Other" (see **Controls**).
+1. Recommend **sdlc-process** by default. Read the **target** repo's `docs/agents/issue-tracker.md`,
+   if present: recommend mattpocock instead only when it configures GitHub issues for the target
+   repo (its `owner/repo` matches `gh repo view --json nameWithOwner`) AND the user has not chosen
+   or named sdlc-process; mattpocock never outranks sdlc-process otherwise. sdlc-process is attended
+   only (see [chain-sdlc-process.md](chain-sdlc-process.md)); that does not change the default. If
+   sdlc-process is not installed (the `Skill` tool does not list `sdlc-process:sdlc-process`), say
+   so and recommend mattpocock if its rule above holds, else offer Skip only.
+2. Ask once (`AskUserQuestion`): sdlc-process / mattpocock / **Skip**, the recommendation first
+   and labelled as such; leave sdlc-process out and say it isn't installed when it is missing.
+   Cancel is typed via "Other" (see **Controls**).
 3. If mattpocock is chosen:
    - **Not set up** (no `docs/agents/issue-tracker.md`): tell the user to run
      `/mattpocock-skills:setup-matt-pocock-skills` and wait.
    - **Not GitHub issues for this repo** (it configures local markdown, GitLab, Jira, another
      tracker, or another repo): say intake's mattpocock path needs GitHub issues for the target
-     repo, and offer superpowers — or the user re-runs
+     repo, and offer sdlc-process — or the user re-runs
      `/mattpocock-skills:setup-matt-pocock-skills` to switch to GitHub.
    - **Repo rules forbid issues now** (a step-0 rule such as "no GitHub issue until the Jira ticket
      is in a sprint"): say the mattpocock path is unavailable for this ticket and offer
-     superpowers. A step-0 override follows **Controls**' second-confirmation rule.
-   If sdlc-process is chosen but not installed, say so and re-ask without it. Only the mattpocock
+     sdlc-process. A step-0 override follows **Controls**' second-confirmation rule.
+   If sdlc-process is chosen but not installed, say so and re-ask with mattpocock / **Skip**. Only the mattpocock
    *setup* gates above are excluded: it runs attended only, keeps its own gates, and a step-0 repo
    rule forbidding issues still applies (publication is then a hold; proceeding needs the step-0
    second confirmation in **Controls**). Its tracker contract is in [chain-sdlc-process.md](chain-sdlc-process.md) (publication to GitHub or elsewhere
@@ -292,9 +291,8 @@ implement, then goes to step 7 (Verify) and step 8 (Ship).
 offers go / **Skip** / cancel (see **Controls**). In unattended mode the checkpoints end at the
 go; after it only [run-modes.md](run-modes.md) § Stop conditions halt the run. If a chained skill
 is not installed, say so:
-- a missing superpowers skill → do that step by hand to the same standard;
-- a missing `mattpocock-skills` command → intake does not replicate it; offer superpowers instead;
-- a missing `sdlc-process` skill → intake does not replicate it; offer another chain instead.
+- a missing `mattpocock-skills` command → intake does not replicate it; offer sdlc-process instead;
+- a missing `sdlc-process` skill → intake does not replicate it; re-ask with mattpocock / **Skip**.
 
 After cancel, no chained skill is invoked.
 
@@ -308,7 +306,6 @@ unverified". Never plan from the original ticket text after step 3 changed it: t
 restores refined or deferred AC.
 
 **Run the chosen chain:**
-- superpowers → read [chain-superpowers.md](chain-superpowers.md)
 - mattpocock → read [chain-mattpocock.md](chain-mattpocock.md)
 - sdlc-process → read [chain-sdlc-process.md](chain-sdlc-process.md)
 
