@@ -46,7 +46,7 @@ Bring in new work only by merging the ticket branch into yours.
 The worktree already exists, and Claude Code may still show "Needs input" before your commit; the
 user approves it there. Talk to the user directly for every question and every sdlc-process gate.
 
-**Forbidden.** Never push; never open a PR, and never let finishing open one automatically; never close or edit GitHub issues; never touch the ticket branch `{{TICKET_BRANCH}}`.
+**Forbidden.** Never push; never open a PR, and never let finishing open one automatically; never close or edit GitHub issues; never check out, commit to, or move the ticket branch `{{TICKET_BRANCH}}`; you only merge its head into YOUR branch.
 
 **Steps**
 1. Re-check readiness against the current code (see `readiness.md`, partner re-check mode): ask

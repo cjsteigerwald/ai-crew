@@ -417,8 +417,9 @@ for f in ledger.md readiness.md partner-brief.md; do
   [ -f "$PS_DIR/$f" ] || pfail "coordinating-partner-sessions/$f not found"
 done
 if [ -f "$PS_DIR/ledger.md" ]; then
-  for pin in '## Transition table' 'pending' 'launched' 'started' 'blocked-on #m' 'done-claimed' 'verifying' \
-             'rework-n/3' 'resync-requested' 'merged' 'failed' 'cancelled' 'generation' 'outbox' \
+  for pin in '## Transition table' '`pending`' '`launched`' '`started`' '`blocked-on #m`' '`done-claimed`' '`verifying`' \
+             '`rework-n/3`' '`resync-requested`' '`merged`' '`failed`' '`cancelled`' 'generation' 'outbox' \
+             'done nopid' 'exit 30' 'supersedes' 'gen=<g>' 'canary-passed' 'launch-failed' \
              'launch-intent' 'merge-intent' 'partner-sessions/<KEY>/ledger.json' 'git-common-dir' \
              'never committed' 'PS_OWNER' 'ledger.sh event'; do
     grep -qF -- "$pin" "$PS_DIR/ledger.md" || pfail "coordinating-partner-sessions/ledger.md: missing '$pin'"

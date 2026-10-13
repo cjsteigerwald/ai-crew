@@ -903,6 +903,35 @@ expect_rc "drop_cancel_close_intents cancel-ticket" 0
 [ "$(intent_open "$I2")" = "false cancelled" ] || fail "drop_cancel_close_intents: cancel-ticket left merge intent '$(intent_open "$I2")'"
 echo "ok: drop_cancel_close_intents"
 
+# ---------------------------------------------------------------- rework_resets_per_generation
+setup rework-gen "[$(iss 1),$(iss 2)]"
+ev 1 canary-passed
+seed 1 rework-2/3
+jset '.issues[$n].rework = 2' --arg n 1
+ev 1 stuck-accept 2
+expect_rc "rework_resets_per_generation stuck-accept" 0
+expect_st "rework_resets_per_generation blocked" 1 "blocked-on #2"
+seed 2 verifying
+run intent "$L" merge 2 "$H40" "$H41"
+ev 2 gate merged "$(intent_id)"
+expect_rc "rework_resets_per_generation gate merged" 0
+expect_st "rework_resets_per_generation pending" 1 pending
+run intent "$L" launch 1 TEST-1 "$T/wt-1c" test-x-1-g2 "$H40"
+expect_rc "rework_resets_per_generation intent" 0
+ev 1 launch "$(intent_id)" sid-1c
+expect_rc "rework_resets_per_generation launch" 0
+[ "$(fld 1 rework)" = 0 ] || fail "rework_resets_per_generation: rework '$(fld 1 rework)' after a fresh launch, want 0"
+for k in 1 2; do
+  seed 1 verifying
+  ev 1 gate fail "fail $k"
+  expect_rc "rework_resets_per_generation fail $k" 0
+  expect_st "rework_resets_per_generation fail $k" 1 "rework-$k/3"
+done
+seed 1 verifying
+ev 1 gate fail "fail 3"
+expect_st "rework_resets_per_generation third" 1 failed
+echo "ok: rework_resets_per_generation"
+
 # ================================================================ message, session, reconcile
 KISS="[$(iss 9),$(iss 12),$(iss 13)]"
 H42="3333333333333333333333333333333333333333"

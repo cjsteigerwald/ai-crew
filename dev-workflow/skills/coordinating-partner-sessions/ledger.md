@@ -97,6 +97,37 @@ fails). `merge` adds `candidateSha`, `expectedHead`.
   `stopped` or `done nopid` drops a pending `CANCEL` for a `blocked-on` or `cancelled` issue whose
   session ended. A bare `json done` keeps it and exits 10, because `done` with a `pid` is alive.
 
+## Command reference
+
+All take the ledger path (from `path`) as the first argument after the verb, except `path`.
+
+| Call | Does |
+|---|---|
+| `ledger.sh path <KEY>` | Prints the ledger path; creates its directory |
+| `ledger.sh lock <ledger> <own-session-id> <agents.json>` | Takes the run lock; prints `owner=<sid>:<nonce>` |
+| `ledger.sh unlock <ledger>` | Releases the run lock |
+| `ledger.sh init <ledger> <KEY> <ticket-branch> <coord-name> <coord-session-id> <issues.json>` | Creates the ledger; all issues `pending` |
+| `ledger.sh get <ledger> [<n>]` | The state, or one issue, as JSON |
+| `ledger.sh intent <ledger> launch\|relaunch <n> <session-name> <worktree> <branch> <base-sha>` | Records a `launch-intent`; prints `intent=<id>` |
+| `ledger.sh intent <ledger> merge <n> <candidate-sha> <expected-head>` | Records a `merge-intent`; prints `intent=<id>` |
+| `ledger.sh event <ledger> <n> <event> [args]` | The only way statuses change (see the table and below) |
+| `ledger.sh message <ledger> <raw-frame>` | A partner message, as the whole frame in one argument: bind, dedup, apply |
+| `ledger.sh session <ledger> <n> <session-name> <session-id>` | Rebinds a woken partner |
+| `ledger.sh reconcile <ledger> <agents.json>` | Resume: prints `requeue`, `resend` and `status` lines |
+| `ledger.sh outbox <ledger>` | Prints `<n>\t<gen>\t<to>\t<line>` per pending entry |
+| `ledger.sh slots <ledger>` | Prints the live count |
+| `ledger.sh done <ledger>` | Prints `handback` or `cancel-ticket`; exit 1 if not finished |
+| `ledger.sh summary <ledger>` | Markdown table for the PR body |
+
+Two events are not rows of the transition table:
+
+- `ledger.sh event <ledger> <n> canary-passed` opens the canary gate (`canary` goes `pending` to
+  `passed`) once the first partner has passed its canary legs. Until then a second issue's launch
+  is refused (exit 30), so the run stalls without it. A repeat exits 10.
+- `ledger.sh event <ledger> <n> launch-failed <intent-id>` records that the launch for that open
+  intent did not happen: the issue returns to its prior status (`pending`, or `failed` for a
+  relaunch) and the intent closes (outcome `launch-failed`). A closed intent exits 10.
+
 ## Lock protocol
 
 1. `ledger.sh lock <ledger> <own-session-id> <agents.json>` takes the run lock and prints
@@ -140,10 +171,10 @@ fails). `merge` adds `candidateSha`, `expectedHead`.
 | working | `STUCK` without `needs=`, or user declines the new edge, or `SCOPE` | unchanged | `message` prints `ask-user=...` |
 | `done-claimed`, `verifying` | `STUCK` or `SCOPE` (e.g. as a `STATUS?` reply) | unchanged; logged and surfaced to the user; the queued claim proceeds | `message` (exit 10, prints `ask-user=...`) |
 | `rework-n/3`, `resync-requested` | `STARTED` (partner reworking or re-testing) | unchanged | `message` |
-| `done-claimed` | Head of queue; `ff-merge.sh --check` returns `resync-needed` | `resync-requested` (no budget used) | `event <n> queue-check stale <head>` |
+| `done-claimed` | Head of queue; `ff-merge.sh --check` exits 10 (prints `head=<sha>`) | `resync-requested` (no budget used) | `event <n> queue-check stale <head>` |
 | `done-claimed` | Head of queue; `ff-merge.sh --check` passes | `verifying` | `event <n> queue-check ok` |
 | `verifying` | Gate passes; `merge-intent`; `ff-merge.sh` succeeds | `merged` | `intent merge`, then `event <n> gate merged <id> [text]` |
-| `verifying` | Gate passes; `ff-merge.sh` returns `resync-needed` | `resync-requested` | `event <n> gate resync <head> [<id>]` |
+| `verifying` | Gate passes; `ff-merge.sh` exits 10 (prints `head=<sha>`) | `resync-requested` | `event <n> gate resync <head> [<id>]` |
 | `verifying` | Gate fails, fewer than 3 failures in this generation | `rework-n/3` (sends `REWORK`) | `event <n> gate fail <evidence>` |
 | `verifying` | Gate fails for the third time in this generation | `failed` (reason: rework budget) | `event <n> gate fail <evidence>` |
 | `blocked-on #m` | `#m` becomes `merged` | `pending` (relaunched with a fresh brief, new generation, fresh branch and worktree) | automatic, in the write that merges `#m` |
@@ -163,4 +194,10 @@ The rework count belongs to a generation: a relaunch (either kind) starts the ne
 edge (`pending`). A `failed` issue's dependents stay `pending` (or `blocked-on`) until the user
 resolves the failure.
 
-Any call not in the table exits 30.
+The `<head>` in `queue-check stale <head>` and `gate resync <head>` is the sha from the `head=<sha>`
+line that `ff-merge.sh` printed with exit 10. `ff-merge.sh` exit 3 (merge call only) means the ticket
+branch is not checked out there or the worktree is dirty; fix that, it is not a resync.
+
+A call whose transition is not in the table exits 30 (refused, ledger unchanged). Other outcomes
+keep their own codes: a repeat of an applied call exits 10, bad arguments exit 2, a rejected
+partner message exits 20, and a lost lock exits 40.

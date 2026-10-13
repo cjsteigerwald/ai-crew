@@ -59,13 +59,14 @@ def outbox_clear_gen($k; $g):
                          and ((.line | startswith("CANCEL #")) | not)) | not));
 # Record launch/relaunch intent $in as launched with session $sid, closing it.
 # Shared by `event launch|relaunch` and `reconcile`: gen+1, the session joins the
-# issue's session history, a relaunch resets the rework count.
+# issue's session history, any new generation resets the rework count.
 def record_launch($k; $in; $sid):
   .issues[$k] |= (.status = "launched" | .gen = $in.gen | .sessionName = $in.sessionName
                   | .sessionId = $sid | .worktree = $in.worktree | .branch = $in.branch
                   | .startSha = $in.baseSha | .claim = null
                   | .sessions = ((.sessions // []) + [{gen: $in.gen, name: $in.sessionName, sessionId: $sid}])
-                  | if $in.kind == "relaunch" then .rework = 0 | .reason = null else . end)
+                  | .rework = 0
+                  | if $in.kind == "relaunch" then .reason = null else . end)
   | close_intent($in.id; "launched");
 # The one transition to merged: in the same write, every `blocked-on #k` issue becomes pending.
 def to_merged($k; $sha):
