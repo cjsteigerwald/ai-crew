@@ -406,6 +406,45 @@ if [ "$INTAKE_FAILS" -eq 0 ]; then
   echo "ok: intaking-work-items skill present (description $desc_len chars, SKILL.md $lines lines), supporting files linked, gate rules pinned"
 fi
 
+echo "== coordinating-partner-sessions skill =="
+PS_DIR="$ROOT/skills/coordinating-partner-sessions"
+PARTNER_FAILS=0
+pfail() {
+  PARTNER_FAILS=$((PARTNER_FAILS + 1))
+  fail "$1"
+}
+for f in ledger.md readiness.md partner-brief.md; do
+  [ -f "$PS_DIR/$f" ] || pfail "coordinating-partner-sessions/$f not found"
+done
+if [ -f "$PS_DIR/ledger.md" ]; then
+  for pin in '## Transition table' 'pending' 'launched' 'started' 'blocked-on #m' 'done-claimed' 'verifying' \
+             'rework-n/3' 'resync-requested' 'merged' 'failed' 'cancelled' 'generation' 'outbox' \
+             'launch-intent' 'merge-intent' 'partner-sessions/<KEY>/ledger.json' 'git-common-dir' \
+             'never committed' 'PS_OWNER' 'ledger.sh event'; do
+    grep -qF -- "$pin" "$PS_DIR/ledger.md" || pfail "coordinating-partner-sessions/ledger.md: missing '$pin'"
+  done
+fi
+if [ -f "$PS_DIR/readiness.md" ]; then
+  for pin in 'a story' 'acceptance criteria' 'test command' 'a stated reason none is needed' 'ask only about what changed'; do
+    grep -qF -- "$pin" "$PS_DIR/readiness.md" || pfail "coordinating-partner-sessions/readiness.md: missing '$pin'"
+  done
+fi
+if [ -f "$PS_DIR/partner-brief.md" ]; then
+  for pin in 'gen=' 'never rebase onto main' 'Never push' 'never open a PR' 'never close or edit GitHub issues' \
+             'STATUS?' 'RESYNC' 'REWORK' 'CANCEL' 'its issue stays open until the ticket PR merges, by design' \
+             '{{COORD_NAME}}' '{{BLOCKER_EVIDENCE}}'; do
+    grep -qF -- "$pin" "$PS_DIR/partner-brief.md" || pfail "coordinating-partner-sessions/partner-brief.md: missing '$pin'"
+  done
+fi
+# Public-repo hygiene: no organisation-specific ticket skill names.
+if [ -d "$PS_DIR" ]; then
+  ps_ces="$(grep -rniwE 'ces' "$PS_DIR" 2>/dev/null || true)"
+  [ -z "$ps_ces" ] || pfail "coordinating-partner-sessions/: organisation-specific term 'ces' found: $ps_ces"
+fi
+if [ "$PARTNER_FAILS" -eq 0 ]; then
+  echo "ok: coordinating-partner-sessions reference files present and pinned"
+fi
+
 echo "== Result =="
 if [ "$FAIL" -ne 0 ]; then
   echo "FAILED"
