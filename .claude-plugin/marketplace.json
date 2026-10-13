@@ -7,7 +7,7 @@
     {
       "name": "claude-crew",
       "source": "./claude-crew",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "description": "Tiered Claude delegate agents (scout/reader/implementer) with pinned Haiku/Sonnet/Opus models, so subagent work stops inheriting the expensive session model"
     },
     {

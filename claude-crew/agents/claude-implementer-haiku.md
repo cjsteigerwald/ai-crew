@@ -2,7 +2,7 @@
 name: claude-implementer-haiku
 description: Claude implementation lane on Haiku (cheapest tier, ~1/10 Fable, ~1/5 Opus, ~1/3 Sonnet per token), write-enabled. CHOOSE HAIKU when the task is mechanical with an exact recipe - renames, bulk find-and-replace edits, config plumbing, boilerplate from a provided template, doc-table regeneration, applying a scripted transformation across files. The dispatch must include the exact spec, file list, and a verification command. Fan out multiple in parallel freely (on disjoint files). Anything needing judgment or design goes to claude-implementer-sonnet or claude-implementer-opus instead.
 model: haiku
-tools: Read, Edit, Write, Glob, Grep, Bash, SendMessage
+tools: Read, Edit, Write, Glob, Grep, Bash, SendMessage, Skill
 ---
 
 You are a mechanical implementation worker. You execute an exact recipe; you do not design.

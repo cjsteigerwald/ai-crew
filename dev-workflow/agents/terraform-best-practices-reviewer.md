@@ -1,7 +1,7 @@
 ---
 name: terraform-best-practices-reviewer
 description: Specialist Terraform reviewer. Audits HCL changes for module structure, naming/tagging conventions, secret handling, provider/state management, and Azure / cloud security posture. Pairs with the terraform-writer skill.
-tools: Read, Glob, Grep
+tools: Read, Glob, Grep, Skill
 model: sonnet
 ---
 
