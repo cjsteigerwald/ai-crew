@@ -78,8 +78,9 @@ was written (null if absent or ended). `merge` adds `candidateSha`, `expectedHea
 - **Outbox.** `RESYNC`, `REWORK` and `CANCEL` are queued by the write that requires them; send them
   afterwards with `ledger.sh outbox`, which prints `<n>\t<gen>\t<to>\t<line>`. Only one pending
   entry exists per issue: a newer entry supersedes the older one. The one exception: `CANCEL`s to
-  two different sessions of an issue (its recorded session and an open intent's) both stay. A valid next message from the
-  partner for that generation clears its `RESYNC`/`REWORK`. A `CANCEL` stays until its session has
+  two different sessions of an issue (its recorded session and an open intent's) both stay. Only the partner's next `DONE`
+  or `FAILED` for that generation clears its `RESYNC`/`REWORK`; a `STARTED`, `STUCK` or `SCOPE`
+  leaves it outstanding (resume resends it). A `CANCEL` stays until its session has
   ended (see `json` below).
 - **Claims.** A `DONE` is stored in `claim` on receipt, before verification. A repeated `DONE`
   (same issue, generation, sha) is a no-op (exit 10). A `DONE` with a new sha while the issue is

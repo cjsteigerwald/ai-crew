@@ -309,8 +309,9 @@ elif $op == "event" then (
 # ------------------------------------------------------------------ message
 # A parsed partner message ($from, $mkind, $n, $mgen, …). Sender binding comes
 # first and rejects (20) before anything else is looked at; then DONE dedup
-# (10); then, in one write, this gen's RESYNC/REWORK outbox entries are cleared
-# and the transition applied.
+# (10); then the transition is applied in one write. Only a DONE or a FAILED
+# clears this gen's RESYNC/REWORK outbox entries in that write: a STARTED,
+# STUCK or SCOPE leaves them outstanding (ruling CX4).
 elif $op == "message" then (
   .issues[$n] as $i
   | ($i.status // "") as $st
@@ -323,13 +324,11 @@ elif $op == "message" then (
     then noop("DONE #\($n) gen \($mgen) \($sha) already claimed")
     else
       outbox_clear_gen($n; $i.gen) as $cl
-      | ($cl.outbox != .outbox) as $cleared
       | ($st == "done-claimed" or $st == "verifying") as $claimed
       | if $mkind == "STARTED" then
-          if $st == "launched" then $cl | .issues[$n].status = "started" | ok(["started"])
+          if $st == "launched" then .issues[$n].status = "started" | ok(["started"])
           elif $st == "started" then noop("#\($n) already started")
-          elif active($n) then
-            (if $cleared then $cl | ok([$st]) else noop("STARTED on #\($n) \($st)") end)
+          elif active($n) then noop("STARTED on #\($n) \($st)")
           else refuse("STARTED on #\($n) \($st)")
           end
         elif $mkind == "DONE" then
@@ -357,12 +356,12 @@ elif $op == "message" then (
               if $mkind == "STUCK" and $needs != "" and (.issues[$needs].status // "") == "merged" then
                 if $head == "" then bad("cannot read the ticket head for RESYNC #\($n)")
                 else
-                  $cl | .issues[$n].status = "resync-requested" | .issues[$n].resyncs += 1
+                  .issues[$n].status = "resync-requested" | .issues[$n].resyncs += 1
                   | outbox_put($n; "RESYNC #\($n) \($head)")
                   | ok(["resync-requested"])
                 end
-              elif $mkind == "STUCK" and $needs != "" then $cl | ok([$st, "ask-user=edge \($n) \($needs)"])
-              else $cl | ok([$st, $ask])
+              elif $mkind == "STUCK" and $needs != "" then ok([$st, "ask-user=edge \($n) \($needs)"])
+              else ok([$st, $ask])
               end
             elif $claimed then noop_out("\($mkind) on #\($n) \($st): the claim proceeds"; [$ask])
             else refuse("\($mkind) on #\($n) \($st)")

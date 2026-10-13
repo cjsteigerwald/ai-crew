@@ -1276,13 +1276,30 @@ msg K-12 "DONE #12 gen=2 test-x-12 $H40 synced=$H41"
 expect_rc "outbox_cleared DONE gen 2" 0
 ev 12 queue-check stale "$H42"
 expect_outbox "outbox_cleared" "12${TAB}2${TAB}K-12${TAB}RESYNC #12 $H42"
+# Ruling CX4: a STARTED never clears an outstanding RESYNC or REWORK.
 msg K-12 "STARTED #12 gen=2"
-expect_rc "outbox_cleared STARTED" 0
+expect_rc "outbox_cleared STARTED" 10
 expect_st "outbox_cleared" 12 resync-requested
+expect_outbox "outbox_cleared STARTED keeps RESYNC" "12${TAB}2${TAB}K-12${TAB}RESYNC #12 $H42"
+# Only the next DONE (or FAILED) does.
+msg K-12 "DONE #12 gen=2 test-x-12 $H42 synced=$H42"
+expect_rc "outbox_cleared DONE" 0
 run outbox "$L"
-[ -z "$OUT" ] || fail "outbox_cleared: outbox not cleared ('$OUT')"
+[ -z "$OUT" ] || fail "outbox_cleared: DONE did not clear the outbox ('$OUT')"
+# REWORK: STARTED and a STUCK keep it; FAILED clears it.
+ev 12 queue-check ok
+ev 12 gate fail "unit: 1 of 3"
+expect_outbox "outbox_cleared REWORK" "12${TAB}2${TAB}K-12${TAB}REWORK #12 unit: 1 of 3"
 msg K-12 "STARTED #12 gen=2"
-expect_rc "outbox_cleared repeat" 10
+expect_rc "outbox_cleared STARTED on rework" 10
+expect_outbox "outbox_cleared STARTED keeps REWORK" "12${TAB}2${TAB}K-12${TAB}REWORK #12 unit: 1 of 3"
+msg K-12 "STUCK #12 gen=2 cannot reach the db"
+expect_rc "outbox_cleared STUCK on rework" 0
+expect_outbox "outbox_cleared STUCK keeps REWORK" "12${TAB}2${TAB}K-12${TAB}REWORK #12 unit: 1 of 3"
+msg K-12 "FAILED #12 gen=2 gave up"
+expect_rc "outbox_cleared FAILED" 0
+run outbox "$L"
+[ -z "$OUT" ] || fail "outbox_cleared: FAILED did not clear the outbox ('$OUT')"
 echo "ok: outbox_cleared"
 
 # ---------------------------------------------------------------- requeue_order

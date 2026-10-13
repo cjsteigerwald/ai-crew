@@ -83,8 +83,9 @@ says which call to make when; it does not restate the table.
   fails: `ledger.sh event "$L" <n> wake-failed`, then the failure path.
 - **Send the outbox** after every write that may queue a message: `ledger.sh outbox "$L"` prints
   `<n>\t<gen>\t<to>\t<line>`; Deliver each `<line>` to `<to>`. An entry stays listed until the
-  partner's next valid message clears it (`CANCEL`: until its session ends), and a newer entry for
-  the same issue supersedes it (two `CANCEL`s to two sessions of one issue both stay). Deliver each entry once per run; resume resends all of them.
+  partner's next `DONE` or `FAILED` clears it (`CANCEL`: until its session ends), and a newer
+  entry for the same issue supersedes it (two `CANCEL`s to two sessions of one issue both stay).
+  Deliver each entry once per run; resume resends all of them.
 
 ## 1. Preflight — stop on any failure
 
