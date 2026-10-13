@@ -772,6 +772,11 @@ expect_st "resync_closes_intent" 1 resync-requested
 [ "$(jq '[.intents[] | select(.open)] | length' "$L")" = 0 ] || fail "resync_closes_intent: an intent is still open for reconcile to replay"
 [ "$(fld 1 resyncs)" = 1 ] || fail "resync_closes_intent: resyncs not 1"
 expect_outbox "resync_closes_intent" "1${TAB}1${TAB}RESYNC #1 $HEADNOW"
+# reconcile has no open intent to replay: the issue stays resync-requested and the RESYNC is resent.
+run reconcile "$L" "$T/ag-coord.json"
+expect_rc "resync_closes_intent reconcile" 0
+expect_st "resync_closes_intent reconcile" 1 resync-requested
+printf '%s\n' "$OUT" | grep -Fxq "resend 1 RESYNC #1 $HEADNOW" || fail "resync_closes_intent: reconcile printed '$OUT'"
 echo "ok: resync_closes_intent"
 
 # ---------------------------------------------------------------- usage
@@ -897,6 +902,549 @@ expect_rc "drop_cancel_close_intents cancel-ticket" 0
 [ "$(intent_open "$I1")" = "false cancelled" ] || fail "drop_cancel_close_intents: cancel-ticket left launch intent '$(intent_open "$I1")'"
 [ "$(intent_open "$I2")" = "false cancelled" ] || fail "drop_cancel_close_intents: cancel-ticket left merge intent '$(intent_open "$I2")'"
 echo "ok: drop_cancel_close_intents"
+
+# ================================================================ message, session, reconcile
+KISS="[$(iss 9),$(iss 12),$(iss 13)]"
+H42="3333333333333333333333333333333333333333"
+# ksetup <name> [issues-json] — repo + ledger for key K (issues 9, 12, 13), canary passed.
+ksetup() {
+  mkrepo "$1"
+  run path K; L="$OUT"
+  run lock "$L" sid-coord "$T/ag-coord.json"
+  PS_OWNER="${OUT#owner=}"; export PS_OWNER
+  printf '%s\n' "${2:-$KISS}" >"$T/issues.json"
+  run init "$L" K tk K-coord sid-coord "$T/issues.json"
+  [ "$RC" -eq 0 ] || fail "ksetup $1: init rc $RC ($ERR)"
+  ev 9 canary-passed
+}
+# klaunch <n> [sid] — launch #n as session K-<n> on branch test-x-<n>.
+klaunch() {
+  run intent "$L" launch "$1" "K-$1" "$T/wt-$1" "test-x-$1" "$H40"
+  [ "$RC" -eq 0 ] || { fail "klaunch $1: intent rc $RC ($ERR)"; return; }
+  ev "$1" launch "$(intent_id)" "${2:-sid-$1}"
+  [ "$RC" -eq 0 ] || fail "klaunch $1: event rc $RC ($ERR)"
+}
+# krelaunch <n> <sid> — failed, then relaunch as K-<n> (next gen), same branch.
+krelaunch() {
+  seed "$1" failed
+  run intent "$L" relaunch "$1" "K-$1" "$T/wt-$1-r" "test-x-$1" "$H40"
+  [ "$RC" -eq 0 ] || { fail "krelaunch $1: intent rc $RC ($ERR)"; return; }
+  ev "$1" relaunch "$(intent_id)" "$2"
+  [ "$RC" -eq 0 ] || fail "krelaunch $1: event rc $RC ($ERR)"
+}
+frame() { printf '<cross-session-message from="%s">%s</cross-session-message>' "$1" "$2"; }
+# msg <from> <body> — `ledger.sh message` with a well-formed frame.
+msg() { run message "$L" "$(frame "$1" "$2")"; }
+# kag <file> <name>:<sid>:<state>[:<pid>] ... — a `claude agents --json --all` fixture.
+kag() {
+  f="$1"; shift
+  body=""
+  for a in "$@"; do
+    nm="${a%%:*}"; rest="${a#*:}"; sid="${rest%%:*}"; rest="${rest#*:}"
+    stt="${rest%%:*}"; pid=""
+    case "$rest" in *:*) pid="${rest#*:}" ;; esac
+    if [ -n "$pid" ]; then
+      row="{\"sessionId\":\"$sid\",\"name\":\"$nm\",\"pid\":$pid,\"state\":\"$stt\"}"
+    else
+      row="{\"sessionId\":\"$sid\",\"name\":\"$nm\",\"state\":\"$stt\"}"
+    fi
+    if [ -z "$body" ]; then body="$row"; else body="$body,$row"; fi
+  done
+  printf '[%s]\n' "$body" >"$f"
+}
+has_line() { printf '%s\n' "$OUT" | grep -Fxq "$1"; }
+expect_line() { # <name> <exact line>
+  has_line "$2" || fail "$1: output lacks '$2' (got '$OUT')"
+}
+expect_no_line_prefix() { # <name> <prefix>
+  printf '%s\n' "$OUT" | grep -Fq "$2" && fail "$1: output has '$2' (got '$OUT')"
+}
+expect_rejected() { # <name>
+  expect_rc "$1" 20
+  case "$OUT" in reason=?*) ;; *) fail "$1: expected reason= on stdout, got '$OUT'" ;; esac
+}
+DONE12="DONE #12 gen=1 test-x-12 $H40 synced=$H41"
+printf '[]\n' >"$T/ag-empty.json"
+
+# ---------------------------------------------------------------- bind_other_issue
+ksetup bind
+klaunch 12
+klaunch 13
+cp "$L" "$T/bind-before.json"
+msg K-13 "STARTED #12 gen=1"
+expect_rejected "bind_other_issue"
+expect_st "bind_other_issue" 12 launched
+cmp -s "$L" "$T/bind-before.json" || fail "bind_other_issue: ledger changed"
+grep -q 'rejected' "$(dirname "$L")/ledger.log" || fail "bind_other_issue: no 'rejected' in ledger.log"
+echo "ok: bind_other_issue"
+
+# ---------------------------------------------------------------- bind_near_match
+for f in k-12 "K-12 " K-1 sid-12 K-12x; do
+  msg "$f" "STARTED #12 gen=1"
+  expect_rejected "bind_near_match '$f'"
+done
+cmp -s "$L" "$T/bind-before.json" || fail "bind_near_match: ledger changed"
+echo "ok: bind_near_match"
+
+# ---------------------------------------------------------------- bind_wrong_frame
+run message "$L" '<agent-message from="K-12">STARTED #12 gen=1</agent-message>'
+expect_rejected "bind_wrong_frame"
+run message "$L" "STARTED #12 gen=1"
+expect_rejected "bind_wrong_frame bare line"
+cmp -s "$L" "$T/bind-before.json" || fail "bind_wrong_frame: ledger changed"
+echo "ok: bind_wrong_frame"
+
+# ---------------------------------------------------------------- bind_branch_mismatch
+msg K-12 "DONE #12 gen=1 test-x-13 $H40 synced=$H41"
+expect_rejected "bind_branch_mismatch"
+expect_st "bind_branch_mismatch" 12 launched
+echo "ok: bind_branch_mismatch"
+
+# ---------------------------------------------------------------- frame_fixture
+run message "$L" '<cross-session-message from="K-12">STARTED #12 gen=1</cross-session-message>'
+expect_rc "frame_fixture" 0
+expect_st "frame_fixture" 12 started
+echo "ok: frame_fixture"
+
+# ---------------------------------------------------------------- started_transition / same_state_noop
+ksetup started
+klaunch 12
+msg K-12 "STARTED #12 gen=1"
+expect_rc "started_transition" 0
+[ "$OUT" = started ] || fail "started_transition: printed '$OUT'"
+[ "$(st 12)" = started ] || fail "started_transition: status '$(st 12)', want started"
+echo "ok: started_transition"
+cp "$L" "$T/same-before.json"
+msg K-12 "STARTED #12 gen=1"
+expect_rc "same_state_noop" 10
+cmp -s "$L" "$T/same-before.json" || fail "same_state_noop: ledger changed"
+echo "ok: same_state_noop"
+
+# ---------------------------------------------------------------- bind_old_gen
+krelaunch 12 sid-12b
+[ "$(fld 12 gen)" = 2 ] || fail "bind_old_gen: gen not 2"
+msg K-12 "STARTED #12 gen=1"
+expect_rejected "bind_old_gen"
+expect_st "bind_old_gen" 12 launched
+msg K-12 "STARTED #12 gen=2"
+expect_rc "bind_old_gen current gen" 0
+echo "ok: bind_old_gen"
+
+# ---------------------------------------------------------------- wake_rebinds_name
+ksetup wake
+klaunch 12
+run session "$L" 12 K-12b sid-9
+expect_rc "wake_rebinds_name session" 0
+[ "$(fld 12 sessionName)" = K-12b ] || fail "wake_rebinds_name: name not recorded"
+[ "$(fld 12 sessionId)" = sid-9 ] || fail "wake_rebinds_name: sessionId not recorded"
+[ "$(fld 12 gen)" = 1 ] || fail "wake_rebinds_name: gen changed"
+expect_st "wake_rebinds_name" 12 launched
+run session "$L" 12 K-12b sid-9
+expect_rc "wake_rebinds_name unchanged" 10
+msg K-12 "STARTED #12 gen=1"
+expect_rejected "wake_rebinds_name old name"
+msg K-12b "STARTED #12 gen=1"
+expect_rc "wake_rebinds_name new name" 0
+[ "$(fld 12 gen)" = 1 ] || fail "wake_rebinds_name: gen changed by message"
+run session "$L" 9 K-9 sid-x
+expect_rc "wake_rebinds_name never launched" 30
+echo "ok: wake_rebinds_name"
+
+# ---------------------------------------------------------------- done_persisted / done_dedup
+ksetup done
+klaunch 12
+msg K-12 "$DONE12"
+expect_rc "done_persisted" 0
+expect_line "done_persisted" "queue=12"
+run get "$L" 12
+printf '%s' "$OUT" | jq -e --arg s "$H40" --arg h "$H41" \
+  '.status == "done-claimed" and .claim.sha == $s and .claim.gen == 1 and .claim.branch == "test-x-12"
+   and .claim.synced == $h and (.claim.claimSeq | type == "number")' >/dev/null \
+  || fail "done_persisted: claim not in get output ($OUT)"
+echo "ok: done_persisted"
+cp "$L" "$T/dedup-before.json"
+msg K-12 "$DONE12"
+expect_rc "done_dedup" 10
+cmp -s "$L" "$T/dedup-before.json" || fail "done_dedup: ledger changed"
+echo "ok: done_dedup"
+
+# ---------------------------------------------------------------- stale_done_free
+ev 12 queue-check stale "$H41"
+expect_rc "stale_done_free" 0
+[ "$(fld 12 rework)" = 0 ] || fail "stale_done_free: rework count '$(fld 12 rework)'"
+echo "ok: stale_done_free"
+
+# ---------------------------------------------------------------- stuck_merged_resync
+ksetup stuckm
+klaunch 12
+seed 9 merged
+TKHEAD="$(g rev-parse tk)"
+msg K-12 "STUCK #12 gen=1 needs=#9 need the parser"
+expect_rc "stuck_merged_resync" 0
+expect_st "stuck_merged_resync" 12 resync-requested
+expect_outbox "stuck_merged_resync" "12${TAB}1${TAB}RESYNC #12 $TKHEAD"
+# Unmerged #13: ask the user about the edge, status unchanged.
+seed 12 started
+msg K-12 "STUCK #12 gen=1 needs=#13 need the model"
+expect_rc "stuck_unmerged_edge" 0
+expect_line "stuck_unmerged_edge" "ask-user=edge 12 13"
+expect_st "stuck_unmerged_edge" 12 started
+echo "ok: stuck_merged_resync"
+
+# ---------------------------------------------------------------- stuck_from_rework
+ksetup stuckr
+klaunch 12
+cp "$L" "$T/stuckr-base.json"
+for s in launched started rework-1/3 resync-requested; do
+  for body in "STUCK #12 gen=1 cannot reach the db" "SCOPE #12 gen=1 this is two issues"; do
+    cat "$T/stuckr-base.json" >"$L"
+    seed 12 "$s"
+    msg K-12 "$body"
+    [ "$RC" -eq 0 ] || fail "stuck_from_rework $s '$body': rc $RC, want exactly 0 ($ERR)"
+    case "$OUT" in *ask-user=*) ;; *) fail "stuck_from_rework $s: no ask-user= ('$OUT')" ;; esac
+    expect_st "stuck_from_rework $s" 12 "$s"
+  done
+done
+echo "ok: stuck_from_rework"
+
+# ---------------------------------------------------------------- stuck_on_claimed
+for s in done-claimed verifying; do
+  cat "$T/stuckr-base.json" >"$L"
+  seed 12 "$s"
+  for body in "STUCK #12 gen=1 cannot reach the db" "SCOPE #12 gen=1 too big" "STUCK #12 gen=1 needs=#13 model"; do
+    msg K-12 "$body"
+    expect_rc "stuck_on_claimed $s '$body'" 10
+    case "$OUT" in *ask-user=*) ;; *) fail "stuck_on_claimed $s: no ask-user= ('$OUT')" ;; esac
+    expect_st "stuck_on_claimed $s" 12 "$s"
+  done
+done
+echo "ok: stuck_on_claimed"
+
+# ---------------------------------------------------------------- message_failed_rows
+for s in launched started rework-1/3 done-claimed verifying; do
+  cat "$T/stuckr-base.json" >"$L"
+  seed 12 "$s"
+  msg K-12 "FAILED #12 gen=1 cannot build"
+  expect_rc "message_failed_rows $s" 0
+  expect_st "message_failed_rows $s" 12 failed
+done
+msg K-12 "FAILED #12 gen=1 cannot build"
+expect_rc "message_failed_rows repeat" 10
+echo "ok: message_failed_rows"
+
+# ---------------------------------------------------------------- outbox_cleared
+ksetup outbox
+klaunch 12
+krelaunch 12 sid-12b
+msg K-12 "DONE #12 gen=2 test-x-12 $H40 synced=$H41"
+expect_rc "outbox_cleared DONE gen 2" 0
+ev 12 queue-check stale "$H42"
+expect_outbox "outbox_cleared" "12${TAB}2${TAB}RESYNC #12 $H42"
+msg K-12 "STARTED #12 gen=2"
+expect_rc "outbox_cleared STARTED" 0
+expect_st "outbox_cleared" 12 resync-requested
+run outbox "$L"
+[ -z "$OUT" ] || fail "outbox_cleared: outbox not cleared ('$OUT')"
+msg K-12 "STARTED #12 gen=2"
+expect_rc "outbox_cleared repeat" 10
+echo "ok: outbox_cleared"
+
+# ---------------------------------------------------------------- requeue_order
+ksetup requeue
+klaunch 9
+klaunch 12
+kag "$T/ag-rq.json" "K-9:sid-9:working" "K-12:sid-12:working"
+msg K-12 "$DONE12"
+msg K-9 "DONE #9 gen=1 test-x-9 $H40 synced=$H41"
+run reconcile "$L" "$T/ag-rq.json"
+expect_rc "requeue_order" 0
+rq="$(printf '%s\n' "$OUT" | grep '^requeue ' | tr '\n' ' ')"
+[ "$rq" = "requeue 12 requeue 9 " ] || fail "requeue_order: got '$rq', want claim order 12 then 9"
+echo "ok: requeue_order"
+
+# ---------------------------------------------------------------- reconcile_stale_same_name_row
+ksetup stale-row
+klaunch 12
+seed 12 failed
+run intent "$L" relaunch 12 K-12 "$T/wt-12-r" test-x-12 "$H40"
+kag "$T/ag-stale.json" "K-12:sid-12:done"
+run reconcile "$L" "$T/ag-stale.json"
+expect_rc "reconcile_stale_same_name_row" 0
+expect_st "reconcile_stale_same_name_row" 12 failed
+[ "$(fld 12 gen)" = 1 ] || fail "reconcile_stale_same_name_row: gen changed to $(fld 12 gen)"
+[ "$(jq '[.intents[] | select(.open)] | length' "$L")" = 0 ] || fail "reconcile_stale_same_name_row: intent left open"
+echo "ok: reconcile_stale_same_name_row"
+
+# ---------------------------------------------------------------- cancel_cleared_when_gone
+ksetup cancel-gone
+klaunch 12
+ev 12 stuck-accept 9
+expect_rc "cancel_cleared_when_gone stuck-accept" 0
+cp "$L" "$T/cg-base.json"
+kag "$T/ag-cg.json" "K-13:sid-13:working"
+run reconcile "$L" "$T/ag-cg.json"
+expect_rc "cancel_cleared_when_gone absent" 0
+expect_no_line_prefix "cancel_cleared_when_gone absent" "resend 12"
+run get "$L"
+printf '%s' "$OUT" | jq -e '.outbox == []' >/dev/null || fail "cancel_cleared_when_gone: outbox not empty"
+for gone in stopped done failed; do
+  cat "$T/cg-base.json" >"$L"
+  kag "$T/ag-cg.json" "K-12:sid-12:$gone"
+  run reconcile "$L" "$T/ag-cg.json"
+  expect_no_line_prefix "cancel_cleared_when_gone $gone" "resend 12"
+done
+cat "$T/cg-base.json" >"$L"
+ev 12 json stopped
+expect_rc "cancel_cleared_when_gone json stopped" 0
+run outbox "$L"
+[ -z "$OUT" ] || fail "cancel_cleared_when_gone: json stopped left '$OUT'"
+cat "$T/cg-base.json" >"$L"
+kag "$T/ag-cg.json" "K-12:sid-12:working:$$"
+run reconcile "$L" "$T/ag-cg.json"
+expect_line "cancel_cleared_when_gone working" "resend 12 CANCEL #12"
+expect_outbox "cancel_cleared_when_gone working" "12${TAB}1${TAB}CANCEL #12"
+echo "ok: cancel_cleared_when_gone"
+
+# ---------------------------------------------------------------- crash after a transition (outbox in the same write)
+kag "$T/ag-all.json" "K-9:sid-9:working" "K-12:sid-12:working" "K-13:sid-13:working"
+ksetup crash-stale
+klaunch 12
+msg K-12 "$DONE12"
+ev 12 queue-check stale "$H41"
+run reconcile "$L" "$T/ag-all.json"
+expect_line "crash_after_queue_stale" "resend 12 RESYNC #12 $H41"
+echo "ok: crash_after_queue_stale"
+
+ksetup crash-resync
+klaunch 12
+seed 12 verifying
+ev 12 gate resync "$H41"
+run reconcile "$L" "$T/ag-all.json"
+expect_line "crash_after_gate_resync" "resend 12 RESYNC #12 $H41"
+echo "ok: crash_after_gate_resync"
+
+ksetup crash-fail
+klaunch 12
+seed 12 verifying
+ev 12 gate fail "unit tests: 2 of 5 fail in parser_test"
+run reconcile "$L" "$T/ag-all.json"
+expect_line "crash_after_gate_fail" "resend 12 REWORK #12 unit tests: 2 of 5 fail in parser_test"
+echo "ok: crash_after_gate_fail"
+
+ksetup crash-stuck
+klaunch 12
+ev 12 stuck-accept 9
+run reconcile "$L" "$T/ag-all.json"
+expect_line "crash_after_stuck_accept" "resend 12 CANCEL #12"
+echo "ok: crash_after_stuck_accept"
+
+ksetup crash-cancel
+klaunch 9
+klaunch 12
+ev 0 cancel-ticket
+run reconcile "$L" "$T/ag-all.json"
+expect_line "crash_after_cancel_ticket 9" "resend 9 CANCEL #9"
+expect_line "crash_after_cancel_ticket 12" "resend 12 CANCEL #12"
+n="$(printf '%s\n' "$OUT" | grep -c '^resend ')"
+[ "$n" = 2 ] || fail "crash_after_cancel_ticket: $n resend lines, want 2 ('$OUT')"
+echo "ok: crash_after_cancel_ticket"
+
+# ---------------------------------------------------------------- crash at intents
+ksetup crash-li
+run intent "$L" launch 12 K-12 "$T/wt-12" test-x-12 "$H40"
+run reconcile "$L" "$T/ag-empty.json"
+expect_rc "crash_after_launch_intent" 0
+expect_st "crash_after_launch_intent" 12 pending
+[ "$(jq '[.intents[] | select(.open)] | length' "$L")" = 0 ] || fail "crash_after_launch_intent: intent left open"
+echo "ok: crash_after_launch_intent"
+
+ksetup crash-ri
+klaunch 12
+jset '.issues["12"].rework = 2'
+seed 12 failed
+run intent "$L" relaunch 12 K-12 "$T/wt-12-r" test-x-12 "$H40"
+cp "$L" "$T/ri-base.json"
+run reconcile "$L" "$T/ag-empty.json"
+expect_st "crash_after_relaunch_intent absent" 12 failed
+[ "$(fld 12 gen)" = 1 ] || fail "crash_after_relaunch_intent absent: gen changed"
+[ "$(jq '[.intents[] | select(.open)] | length' "$L")" = 0 ] || fail "crash_after_relaunch_intent absent: intent left open"
+cat "$T/ri-base.json" >"$L"
+kag "$T/ag-ri.json" "K-12:sid-12:done" "K-12:sid-12n:working:$$"
+run reconcile "$L" "$T/ag-ri.json"
+expect_st "crash_after_relaunch_intent present" 12 launched
+[ "$(fld 12 gen)" = 2 ] || fail "crash_after_relaunch_intent present: gen '$(fld 12 gen)', want 2"
+[ "$(fld 12 rework)" = 0 ] || fail "crash_after_relaunch_intent present: rework not reset"
+[ "$(fld 12 sessionId)" = sid-12n ] || fail "crash_after_relaunch_intent present: sessionId '$(fld 12 sessionId)'"
+[ "$(jq '[.intents[] | select(.open)] | length' "$L")" = 0 ] || fail "crash_after_relaunch_intent present: intent left open"
+expect_line "crash_after_relaunch_intent present status" "status 12"
+echo "ok: crash_after_relaunch_intent"
+
+ksetup crash-lbr
+run intent "$L" launch 12 K-12 "$T/wt-12" test-x-12 "$H40"
+kag "$T/ag-lbr.json" "K-12:sid-12:working"
+run reconcile "$L" "$T/ag-lbr.json"
+expect_st "crash_after_launch_before_record" 12 launched
+[ "$(fld 12 sessionId)" = sid-12 ] || fail "crash_after_launch_before_record: sessionId '$(fld 12 sessionId)'"
+[ "$(fld 12 sessionName)" = K-12 ] || fail "crash_after_launch_before_record: sessionName not recorded"
+[ "$(fld 12 gen)" = 1 ] || fail "crash_after_launch_before_record: gen '$(fld 12 gen)'"
+[ "$(fld 12 worktree)" = "$T/wt-12" ] || fail "crash_after_launch_before_record: worktree not recorded"
+echo "ok: crash_after_launch_before_record"
+
+ksetup crash-mi
+klaunch 12
+commit_on test-x-12 m12
+CAND="$(g rev-parse test-x-12)"; PIN="$(g rev-parse tk)"
+seed 12 verifying
+run intent "$L" merge 12 "$CAND" "$PIN"
+run reconcile "$L" "$T/ag-all.json"
+expect_st "crash_after_merge_intent" 12 done-claimed
+expect_line "crash_after_merge_intent" "requeue 12"
+[ "$(jq '[.intents[] | select(.open)] | length' "$L")" = 0 ] || fail "crash_after_merge_intent: intent left open"
+echo "ok: crash_after_merge_intent"
+
+ksetup crash-mbr
+klaunch 12
+seed_blocked 13 12
+commit_on test-x-12 m12
+CAND="$(g rev-parse test-x-12)"; PIN="$(g rev-parse tk)"
+seed 12 verifying
+run intent "$L" merge 12 "$CAND" "$PIN"
+FOUT="$(cd "$R" && "$BASH" "$FFM" tk "$CAND" "$PIN")" || fail "crash_after_merge_before_record: ff-merge failed ($FOUT)"
+run reconcile "$L" "$T/ag-all.json"
+expect_st "crash_after_merge_before_record" 12 merged
+[ "$(fld 12 mergeSha)" = "$CAND" ] || fail "crash_after_merge_before_record: mergeSha not recorded"
+expect_st "crash_after_merge_before_record dependent" 13 pending
+expect_no_line_prefix "crash_after_merge_before_record" "requeue 12"
+echo "ok: crash_after_merge_before_record"
+
+# ---------------------------------------------------------------- reconcile_terminal_intent
+ksetup term
+run intent "$L" launch 12 K-12 "$T/wt-12" test-x-12 "$H40"
+jset '.issues["12"].status = "cancelled"'
+kag "$T/ag-term.json" "K-12:sid-12:working"
+run reconcile "$L" "$T/ag-term.json"
+expect_rc "reconcile_terminal_intent" 0
+expect_st "reconcile_terminal_intent" 12 cancelled
+[ "$(jq '[.intents[] | select(.open)] | length' "$L")" = 1 ] || fail "reconcile_terminal_intent: intent on a terminal issue was touched"
+echo "ok: reconcile_terminal_intent"
+
+# ---------------------------------------------------------------- no regression after success
+ksetup rs-done
+klaunch 12
+msg K-12 "$DONE12"
+run reconcile "$L" "$T/ag-all.json"
+expect_rc "restart_after_launch_then_done reconcile" 0
+expect_st "restart_after_launch_then_done" 12 done-claimed
+expect_line "restart_after_launch_then_done" "requeue 12"
+echo "ok: restart_after_launch_then_done"
+
+ksetup rs-cancel
+klaunch 12
+ev 0 cancel-ticket
+run reconcile "$L" "$T/ag-all.json"
+expect_rc "restart_after_launch_then_cancel reconcile" 0
+expect_st "restart_after_launch_then_cancel" 12 cancelled
+echo "ok: restart_after_launch_then_cancel"
+
+ksetup rs-merge
+klaunch 12
+seed 12 verifying
+run intent "$L" merge 12 "$H40" "$H41"
+ev 12 gate merged "$(intent_id)" "tests pass"
+run reconcile "$L" "$T/ag-all.json"
+expect_rc "restart_after_merge reconcile" 0
+expect_st "restart_after_merge" 12 merged
+expect_no_line_prefix "restart_after_merge" "requeue 12"
+echo "ok: restart_after_merge"
+
+# ---------------------------------------------------------------- crash_during_verifying
+for variant in merge stale; do
+  ksetup "verif-$variant"
+  klaunch 12
+  commit_on test-x-12 v12
+  CAND="$(g rev-parse test-x-12)"
+  msg K-12 "DONE #12 gen=1 test-x-12 $CAND synced=$(g rev-parse tk)"
+  ev 12 queue-check ok
+  expect_st "crash_during_verifying $variant setup" 12 verifying
+  run reconcile "$L" "$T/ag-all.json"
+  expect_st "crash_during_verifying $variant" 12 done-claimed
+  expect_line "crash_during_verifying $variant" "requeue 12"
+  if [ "$variant" = stale ]; then
+    echo moved >"$R/moved"; g add moved; g commit -q -m moved
+  fi
+  PIN="$(g rev-parse tk)"
+  FOUT="$(cd "$R" && "$BASH" "$FFM" --check tk "$CAND")"
+  FRC=$?
+  if [ "$variant" = merge ]; then
+    [ "$FRC" -eq 0 ] || fail "crash_during_verifying merge: --check rc $FRC"
+    ev 12 queue-check ok
+    expect_rc "crash_during_verifying queue-check ok" 0
+    run intent "$L" merge 12 "$CAND" "$PIN"
+    MI="$(intent_id)"
+    FOUT="$(cd "$R" && "$BASH" "$FFM" tk "$CAND" "$PIN")"
+    [ "$?" -eq 0 ] || fail "crash_during_verifying merge: ff-merge failed ($FOUT)"
+    ev 12 gate merged "$MI" "tests pass"
+    expect_rc "crash_during_verifying gate merged" 0
+    expect_st "crash_during_verifying merged" 12 merged
+  else
+    [ "$FRC" -eq 10 ] || fail "crash_during_verifying stale: --check rc $FRC, want 10"
+    ev 12 queue-check stale "${FOUT#head=}"
+    expect_rc "crash_during_verifying queue-check stale" 0
+    expect_st "crash_during_verifying stale" 12 resync-requested
+    expect_outbox "crash_during_verifying stale" "12${TAB}1${TAB}RESYNC #12 $PIN"
+  fi
+done
+echo "ok: crash_during_verifying"
+
+# ---------------------------------------------------------------- merge_with_real_ledger
+ksetup realmerge
+commit_on test-x-12 rm12
+CAND="$(g rev-parse test-x-12)"; PIN="$(g rev-parse tk)"
+seed 12 verifying
+run intent "$L" merge 12 "$CAND" "$PIN"
+expect_rc "merge_with_real_ledger intent" 0
+[ -z "$(g status --porcelain)" ] || fail "merge_with_real_ledger: ledger dirtied the worktree"
+FOUT="$(cd "$R" && "$BASH" "$FFM" tk "$CAND" "$PIN")"
+FRC=$?
+[ "$FRC" -eq 0 ] || fail "merge_with_real_ledger: ff-merge rc $FRC ($FOUT)"
+echo "ok: merge_with_real_ledger"
+
+# ---------------------------------------------------------------- reconcile_idempotent
+ksetup idem
+klaunch 9
+klaunch 12
+klaunch 13
+msg K-12 "$DONE12"
+ev 12 queue-check ok
+seed 13 verifying
+ev 13 gate fail "lint fails"
+ev 9 stuck-accept 13
+run reconcile "$L" "$T/ag-all.json"
+expect_rc "reconcile_idempotent first" 0
+FIRST="$OUT"
+cp "$L" "$T/idem-after.json"
+INO1="$(ls -i "$L" | awk '{print $1}')"
+run reconcile "$L" "$T/ag-all.json"
+expect_rc "reconcile_idempotent second" 0
+[ "$OUT" = "$FIRST" ] || fail "reconcile_idempotent: actions differ ('$FIRST' vs '$OUT')"
+cmp -s "$L" "$T/idem-after.json" || fail "reconcile_idempotent: second run changed the ledger"
+[ "$(ls -i "$L" | awk '{print $1}')" = "$INO1" ] || fail "reconcile_idempotent: second run rewrote the ledger"
+expect_line "reconcile_idempotent" "requeue 12"
+expect_line "reconcile_idempotent" "resend 13 REWORK #13 lint fails"
+expect_line "reconcile_idempotent" "resend 9 CANCEL #9"
+expect_line "reconcile_idempotent" "status 13"
+echo "ok: reconcile_idempotent"
+
+# ---------------------------------------------------------------- message_text_inert
+# Free text reaches ledger.sh as argv only and is printed, never run.
+ksetup inert
+klaunch 12
+EVIL='$(touch '"$T"'/pwned) `touch '"$T"'/pwned2`; touch '"$T"'/pwned3'
+msg K-12 "STUCK #12 gen=1 $EVIL"
+expect_rc "message_text_inert" 0
+expect_line "message_text_inert" "ask-user=stuck 12 $EVIL"
+[ ! -e "$T/pwned" ] && [ ! -e "$T/pwned2" ] && [ ! -e "$T/pwned3" ] || fail "message_text_inert: message text was executed"
+echo "ok: message_text_inert"
 
 if [ "$FAIL" -ne 0 ]; then exit 1; fi
 echo "all ledger tests passed"

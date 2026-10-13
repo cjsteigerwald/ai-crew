@@ -9,6 +9,9 @@
 #   ledger.sh intent <ledger> launch|relaunch <n> <session-name> <worktree> <branch> <base-sha>
 #   ledger.sh intent <ledger> merge <n> <candidate-sha> <expected-head>   prints intent=<id>
 #   ledger.sh event <ledger> <n> <event> [args]           the only way statuses change
+#   ledger.sh message <ledger> <raw-frame>                a partner message: bind, dedup, apply
+#   ledger.sh session <ledger> <n> <session-name> <session-id>   rebind a woken partner
+#   ledger.sh reconcile <ledger> <agents.json>            resume: prints requeue|resend|status lines
 #   ledger.sh outbox <ledger>                             <n>\t<gen>\t<line> per pending entry
 #   ledger.sh slots <ledger>                              live count (frontier.sh --live-count)
 #   ledger.sh done <ledger>                               handback | cancel-ticket; exit 1 = not done
@@ -17,14 +20,19 @@
 # The ledger is <git-common-dir>/partner-sessions/<KEY>/ledger.json; the run lock
 # (lock/holder = "<session-id> <nonce>"), the transient takeover/ directory and the
 # append-only ledger.log are its siblings. Every mutating call (unlock, init,
-# intent, event) needs PS_OWNER=<sid>:<nonce> matching lock/holder, computes the
-# whole new state with one jq program (ledger.jq, beside this script) and writes
-# it with temp file + mv -f.
+# intent, event, message, session, reconcile) needs PS_OWNER=<sid>:<nonce>
+# matching lock/holder, computes the whole new state with one jq program
+# (ledger.jq, beside this script) and writes it with temp file + mv -f.
+#
+# `message` takes the whole <cross-session-message from="…">…</…> frame as one
+# argument and hands it to parse-msg.sh --frame as argv; a frame that fails to
+# parse or to bind (from = recorded name exactly, gen = current gen, DONE branch
+# = recorded branch) is rejected with exit 20, reason= on stdout and a log line.
 #
 # Exit: 0 applied (prints the new status or the requested output), 10 idempotent
-# no-op, 20 message rejected, 30 illegal transition refused (logged), 40 lock held
-# by a live other session or PS_OWNER no longer matches (prints holder=), 2 usage
-# or I/O error. `done` exits 1 for "not done".
+# no-op, 20 message rejected (prints reason=), 30 illegal transition refused
+# (logged), 40 lock held by a live other session or PS_OWNER no longer matches
+# (prints holder=), 2 usage or I/O error. `done` exits 1 for "not done".
 #
 # PS_LOCK_TEST_PAUSE=<file> (tests only): `lock` pauses after its liveness check
 # until <file> exists, so a test can finish a rival takeover inside that window.
@@ -37,10 +45,11 @@ set -u
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 FRONTIER="$DIR/frontier.sh"
+PARSE="$DIR/parse-msg.sh"
 LJQ="$DIR/ledger.jq"
 
 usage() {
-  sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 die() { echo "ledger.sh: $*" >&2; exit 2; }
@@ -294,13 +303,13 @@ cmd_init() {
   jq --arg key "$key" --arg tb "$tb" --arg cname "$cname" --arg csid "$csid" '
     { key: $key, ticketBranch: $tb,
       coordinator: { name: $cname, sessionId: $csid },
-      cap: 3, canary: "pending",
+      cap: 3, canary: "pending", claimSeq: 0,
       issues: (reduce .[] as $i ({};
         .[($i.n | tostring)] = {
           status: "pending", gen: 0,
           blockers: ($i.blockers // []), external: ($i.external // []),
           branch: $i.branch, testCmd: ($i.testCmd // ""), ac: ($i.ac // []),
-          sessionName: null, sessionId: null, worktree: null, startSha: null,
+          sessionName: null, sessionId: null, sessions: [], worktree: null, startSha: null,
           claim: null, rework: 0, resyncs: 0, mergeSha: null,
           gateResults: [], reason: null })),
       intents: [], outbox: [] }' "$issues" >"$TMPD/new.json" || die "cannot build ledger"
@@ -325,23 +334,34 @@ cmd_get() {
 
 # ljq <op> [jq options...] — run program <op> of ledger.jq on the ledger
 # (`jq -f`); every program returns {rc, out: [lines], reason, state}.
-ljq() {
-  op="$1"; shift
-  jq --arg op "$op" "$@" -f "$LJQ" "$L"
+# ljqf <state-file> <op> [jq options...] — the same on another state file.
+ljqf() {
+  in="$1"; op="$2"; shift 2
+  jq --arg op "$op" "$@" -f "$LJQ" "$in"
 }
+ljq() { ljqf "$L" "$@"; }
 
-# live_keys — JSON array of live issue keys, each judged by frontier.sh --live-count
-# (the single definition of "live", ruling F7).
+# live_keys [<state-file>] — JSON array of live issue keys, each judged by
+# frontier.sh --live-count (the single definition of "live", ruling F7).
 live_keys() {
   tmpdir
-  keys="$(jq -r '.issues | keys[]' "$L")" || die "cannot read $L"
+  sf="${1:-$L}"
+  keys="$(jq -r '.issues | keys[]' "$sf")" || die "cannot read $sf"
   lk="["; sep=""
   for k in $keys; do
-    jq --arg k "$k" '{issues: {($k): .issues[$k]}}' "$L" >"$TMPD/one.json" || die "cannot read $L"
+    jq --arg k "$k" '{issues: {($k): .issues[$k]}}' "$sf" >"$TMPD/one.json" || die "cannot read $sf"
     c="$("${BASH:-bash}" "$FRONTIER" --live-count "$TMPD/one.json")" || die "frontier.sh --live-count failed"
     if [ "$c" = 1 ]; then lk="$lk$sep\"$k\""; sep=","; fi
   done
   printf '%s]' "$lk"
+}
+
+# reject <what> <reason> — a partner message is refused before any state change:
+# log it, print reason=, exit 20.
+reject() {
+  logl "rejected $1: $2"
+  printf 'reason=%s\n' "$(printf '%s' "$2" | tr '\t\n\r' '   ')"
+  exit 20
 }
 
 # apply <what> <result.json> — act on a jq result: write, print, log, exit.
@@ -356,8 +376,15 @@ apply() {
       logl "applied $what -> $(jq -r '.out | join(" ")' "$res")"
       exit 0 ;;
     10)
+      out="$(jq -r '(.out // [])[]' "$res")"
+      if [ -n "$out" ]; then
+        printf '%s\n' "$out"
+        logl "noop $what: $(jq -r '.reason' "$res") -> $out"
+      fi
       echo "noop: $(jq -r '.reason' "$res")" >&2
       exit 10 ;;
+    20)
+      reject "$what" "$(jq -r '.reason' "$res")" ;;
     30)
       reason="$(jq -r '.reason' "$res")"
       logl "refused $what: $reason"
@@ -467,6 +494,109 @@ cmd_event() {
   apply "event #$n $ev" "$TMPD/res.json"
 }
 
+# ticket_head — the ticket branch tip, read from the ledger's own git dir
+# (<git-common-dir>/partner-sessions/<KEY>/); empty if it cannot be read.
+ticket_head() {
+  gd="$(cd "$D/../.." && pwd -P)" || return 0
+  tb="$(jq -r '.ticketBranch' "$L")" || return 0
+  git --git-dir="$gd" rev-parse -q --verify "refs/heads/$tb^{commit}" 2>/dev/null || true
+}
+
+# ------------------------------------------------------------------ messages
+
+cmd_message() {
+  [ "$#" -eq 2 ] || usage
+  set_paths "$1"; raw="$2"
+  CMD="message"
+  need_ledger
+  owner_check
+  tmpdir
+  # The frame is one argv argument; parse-msg.sh validates it and extracts from=.
+  if ! "${BASH:-bash}" "$PARSE" --frame "$raw" >"$TMPD/msg" 2>"$TMPD/msgerr"; then
+    r="$(sed -n 's/^error=//p' "$TMPD/msgerr" | head -n 1)"
+    reject "message" "bad frame: ${r:-unparseable}"
+  fi
+  from=""; mkind=""; n=""; mgen=""; mbranch=""; sha=""; synced=""; needs=""; mreason=""
+  while IFS= read -r line; do
+    v="${line#*=}"
+    case "$line" in
+      from=*) from="$v" ;;
+      kind=*) mkind="$v" ;;
+      issue=*) n="$v" ;;
+      gen=*) mgen="$v" ;;
+      branch=*) mbranch="$v" ;;
+      sha=*) sha="$v" ;;
+      synced=*) synced="$v" ;;
+      needs=*) needs="$v" ;;
+      reason=*) mreason="$v" ;;
+    esac
+  done <"$TMPD/msg"
+  is_num "$n" && is_num "$mgen" && [ -n "$from" ] && [ -n "$mkind" ] || die "parse-msg.sh output incomplete"
+  head=""
+  [ -n "$needs" ] && head="$(ticket_head)"
+  live="$(live_keys)"
+  ljq message --arg n "$n" --arg from "$from" --arg mkind "$mkind" --arg mgen "$mgen" \
+     --arg mbranch "$mbranch" --arg sha "$sha" --arg synced "$synced" --arg needs "$needs" \
+     --arg mreason "$mreason" --arg head "$head" --argjson live "$live" \
+     >"$TMPD/res.json" || die "internal error"
+  apply "message $mkind #$n from=$from" "$TMPD/res.json"
+}
+
+cmd_session() {
+  [ "$#" -eq 4 ] || usage
+  set_paths "$1"; n="$2"; name="$3"; sid="$4"
+  CMD="session #$n"
+  need_ledger
+  owner_check
+  is_num "$n" || usage
+  is_word "$name" || die "bad session name: $name"
+  is_word "$sid" || die "bad session id: $sid"
+  jq -e --arg n "$n" '.issues | has($n)' "$L" >/dev/null || die "no issue #$n"
+  tmpdir
+  ljq session --arg n "$n" --arg name "$name" --arg sid "$sid" >"$TMPD/res.json" || die "internal error"
+  apply "session #$n $name $sid" "$TMPD/res.json"
+}
+
+# ------------------------------------------------------------------ reconcile
+
+cmd_reconcile() {
+  [ "$#" -eq 2 ] || usage
+  set_paths "$1"; AG="$2"
+  CMD="reconcile"
+  need_ledger
+  owner_check
+  [ -f "$AG" ] && jq -e 'type == "array"' "$AG" >/dev/null 2>&1 || die "agents.json must be a JSON array: $AG"
+  tmpdir
+  ag="$(jq -c '[.[] | {sessionId: (.sessionId // null), name: (.name // null),
+                        state: (.state // null), startedAt: (.startedAt // 0)}]' "$AG")" \
+    || die "cannot read $AG"
+  # Open merge intents whose candidate is already an ancestor of the ticket head.
+  jq -r '.intents[] | select(.open and .kind == "merge") | "\(.id) \(.candidateSha)"' "$L" >"$TMPD/mi" \
+    || die "cannot read $L"
+  : >"$TMPD/anc"
+  if [ -s "$TMPD/mi" ]; then
+    th="$(ticket_head)"
+    [ -n "$th" ] || die "cannot read the ticket head"
+    gd="$(cd "$D/../.." && pwd -P)" || die "cannot resolve the git dir"
+    while read -r id cand; do
+      is_sha "$cand" || continue
+      git --git-dir="$gd" merge-base --is-ancestor "$cand" "$th" 2>/dev/null && printf '%s\n' "$id" >>"$TMPD/anc"
+    done <"$TMPD/mi"
+  fi
+  anc="$(jq -R . "$TMPD/anc" | jq -cs .)" || die "internal error"
+  ljq reconcile --argjson ag "$ag" --argjson ancids "$anc" >"$TMPD/res.json" || die "internal error"
+  [ "$(jq -r '.rc' "$TMPD/res.json")" = 0 ] || die "reconcile: $(jq -r '.reason' "$TMPD/res.json")"
+  jq '.state' "$TMPD/res.json" >"$TMPD/new.json" || die "internal error"
+  live="$(live_keys "$TMPD/new.json")"
+  ljqf "$TMPD/new.json" reconcile-actions --argjson live "$live" >"$TMPD/acts.json" || die "internal error"
+  # A second run finds nothing to change and leaves the ledger's bytes alone.
+  if ! jq -e --slurpfile a "$TMPD/new.json" '. == $a[0]' "$L" >/dev/null; then
+    write_state "$TMPD/new.json"
+  fi
+  jq -r '.out[]' "$TMPD/acts.json"
+  logl "reconcile -> $(jq -r '.out | join("; ")' "$TMPD/acts.json")"
+}
+
 # ------------------------------------------------------------------ read-only reports
 
 cmd_outbox() {
@@ -518,6 +648,9 @@ case "$cmd" in
   get) cmd_get "$@" ;;
   intent) cmd_intent "$@" ;;
   event) cmd_event "$@" ;;
+  message) cmd_message "$@" ;;
+  session) cmd_session "$@" ;;
+  reconcile) cmd_reconcile "$@" ;;
   outbox) cmd_outbox "$@" ;;
   slots) cmd_slots "$@" ;;
   done) cmd_done "$@" ;;

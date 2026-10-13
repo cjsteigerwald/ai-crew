@@ -7,10 +7,16 @@
 $ARGS.named as {op: $op, n: $n, live: $live,
                 ev: $ev, a1: $a1, a2: $a2, a3: $a3, edge: $edge, anc: $anc, tip: $tip,
                 kind: $kind, name: $name, wt: $wt, br: $br, base: $base,
-                cand: $cand, exp: $exp}
+                cand: $cand, exp: $exp,
+                from: $from, mkind: $mkind, mgen: $mgen, mbranch: $mbranch, sha: $sha,
+                synced: $synced, needs: $needs, mreason: $mreason, head: $head,
+                sid: $sid, ag: $ag, ancids: $ancids}
 |
 def ok($out): {rc: 0, out: $out, state: .};
 def noop($r): {rc: 10, reason: $r};
+# A no-op that still prints (e.g. ask-user= for a STUCK on a claimed row).
+def noop_out($r; $out): {rc: 10, reason: $r, out: $out};
+def reject($r): {rc: 20, reason: $r};
 def refuse($r): {rc: 30, reason: $r};
 def bad($r): {rc: 2, reason: $r};
 def has_v($a; $v): ($a | index([$v])) != null;
@@ -32,6 +38,21 @@ def outbox_put($k; $line):
   | .outbox = ([.outbox[] | select(.n != ($k | tonumber))] + [{n: ($k | tonumber), gen: $g, line: ($line | one_line)}]);
 def outbox_drop_cancel($k):
   .outbox |= map(select((.n == ($k | tonumber) and (.line | startswith("CANCEL #"))) | not));
+# Clear issue $k's RESYNC/REWORK entries for gen $g (a valid message arrived).
+# A CANCEL entry stays until its session has ended (json event or reconcile).
+def outbox_clear_gen($k; $g):
+  .outbox |= map(select((.n == ($k | tonumber) and .gen == $g
+                         and ((.line | startswith("CANCEL #")) | not)) | not));
+# Record launch/relaunch intent $in as launched with session $sid, closing it.
+# Shared by `event launch|relaunch` and `reconcile`: gen+1, the session joins the
+# issue's session history, a relaunch resets the rework count.
+def record_launch($k; $in; $sid):
+  .issues[$k] |= (.status = "launched" | .gen = $in.gen | .sessionName = $in.sessionName
+                  | .sessionId = $sid | .worktree = $in.worktree | .branch = $in.branch
+                  | .startSha = $in.baseSha | .claim = null
+                  | .sessions = ((.sessions // []) + [{gen: $in.gen, name: $in.sessionName, sessionId: $sid}])
+                  | if $in.kind == "relaunch" then .rework = 0 | .reason = null else . end)
+  | close_intent($in.id; "launched");
 # The one transition to merged: in the same write, every `blocked-on #k` issue becomes pending.
 def to_merged($k; $sha):
   ("blocked-on #" + $k) as $b
@@ -88,13 +109,7 @@ elif $op == "event" then (
         (if $i.sessionId == $a2 and $i.gen == $in.gen then noop("intent \($a1) already recorded")
          else refuse("intent \($a1) is closed") end)
       elif $st != $from then refuse("\($ev) needs #\($n) \($from), it is \($st)")
-      else
-        .issues[$n] |= (.status = "launched" | .gen = $in.gen | .sessionName = $in.sessionName
-                        | .sessionId = $a2 | .worktree = $in.worktree | .branch = $in.branch
-                        | .startSha = $in.baseSha | .claim = null
-                        | if $ev == "relaunch" then .rework = 0 | .reason = null else . end)
-        | close_intent($a1; "launched")
-        | ok(["launched"])
+      else record_launch($n; $in; $a2) | ok(["launched"])
       end
 
   elif $ev == "launch-failed" then
@@ -238,6 +253,135 @@ elif $op == "event" then (
   else bad("unknown event \($ev)")
   end
 )
+
+# ------------------------------------------------------------------ message
+# A parsed partner message ($from, $mkind, $n, $mgen, …). Sender binding comes
+# first and rejects (20) before anything else is looked at; then DONE dedup
+# (10); then, in one write, this gen's RESYNC/REWORK outbox entries are cleared
+# and the transition applied.
+elif $op == "message" then (
+  .issues[$n] as $i
+  | ($i.status // "") as $st
+  | if $i == null then reject("unknown issue #\($n)")
+    elif ($i.sessionName // null) == null or $from != $i.sessionName
+    then reject("from \($from) is not the session of #\($n) (\($i.sessionName // "none"))")
+    elif $mgen != ($i.gen | tostring) then reject("gen \($mgen) is not the current gen \($i.gen) of #\($n)")
+    elif $mkind == "DONE" and $mbranch != $i.branch then reject("branch \($mbranch) is not the branch of #\($n)")
+    elif $mkind == "DONE" and $i.claim != null and $i.claim.gen == $i.gen and $i.claim.sha == $sha
+    then noop("DONE #\($n) gen \($mgen) \($sha) already claimed")
+    else
+      outbox_clear_gen($n; $i.gen) as $cl
+      | ($cl.outbox != .outbox) as $cleared
+      | ($st == "done-claimed" or $st == "verifying") as $claimed
+      | if $mkind == "STARTED" then
+          if $st == "launched" then $cl | .issues[$n].status = "started" | ok(["started"])
+          elif $st == "started" then noop("#\($n) already started")
+          elif active($n) then
+            (if $cleared then $cl | ok([$st]) else noop("STARTED on #\($n) \($st)") end)
+          else refuse("STARTED on #\($n) \($st)")
+          end
+        elif $mkind == "DONE" then
+          if active($n) then
+            ((.claimSeq // 0) + 1) as $q
+            | $cl
+            | .claimSeq = $q
+            | .issues[$n].claim = {gen: $i.gen, branch: $mbranch, sha: $sha, synced: $synced, claimSeq: $q}
+            | .issues[$n].status = "done-claimed"
+            | ok(["done-claimed", "queue=\($n)"])
+          else refuse("DONE on #\($n) \($st)")
+          end
+        elif $mkind == "FAILED" then
+          if active($n) or $claimed then
+            $cl | .issues[$n].status = "failed" | .issues[$n].reason = ("FAILED: " + $mreason) | ok(["failed"])
+          elif $st == "failed" then noop("#\($n) already failed")
+          else refuse("FAILED on #\($n) \($st)")
+          end
+        else
+          # STUCK or SCOPE.
+          (if $mkind == "SCOPE" then "ask-user=scope \($n) \($mreason)"
+           elif $needs != "" then "ask-user=stuck \($n) needs=#\($needs) \($mreason)"
+           else "ask-user=stuck \($n) \($mreason)" end) as $ask
+          | if active($n) then
+              if $mkind == "STUCK" and $needs != "" and (.issues[$needs].status // "") == "merged" then
+                if $head == "" then bad("cannot read the ticket head for RESYNC #\($n)")
+                else
+                  $cl | .issues[$n].status = "resync-requested" | .issues[$n].resyncs += 1
+                  | outbox_put($n; "RESYNC #\($n) \($head)")
+                  | ok(["resync-requested"])
+                end
+              elif $mkind == "STUCK" and $needs != "" then $cl | ok([$st, "ask-user=edge \($n) \($needs)"])
+              else $cl | ok([$st, $ask])
+              end
+            elif $claimed then noop_out("\($mkind) on #\($n) \($st): the claim proceeds"; [$ask])
+            else refuse("\($mkind) on #\($n) \($st)")
+            end
+        end
+    end)
+
+# ------------------------------------------------------------------ session
+# A woken partner's (possibly new) name and sessionId; gen and status unchanged.
+elif $op == "session" then (
+  .issues[$n] as $i
+  | if $i.gen == 0 then refuse("#\($n) has no session to rebind (never launched)")
+    elif any(.issues | to_entries[]; .key != $n and .value.sessionName == $name)
+    then refuse("session name \($name) is recorded for another issue")
+    elif $i.sessionName == $name and $i.sessionId == $sid then noop("#\($n) already bound to \($name) \($sid)")
+    else
+      .issues[$n].sessionName = $name | .issues[$n].sessionId = $sid
+      | .issues[$n].sessions = (($i.sessions // []) + [{gen: $i.gen, name: $name, sessionId: $sid}])
+      | ok([$i.status])
+    end)
+
+# ------------------------------------------------------------------ reconcile
+# One write: open intents of non-terminal issues against git ($ancids: open
+# merge intents whose candidate is an ancestor of the ticket head) and $ag (the
+# rows of `claude agents --json --all`), every verifying back to done-claimed,
+# CANCEL entries of ended sessions dropped. Closed intents are never touched.
+elif $op == "reconcile" then (
+  def ended: .state == "stopped" or .state == "done" or .state == "failed";
+  reduce (.intents[] | select(.open)) as $in (.;
+    ($in.n | tostring) as $k | .issues[$k] as $i
+    | if $i == null or terminal($i.status) then .
+      elif $in.kind == "merge" then
+        if has_v($ancids; $in.id) then
+          .issues[$k].gateResults += [{gen: $in.gen, result: "pass", text: "merged before a restart (reconciled)"}]
+          | to_merged($k; $in.candidateSha)
+          | close_intent($in.id; "merged")
+        else
+          (if $i.status == "verifying" then .issues[$k].status = "done-claimed" else . end)
+          | close_intent($in.id; "interrupted")
+        end
+      else
+        # A row of an earlier generation (or an earlier wake) of this issue is never this launch.
+        ([$i.sessionId] + [($i.sessions // [])[].sessionId] | map(select(. != null))) as $old
+        | ([ $ag[] | select(.name == $in.sessionName and (.sessionId | type == "string")
+                            and (.sessionId | test("^[^\\s:]+$"))
+                            and (has_v($old; .sessionId) | not)) ]
+           | sort_by(.startedAt // 0) | last) as $row
+        | if $row != null and $i.status == $in.prior then record_launch($k; $in; $row.sessionId)
+          else close_intent($in.id; "launch-failed")
+          end
+      end)
+  | .issues |= with_entries(if .value.status == "verifying" then .value.status = "done-claimed" else . end)
+  | . as $s
+  | .outbox |= map(select(
+      if (.line | startswith("CANCEL #")) then
+        ($s.issues[(.n | tostring)].sessionId) as $cs
+        | $cs != null and any($ag[]; .sessionId == $cs and (ended | not))
+      else true end))
+  | ok([]))
+
+# Read-only, on the reconciled state: requeue (claimSeq order), resend (every
+# outbox entry, verbatim), status (every other live issue, by number).
+elif $op == "reconcile-actions" then (
+  ([ .issues | to_entries[] | select(.value.status == "done-claimed")
+     | {k: .key, q: (.value.claim.claimSeq // 0)} ]
+   | sort_by([.q, (.k | tonumber)]) | map(.k)) as $rq
+  | { rc: 0,
+      out: ([ $rq[] | "requeue \(.)" ]
+            + [ .outbox[] | "resend \(.n) \(.line)" ]
+            + [ .issues | keys | map(tonumber) | sort[] | tostring
+                | select(islive(.) and (has_v($rq; .) | not)) | "status \(.)" ]) })
 
 else bad("unknown program \($op)")
 end
