@@ -106,6 +106,18 @@ expect "head moved after pin" 10
 [ "$(g rev-parse ticket)" = "$NEW" ] || fail "head moved: ticket changed"
 echo "ok: head moved after pin"
 
+# stale pin, candidate contains the new head: only the pin comparison can reject
+mkrepo stale-pin
+HEAD0="$(g rev-parse ticket)"
+commit_on ticket t1; NEW="$(g rev-parse ticket)"
+g branch cand
+commit_on cand c1; CAND="$(g rev-parse cand)"
+run ticket "$CAND" "$HEAD0"
+expect "stale pin" 10
+[ "$OUT" = "head=$NEW" ] || fail "stale pin: expected 'head=$NEW', got '$OUT'"
+[ "$(g rev-parse ticket)" = "$NEW" ] || fail "stale pin: ticket changed"
+echo "ok: stale pin"
+
 # diverged: pin is current but the candidate does not contain the head
 mkrepo diverged
 g branch cand
