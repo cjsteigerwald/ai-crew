@@ -425,6 +425,7 @@ Not automatable: partners talk to the user and the run spans `claude agents`. Th
   - At least one `RESYNC` (finish A and C close together).
   - B launches only after A is `merged` and holds once on sdlc-process's start rule until the user resolves it.
   - `git status` in the coordinator's checkout stays clean throughout; the ledger is under `$(git rev-parse --git-common-dir)/partner-sessions/<KEY>/`.
+  - `claude stop` on an idle partner: its row loses its pid. Record whether `claude --resume <sessionId> --bg --name` after a stop keeps the sessionId or starts a copy. Stopping a busy (mid-turn) partner leaves its worktree usable.
   - Hand-back to intake step 7; one draft PR covering A, B and C with `Refs`/`Closes` per step 8's rule and the ledger summary in its body.
 - [ ] **Step 4: Clean up** scratch issues, branches, worktrees and sessions (user confirms each remote deletion).
 - [ ] **Step 5: Commit** the results section: `git commit -m "docs(dev-workflow): record partner-session live trial"`.

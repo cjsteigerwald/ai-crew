@@ -83,4 +83,4 @@ FAILED #n gen=g <reason>
   re-run `{{TEST_CMD}}`, resolve conflicts, commit, and send `DONE` again.
 - `REWORK #n <evidence>`: fix what the evidence names, re-run `{{TEST_CMD}}`, merge the current
   ticket head, commit, and send `DONE` again.
-- `CANCEL #n`: commit nothing more and stop.
+- `CANCEL #n`: reply nothing, commit nothing, end your turn; the coordinator will stop this session.

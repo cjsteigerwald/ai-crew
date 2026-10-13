@@ -82,7 +82,7 @@ was written (null if absent or ended). `merge` adds `candidateSha`, `expectedHea
   two different sessions of an issue (its recorded session and an open intent's) both stay. Only the partner's next `DONE`
   or `FAILED` for that generation clears its `RESYNC`/`REWORK`; a `STARTED`, `STUCK` or `SCOPE`
   leaves it outstanding (resume resends it). A `CANCEL` stays until its session has
-  ended (see `json` below). The outbox invariant: an entry other than `CANCEL` exists only for the
+  ended (see `json` below); it is cleared by `json done nopid` once SKILL's Stop a session has ended the session. The outbox invariant: an entry other than `CANCEL` exists only for the
   issue's current gen while it is `resync-requested` or `rework-*`, so a launch, a merge, a cancel or
   a failure purges the issue's `RESYNC`/`REWORK` (a launch also purges its older-gen `CANCEL`s) and
   `reconcile` repairs any stale entry, logging `outbox-stale-purged`.

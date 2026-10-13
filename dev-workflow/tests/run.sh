@@ -440,7 +440,7 @@ fi
 if [ -f "$PS_DIR/partner-brief.md" ]; then
   for pin in 'gen=' 'never rebase onto main' 'Never push' 'never open a PR' 'never close or edit GitHub issues' \
              'STATUS?' 'RESYNC' 'REWORK' 'CANCEL' 'its issue stays open until the ticket PR merges, by design' \
-             '{{COORD_NAME}}' '{{BLOCKER_EVIDENCE}}'; do
+             '{{COORD_NAME}}' '{{BLOCKER_EVIDENCE}}' 'end your turn; the coordinator will stop this session'; do
     grep -qF -- "$pin" "$PS_DIR/partner-brief.md" || pfail "coordinating-partner-sessions/partner-brief.md: missing '$pin'"
   done
 fi
@@ -473,7 +473,9 @@ if [ -f "$PS_SKILL" ]; then
              'only a canary that has ended' 'cross-session-message' \
              'For each `cancelled` issue, mark its AC `deferred` in the settled AC list, with the reason stored by `drop` or `cancel-ticket`.' \
              'Refs owner/repo#' 'notify_when_idle' 're-register' 'skip steps 3–5' 'PS_OWNER' \
-             'ledger.sh summary' 'after the user confirms' '/retro' 'skill-retrospective'; do
+             'ledger.sh summary' 'after the user confirms' '/retro' 'skill-retrospective' \
+             'claude stop <id>' "stop every alive session in the issue's session history" \
+             'never stop a session it did not launch' 'sleep 300' 'do not loop'; do
     grep -qF -- "$pin" "$PS_SKILL" || pfail "coordinating-partner-sessions/SKILL.md: missing '$pin'"
   done
 else
