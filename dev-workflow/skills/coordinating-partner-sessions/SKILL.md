@@ -90,7 +90,9 @@ says which call to make when; it does not restate the table.
   coordinator ends it). Triggers: drop, cancel-ticket, relaunch and `stuck-accept`. Rule:
   stop every alive session in the issue's session history (rows matched by any
   `sessions[].sessionId`, or by the recorded name).
-  1. Deliver `CANCEL #n` with `notify_when_idle`. Keep a "stop pending" working note per row with
+  0. **Already ended:** no alive row matches: skip steps 1-2 and go to step 3.
+  1. Deliver `CANCEL #n` with `notify_when_idle`. This is the delivery of that `CANCEL`; do not
+     also send it from the outbox. Keep a "stop pending" working note per row with
      its `sessionId` and `startedAt` (agents rows carry `id`, `sessionId`, `name`, `pid`, `state`,
      `startedAt`).
   2. On the idle notice, or after a background `sleep 300` with no notice: act only if the note is
@@ -99,10 +101,16 @@ says which call to make when; it does not restate the table.
      `sessionId`, else by name.
   3. Read agents up to 6 times, 5 s apart. When the row has no `pid`:
      `ledger.sh event "$L" <n> json done nopid`, and close the note. For `stuck-accept`, record it
-     while the issue is still `blocked-on`, which drops the `CANCEL`.
+     while the issue is still `blocked-on`, which drops the `CANCEL`. That event drops only the
+     recorded session's `CANCEL`, and only in `blocked-on` or `cancelled`: for a `failed`
+     (relaunch) issue it is a no-op, expected; for an open-intent session's `CANCEL` the next
+     `reconcile` clears it.
   4. Still alive after the sixth read: tell the user the session's name and id, and do not loop.
+     The caller holds its next action (relaunch, freeing the slot, `unlock`) until the user
+     confirms the session is gone or says to proceed.
   - **Ambiguity:** if more than one alive row matches, or a matching row's `sessionId` is not in
-    the issue's `sessions[]`, list the rows to the user and ask before stopping. Never `claude
+    the issue's `sessions[]` (an open-intent session is exempt: its `sessionId` is usually unknown,
+    so match it by the intent's recorded name and treat it as launched by the coordinator), list the rows to the user and ask before stopping. Never `claude
     stop` by name when the match is ambiguous: never stop a session it did not launch.
   - **Resume:** a reconcile `resend <n> <to> CANCEL #n` line runs Stop a session, not a plain
     Deliver.
@@ -331,13 +339,11 @@ the next.
 ## 10. Hand back
 
 After every terminal change, run `ledger.sh done "$L"`. Exit `1`: not finished, keep waiting.
-First list any outstanding `CANCEL` (`ledger.sh outbox "$L"`) to the user, so a session still alive
-after Stop a session has a defined follow-up.
 
-- **`cancel-ticket`** (every issue `cancelled`): treat it as cancelling the ticket.
-  `ledger.sh unlock "$L"` and tell the user. No hand-back; branches and worktrees stay until the
+- **`cancel-ticket`** (every issue `cancelled`): treat it as cancelling the ticket. First list
+  any outstanding `CANCEL` lines (`ledger.sh outbox "$L"`) to the user. `ledger.sh unlock "$L"` and tell the user. No hand-back; branches and worktrees stay until the
   user cleans them up.
-- **`handback`:**
+- **`handback`:** first list any outstanding `CANCEL` lines (`ledger.sh outbox "$L"`) to the user.
   1. For each `cancelled` issue, mark its AC `deferred` in the settled AC list, with the reason stored by `drop` or `cancel-ticket`.
      A missing reason (`ledger.sh get` shows `reason` null): ask the user for it.
   2. Put `ledger.sh summary "$L"` (a Markdown table) in the PR body draft.
@@ -352,6 +358,8 @@ after Stop a session has a defined follow-up.
 
 **Idle notice** for partner `n` (one-shot; it only means a turn ended). Read agents for its row:
 
+- A "stop pending" note is open for this row: follow Stop a session step 2, not the branches
+  below.
 - Alive and `blocked` (waiting on the user), or alive and `working`: Arm only.
 - Alive and `done`, with no `DONE` received for this generation: apply the `STATUS?` guard, then
   Arm.
@@ -372,25 +380,27 @@ Ask the user:
   alive session in the issue's session history (Stop a session; rows matched by any
   `sessions[].sessionId`, or by the recorded name), so no resumed copy works the same branch. Then
   `ledger.sh intent "$L" relaunch <n> <KEY>-<n> <worktree> <branch> <startSha> "$W/agents.json"`
-  (values from `ledger.sh get`; the Read after the stops records `priorPid` null), then
+  (values from `ledger.sh get`; the Read after the stops records `priorPid` null; the issue is
+  `failed`, so step 3's `json done nopid` is a no-op, expected). If a session is still alive after
+  the sixth read, do not relaunch until the user answers. Then
   `cd <worktree> && claude --resume <sessionId> --bg --name <KEY>-<n> "<prompt>"`, where the
   prompt states the new generation (`gen=<g+1>` on every line from now on) and points back to the
   brief. Read agents; `ledger.sh event "$L" <n> relaunch <id> <sessionId>`, then Rebind and Arm
-  (a copy with a new sessionId is possible, ruling T1-C3; the live trial records which happens after
-  `claude stop`). A failed command: `launch-failed <id>`. Exit `30` on the intent: no free slot yet; wait.
+  (a copy with a new sessionId is possible after `claude stop`; the live trial records which
+  happens). A failed command: `launch-failed <id>`. Exit `30` on the intent: no free slot yet; wait.
 - **Handled it themselves:** when the user says it is done, `ledger.sh event "$L" <n>
   user-merged`. It records `merged` only if the issue branch tip is an ancestor of the ticket head
   (exit `30` otherwise: tell the user).
 - **Drop:** ask the reason, `ledger.sh event "$L" <n> drop "<reason>"`. It prints `cancelled` and
-  `dependents=<list>`. Send the outbox, then run Stop a session for each issue whose recorded or
-  open-intent session is alive. Per dependent `d`, ask: drop it too (`drop`), or remove the edge with
+  `dependents=<list>`. Run Stop a session for each issue whose recorded or open-intent
+  session is alive (its step 1 delivers the `CANCEL`; do not also send the outbox for it). Per dependent `d`, ask: drop it too (`drop`), or remove the edge with
   `ledger.sh event "$L" <d> edge-remove <n>` (a `pending` or `blocked-on #n` dependent stays or
   becomes `pending` without that blocker; then run step 6).
 - **Cancel the ticket:** ask the reason, `ledger.sh event "$L" <n> cancel-ticket "<reason>"`
-  (any `n`; every non-terminal issue becomes `cancelled`). Send the outbox (`CANCEL` to live
-  and `failed` partners), then run Stop a session for every issue whose recorded or open-intent
-  session is alive. Only after all of them complete, step 10 (`unlock`; earlier, the `json done
-  nopid` writes exit `40`).
+  (any `n`; every non-terminal issue becomes `cancelled`). Run Stop a session for every issue whose
+  recorded or open-intent session is alive (its step 1 delivers the `CANCEL`; do not also send the
+  outbox for it). Only after all of them complete, or the user answers a step 4 hold, step 10
+  (`unlock`; earlier, the `json done nopid` writes exit `40`).
 
 **`STUCK needs=#m`** (`ask-user=edge <n> <m>`). First, if `#m` is not an issue of this ledger
 (`ledger.sh get "$L" <m>` exits `2`): tell the user that `#n` needs `#m` from outside this ticket,
@@ -400,9 +410,9 @@ and skip the steps below; the partner keeps its slot. Otherwise:
    edge and ask the user which issue absorbs the work.
 2. Otherwise ask the user. Declined: nothing changes; the partner keeps its slot.
 3. Agreed: `ledger.sh event "$L" <n> stuck-accept <m>` (prints `blocked-on #m`; exit `30` with
-   `cycle:` on stdout if the graph changed). Send the outbox (`CANCEL`), run Stop a session for
-   `#n`'s session (record `json done nopid` while `#n` is still `blocked-on`), then run step 6: the
-   slot is free.
+   `cycle:` on stdout if the graph changed). Run Stop a session for `#n`'s session (its step 1 delivers
+   the `CANCEL`; record `json done nopid` while `#n` is still `blocked-on`), then run step 6: the
+   slot is free. After a step 4 hold, do not free the slot or launch until the user answers.
 4. Offer to write the edge to GitHub, and write it only after the user confirms that write:
    `gh api repos/<owner>/<repo>/issues/<m> --jq .id` gives `#m`'s database id, then
    `gh api --method POST repos/<owner>/<repo>/issues/<n>/dependencies/blocked_by -F
