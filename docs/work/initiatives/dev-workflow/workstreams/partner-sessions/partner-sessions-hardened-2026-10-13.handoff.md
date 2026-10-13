@@ -58,4 +58,4 @@ canonical: docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partn
 ## Process notes
 
 - The global delegation gate, read budget and review tiers apply. Ask before every push.
-> Historical: built with an SDD ledger before 2026-10-13; new work follows sdlc-process.
+- Historical: built with an SDD ledger before 2026-10-13; new work follows sdlc-process.

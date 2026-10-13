@@ -1,13 +1,16 @@
 ---
 id: dev-workflow-intake-chain-choice-spec
 type: spec
-status: draft
+status: superseded
+superseded_by: dev-workflow/skills/intaking-work-items/SKILL.md
 owner: dev-workflow
 representation: canonical
 canonical: docs/work/initiatives/dev-workflow/workstreams/intake-chain/intake-chain-choice.spec.md
 ---
 
 # intaking-work-items: choose the superpowers or mattpocock chain — design
+
+> Historical: superseded on 2026-10-13 (superpowers chain and unattended mode removed); see the current skill.
 
 - **Date:** 2026-10-07
 - **Skill:** `dev-workflow/skills/intaking-work-items/`

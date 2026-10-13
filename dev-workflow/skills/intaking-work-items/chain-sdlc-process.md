@@ -5,12 +5,8 @@ step 7 (Verify).
 
 ## Attended only
 
-This chain runs attended: sdlc-process's readiness, policy-review and publication gates need a live
-human. If the run mode is unattended, say so once and switch to attended for the rest of the run
-(steps 6–9): set the requirements doc's `**Run mode:**` field to `attended` and log the reason
-("Run mode: attended (sdlc-process chain)") in the Run log. There is no "go unattended?" question
-here, and no unattended pre-authorization applies on this chain — step 8's push and draft PR each
-need a live confirmation.
+Every gate is answered live: sdlc-process's readiness, policy-review and publication gates, and
+step 8's push and draft PR, each need the user's confirmation.
 
 ## Precondition
 

@@ -1,13 +1,16 @@
 ---
 id: dev-workflow-intake-agentic-run-plan
 type: plan
-status: draft
+status: archived
+archive_reason: superpowers chain and unattended mode removed 2026-10-13
 owner: dev-workflow
 representation: canonical
 canonical: docs/work/initiatives/dev-workflow/workstreams/intake-chain/intake-agentic-run.plan.md
 ---
 
 # Intake unattended run, AC verification, and close-out — Implementation Plan
+
+> Historical: superseded on 2026-10-13 (superpowers chain and unattended mode removed); see the current skill.
 
 > Historical: built with an SDD ledger before 2026-10-13; new work follows sdlc-process.
 

@@ -13,7 +13,6 @@ never leave `TBD`. No secrets, tokens, or credential values anywhere in the doc.
 **Intake by:** <name> with the `dev-workflow:intaking-work-items` skill
 **Status:** <Draft | Ready | Partial | Delivered | Cancelled> — <last completed step; skipped steps and what each lost, e.g. "gap analysis skipped — requirements not gap-checked">
 **Chain:** <sdlc-process | mattpocock | — (not yet chosen)>
-**Run mode:** <unattended | attended>
 
 > Snapshot of the ticket on the fetched date plus the decisions below. If the ticket changes,
 > re-run intake for the changed rows rather than editing this doc by memory.

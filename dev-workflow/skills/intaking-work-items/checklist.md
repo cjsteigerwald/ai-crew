@@ -47,6 +47,5 @@ this shape:
 - **A generic remote link is not identity evidence.** An item counts as equivalent only if the link
   type, the link text, or the item itself asserts same-work ("mirrors", "tracked in", a sync link
   type, the same key in the title), or the user confirms it. Otherwise it is related context.
-- Row 14 unmet or skipped ⇒ `unattended unavailable`; offer attended.
 - Rows 7 and 12 can be **blockers** rather than gaps: an unmet gate is reported and stops the work;
   it is not something a clarifying answer can close.

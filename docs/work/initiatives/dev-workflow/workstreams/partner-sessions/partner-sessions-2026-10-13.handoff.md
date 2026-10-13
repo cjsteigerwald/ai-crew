@@ -1,13 +1,16 @@
 ---
 id: dev-workflow-partner-sessions-2026-10-13-handoff
 type: handoff
-status: draft
+status: superseded
+superseded_by: docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions-hardened-2026-10-13.handoff.md
 owner: dev-workflow
 representation: canonical
 canonical: docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions-2026-10-13.handoff.md
 ---
 
 # Handoff — partner-session coordinator (2026-10-13)
+
+> Historical: superseded on 2026-10-13 (superpowers chain and unattended mode removed); see the current skill.
 
 **Resume:** `continue dev-workflows`
 
@@ -81,7 +84,7 @@ per Jira ticket through intake steps 7-8.
   - the review tiers: full chain for skill and CI changes
   - ask before every push. The user kept the remote branch, but approves each push separately.
 - The sidkik SDLC observer is active and flags scope and approval gaps.
-> Historical: built with an SDD ledger before 2026-10-13; new work follows sdlc-process.
+- Historical: built with an SDD ledger before 2026-10-13; new work follows sdlc-process.
 - Push: `git -c credential.helper='!gh auth git-credential' push` (memory note).
 
 ## Suggested skills

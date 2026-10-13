@@ -38,7 +38,7 @@ For each new test, prove it can fail:
 ## Failure
 
 - Make up to 2 fix attempts, each in the Run log, then step 7 re-runs in full.
-- A third failure is a stop. See [run-modes.md](run-modes.md).
+- A third failure is a stop. See **Run log and stops** in SKILL.md.
 - A wrong or untestable AC is an immediate stop. Never fix it by editing the AC.
 
 ## Results

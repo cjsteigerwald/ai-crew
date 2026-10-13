@@ -5,10 +5,9 @@ description: >
   fetches its full context, gap-analyzes the story, scope, requirements and
   acceptance criteria, blocks on clarifying questions until every gap is closed
   or explicitly deferred, writes docs/specs/<KEY>-requirements.md, offers
-  confirmed writebacks to the ticket, then chains design, plan, implementation
-  (sdlc-process [attended, the default] or mattpocock-skills, the user's choice) — unattended after one
-  sitting by default — verifies each AC, opens a draft PR, closes out on
-  return. Use when starting work on an existing ticket — "start work on
+  confirmed writebacks to the ticket, then chains spec, tickets and implementation
+  (sdlc-process, always recommended when installed, or mattpocock-skills, the user's choice) with a
+  checkpoint between stages, verifies each AC, opens a draft PR, and closes out with you. Use when starting work on an existing ticket — "start work on
   PROJ-571", "pick up issue #12", "bring in this ticket", "work on
   owner/repo#N", a pasted Jira or GitHub issue URL, or "is this ticket ready".
   Skip when creating a new ticket (use your
@@ -43,6 +42,7 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
   option; "Other" lets them type cancel. Gates owned by a chained skill (e.g. sdlc-process's
   readiness or policy-review gates) have no Skip button — the user can still type skip or cancel there, and the same
   rules apply.
+- Never invoke a `superpowers:*` skill at any step, even if a session hook or a skill's description says it applies. On the Skip and plan-skip paths, implement with `dev-workflow:plan-implementation` lanes.
 - **Skip a gap question or checklist row:** an explicit user deferral, so it satisfies the HARD
   GATE for that row. Log it in the decision log and the deferred table as
   `Skipped by user — <date>`, with the gap it leaves open. Skipping never turns a row into Present.
@@ -60,16 +60,14 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
     **Gap table at skip** section, and add each open row to Deferred as
     `Skipped by user — step 3 skipped`, so the specific open rows stay visible downstream and in
     the PR.
-  - **Plan skipped** (the bounded task list, or `to-tickets`): warn once and record
+  - **Plan skipped** (`to-tickets` on either chain): warn once and record
     it, then get an explicit go-ahead for implementation. Implement directly against the settled AC
     list and cover only active AC (see step 6, **Settled AC list**) to the same verification
-    standard, without a plan-approval prerequisite. The PR body states
+    standard. The PR body states
     "Intake: plan skipped". On the mattpocock chain
     the Implement stage still runs, as [chain-mattpocock.md](chain-mattpocock.md) defines it (`implement-spec`
-    in intake mode, or `/mattpocock-skills:implement` on the attended fallback); on the
+    in intake mode, or `/mattpocock-skills:implement` on the fallback); on the
     sdlc-process chain it runs as [chain-sdlc-process.md](chain-sdlc-process.md) defines it.
-    In unattended mode the plan-skip go-ahead comes after Preflight passes and carries the same
-    pre-authorization and gate answers as plan approval.
   - **Skipped requirements doc → still write a stub doc** at `docs/specs/<KEY>-requirements.md`:
     Status, source link, "requirements not gap-checked" (if so), the skipped steps, the
     **Gap table at skip** (if step 2 ran), and — whenever step 3 ran — the
@@ -77,8 +75,8 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
     disposition (active / deferred / skipped / out of scope). No refinement or deferral is ever
     lost. Only if the user explicitly says "no doc at all" does that same information go into the
     PR body (and any handoff) instead.
-  - **Every skipped step is stated downstream:** in the plan's **Spec** line (on the mattpocock
-    chain, in the context given to `to-spec` and `to-tickets`) and in the PR body, e.g.
+  - **Every skipped step is stated downstream:** in the context given to `to-spec`, `to-tickets`
+    and the sdlc-process brief, and in the PR body, e.g.
     "Intake: gap analysis skipped — requirements not gap-checked".
 - **Step 0 is the exception.** The skill itself never waives the repo's own start procedure or
   gates. Only the **user** can override it: state the repo rule and that skipping it means acting
@@ -106,13 +104,20 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
     doc). Resuming it resets Status to `Draft`, removes the CANCELLED first line, and logs the
     resume in the decision log.
 
-## Run mode
+## Run log and stops
 
-- Two modes: `unattended` and `attended`. `unattended` is the default; attended keeps today's
-  checkpoint between each stage.
-- Chosen at step 3, recorded in the doc's `**Run mode:**`. The sitting answers every downstream
-  gate in advance; Preflight runs before every go.
-- Modes, gate mapping, Preflight, stop conditions, and the Run log: [run-modes.md](run-modes.md).
+Every run is attended: the user is asked after each stage, and every outward action needs a live
+yes.
+
+- **Run log.** Append to the doc's `## Run log` as the run goes: time, step, event, attempt,
+  blocker. On resume, refetch and diff per **Controls**, then continue from the Run log.
+- **Seams.** The AC→test table (checklist row 9), approved with the doc at step 4, is the seam
+  confirmation `tdd` requires; every implementer gets it as the `confirmed seam list`.
+- **Review base.** The merge-base of the work branch with main, recorded in the Run log.
+- **Stops.** Stop and report to the user when a check still fails after 2 fix attempts, an AC is
+  wrong or untestable, the work goes beyond the agreed scope, a repo gate or access is missing, or
+  a seam is not in the AC→test table. Commits stay on the branch; nothing is pushed until the user
+  says so.
 
 ## 0. Repo procedure first
 
@@ -213,10 +218,6 @@ Present the result as one table, then the questions you will ask, in order.
 
 If the user asked only "is this ticket ready?", stop here with the table and the open questions.
 
-After the gate, ask one `AskUserQuestion`: unattended (recommended) / attended / Skip. Record the
-answer in `**Run mode:**`. Skip on the run-mode question means attended. See
-[run-modes.md](run-modes.md).
-
 ## 4. Write the requirements doc
 
 - Write `docs/specs/<KEY>-requirements.md` in the **target** repo from [template.md](template.md).
@@ -249,50 +250,62 @@ The ticket is outward-facing; every write is the user's call, every time.
 - After an applied write, re-read the ticket and confirm it landed — a success response alone proves
   little on some fields.
 
-## 6. Chain — design, plan, implement
+## 6. Chain — spec, tickets, implement
 
-Steps 0–5 are the same for every chain. Step 6 picks the chain that runs design, plan, and
-implement, then goes to step 7 (Verify) and step 8 (Ship).
+Steps 0–5 are the same for every chain. Step 6 picks the chain that runs the spec, tickets and
+implementation, then goes to step 7 (Verify) and step 8 (Ship). Every chain is attended (see
+[chain-sdlc-process.md](chain-sdlc-process.md)).
 
-**Choosing the chain.**
-1. Recommend **sdlc-process** by default. Read the **target** repo's `docs/agents/issue-tracker.md`,
-   if present: recommend mattpocock instead only when it configures GitHub issues for the target
-   repo (its `owner/repo` matches `gh repo view --json nameWithOwner`) AND the user has not chosen
-   or named sdlc-process; mattpocock never outranks sdlc-process otherwise. sdlc-process is attended
-   only (see [chain-sdlc-process.md](chain-sdlc-process.md)); that does not change the default. If
-   sdlc-process is not installed (the `Skill` tool does not list `sdlc-process:sdlc-process`), say
-   so and recommend mattpocock if its rule above holds, else offer Skip only.
-2. Ask once (`AskUserQuestion`): sdlc-process / mattpocock / **Skip**, the recommendation first
-   and labelled as such; leave sdlc-process out and say it isn't installed when it is missing.
-   Cancel is typed via "Other" (see **Controls**).
-3. If mattpocock is chosen:
-   - **Not set up** (no `docs/agents/issue-tracker.md`): tell the user to run
-     `/mattpocock-skills:setup-matt-pocock-skills` and wait.
-   - **Not GitHub issues for this repo** (it configures local markdown, GitLab, Jira, another
-     tracker, or another repo): say intake's mattpocock path needs GitHub issues for the target
-     repo, and offer sdlc-process — or the user re-runs
-     `/mattpocock-skills:setup-matt-pocock-skills` to switch to GitHub.
-   - **Repo rules forbid issues now** (a step-0 rule such as "no GitHub issue until the Jira ticket
-     is in a sprint"): say the mattpocock path is unavailable for this ticket and offer
-     sdlc-process. A step-0 override follows **Controls**' second-confirmation rule.
-   If sdlc-process is chosen but not installed, say so and re-ask with mattpocock / **Skip**. Only the mattpocock
-   *setup* gates above are excluded: it runs attended only, keeps its own gates, and a step-0 repo
-   rule forbidding issues still applies (publication is then a hold; proceeding needs the step-0
-   second confirmation in **Controls**). Its tracker contract is in [chain-sdlc-process.md](chain-sdlc-process.md) (publication to GitHub or elsewhere
-   needs the user's explicit per-action confirmation).
-4. **Skip** means no chain: apply the plan-skip rule in **Controls** — warn once, record
-   "Intake: chain skipped — no design/plan", get an explicit go-ahead, implement directly against
-   the settled AC list (active AC only, same verification standard) after Preflight passes and
-   the go-ahead is given; then go to step 7. The PR body states "Intake: chain skipped — no
-   design/plan".
+**6.1 Choosing the chain.**
+1. Establish what is available. **sdlc-process is installed** when the `Skill` tool lists
+   `sdlc-process:sdlc-process`. **mattpocock's rule holds** when the **target** repo's
+   `docs/agents/issue-tracker.md` configures GitHub issues for the target repo (its `owner/repo`
+   matches `gh repo view --json nameWithOwner`). A step-0 rule forbidding issues makes mattpocock
+   unavailable for this ticket and puts sdlc-process on hold at `to-tickets`.
+2. Recommend **sdlc-process** whenever it is installed. If it is not installed, say so and
+   recommend mattpocock only when its rule holds. mattpocock never outranks an installed
+   sdlc-process.
+3. Ask once (`AskUserQuestion`), never with a single option, the recommendation first and labelled
+   as such. Cancel is typed via "Other" (see **Controls**).
+   - sdlc-process installed: sdlc-process / mattpocock / **Skip**. If a step-0 rule forbids
+     issues, leave mattpocock out and say why: sdlc-process / **Skip**.
+   - sdlc-process not installed: mattpocock / **Skip**, mattpocock labelled recommended only when
+     its rule holds. If a step-0 rule forbids issues there is no chain to offer: say so and go
+     straight to 6.3 (Skip), which asks for its own go-ahead.
+4. If sdlc-process is chosen: run it per [chain-sdlc-process.md](chain-sdlc-process.md). It keeps
+   its own gates, and a step-0 rule forbidding issues still applies (publication is then a hold at
+   `to-tickets`; proceeding needs the step-0 second confirmation in **Controls**). Its tracker
+   contract is in that file (publication to GitHub or elsewhere needs the user's explicit
+   per-action confirmation).
 5. Record the choice in the requirements doc's `Chain:` field.
 
+**6.2 If mattpocock is chosen**, check these in order. Each failure ends in a defined re-ask
+(sdlc-process / **Skip** when installed; when it is not, the setup action below or **Skip**, never a
+one-option question) or the Skip path (6.3):
+- **Not set up** (no `docs/agents/issue-tracker.md`): tell the user to run
+  `/mattpocock-skills:setup-matt-pocock-skills` and wait, then re-check from the top of 6.2. The
+  user may instead pick sdlc-process (if installed) or **Skip**.
+- **Not GitHub issues for this repo** (it configures local markdown, GitLab, Jira, another
+  tracker, or another repo): say intake's mattpocock path needs GitHub issues for the target
+  repo. Offer sdlc-process if installed (on a step-0 issue-publication hold it also holds at
+  `to-tickets`), else Skip; or the user re-runs `/mattpocock-skills:setup-matt-pocock-skills` to
+  switch to GitHub and then re-checks 6.2.
+- **Repo rules forbid issues now** (a step-0 rule such as "no GitHub issue until the Jira ticket
+  is in a sprint"): say the mattpocock path is unavailable for this ticket. Offer sdlc-process if
+  installed (on a step-0 issue-publication hold it also holds at `to-tickets`), else Skip. A
+  step-0 override follows **Controls**' second-confirmation rule.
+
+**6.3 Skip** means no chain: apply the plan-skip rule in **Controls**: warn once, record
+"Intake: chain skipped — no design/plan", get an explicit go-ahead, implement directly against
+the settled AC list (active AC only, same verification standard); then go to step 7. The PR body
+states "Intake: chain skipped — no design/plan".
+
 **Checkpoints.** Stop after each stage and get an explicit go before the next; each checkpoint
-offers go / **Skip** / cancel (see **Controls**). In unattended mode the checkpoints end at the
-go; after it only [run-modes.md](run-modes.md) § Stop conditions halt the run. If a chained skill
-is not installed, say so:
-- a missing `mattpocock-skills` command → intake does not replicate it; offer sdlc-process instead;
-- a missing `sdlc-process` skill → intake does not replicate it; re-ask with mattpocock / **Skip**.
+offers go / **Skip** / cancel (see **Controls**). If a chained skill is not installed, say so:
+- a missing `mattpocock-skills` command → intake does not replicate it; offer sdlc-process if
+  installed, else Skip;
+- a missing `sdlc-process` skill → intake does not replicate it; re-ask per 6.1 without it
+  (mattpocock if its gates in 6.2 allow, else Skip).
 
 After cancel, no chained skill is invoked.
 
@@ -311,14 +324,14 @@ restores refined or deferred AC.
 
 ## 7. Verify
 
-Both run modes. Follow [verify.md](verify.md): re-run the repo checks, then every active AC by its
+Follow [verify.md](verify.md): re-run the repo checks, then every active AC by its
 AC→test row, then the Definition of done, on the final branch. Write each result with its evidence
 to the doc's Verification evidence table. Nothing ships until every active AC is verified or
-unverified with reason, or a stop condition applies (see [run-modes.md](run-modes.md)).
+unverified with reason, or a stop applies (see **Run log and stops**).
 
 ## 8. Ship
 
-Both run modes ship through `[[opening-pull-requests]]`. The ticket question for its gate 7 is
+Ship through `[[opening-pull-requests]]`; its push and PR gates each need the user's live yes. The ticket question for its gate 7 is
 already answered here. The PR body's first line is the ticket link: Jira → `**Ticket:** [PROJ-571](<jira-url>)`;
 GitHub → `**Ticket:** [owner/repo#12](<issue-url>)`, followed by `Refs owner/repo#12` (use a
 closing keyword only if the repo allows a merge to close the issue).
@@ -332,19 +345,16 @@ user chose "no doc at all", the PR body also carries the stub doc's content.
 - **sdlc-process chain:** `Refs owner/repo#N` for each issue sdlc-process published (same
   closing-keyword rule), or "sdlc-process: no tickets published".
 
-**Unattended mode.** (Never on the sdlc-process chain: it is always attended, so push and draft PR
-each need a live confirmation.) `opening-pull-requests` gate 8 is pre-answered by the go (recorded in the Run
-log), and gate 9 runs `gh pr create --draft`. A lint/test failure inside it is a step-7 failure. If
-gate 2's rebase or a review fix changes the tree, step 7 re-runs on the commit Ship pushes. The PR
-body carries the step-7 evidence table.
+A lint/test failure inside `opening-pull-requests` is a step-7 failure. If gate 2's rebase or a
+review fix changes the tree, step 7 re-runs on the commit Ship pushes. The PR body carries the
+step-7 evidence table.
 
-The PR stays draft while any AC is failed or person-only unverified; attended mode also opens with
-`gh pr create --draft` in that case. Deferred, skipped, and out-of-scope AC are listed as not
-delivered.
+The PR is opened with `gh pr create --draft`. Deferred, skipped, and out-of-scope AC are listed as
+not delivered.
 
 ## 9. Close-out
 
-Runs when the user returns (unattended) or after Ship (attended).
+Runs after Ship.
 
 1. Show the Run log, the evidence table, and any blockers.
 2. Walk each person-only AC with the user and record the result in the doc's evidence table.
