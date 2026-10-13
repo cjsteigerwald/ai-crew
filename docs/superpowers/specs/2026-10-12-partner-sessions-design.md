@@ -92,8 +92,9 @@ Success:
   needs the full session UUID ([agent-view](https://code.claude.com/docs/en/agent-view.md)). Local
   `claude --help` (2.1.296) for `--bg`: "With --resume <session-id>, continues that session in the
   background under the same ID, or starts a copy and says so when the session is already running."
-  The coordinator only resumes stopped partners, so it expects the same ID; it re-reads name and
-  `sessionId` after every wake regardless. `-n, --name` is a plain session option with no stated
+  The coordinator only resumes stopped partners, but a copy with a new `sessionId` is possible
+  (notably after `claude stop`), so it never assumes the same ID: it re-reads name and `sessionId`
+  after every wake or relaunch and rebinds the ledger. `-n, --name` is a plain session option with no stated
   exclusion against `--resume`; whether it renames a resumed session is a live check (Open items).
 - A `--bg` session started from a shell starts the way a new `claude` session in that directory
   would: dispatch defaults are not inherited, so the permission mode must be passed explicitly
@@ -139,6 +140,13 @@ Success:
   keyboard; a session cannot rename itself.
 - Agent teams are experimental, cap a session at one team, and teammates cannot spawn teammates
   ([agent-teams](https://code.claude.com/docs/en/agent-teams.md)) — not used.
+- **Ledger write lock.** Every mutating `ledger.sh` call takes an exclusive kernel lock on
+  `write.lock`, held on the call's own file descriptor with `/usr/bin/lockf -s` (macOS) or util-linux
+  `flock -w` (Linux). The tool must support locking a descriptor; `ledger.sh` has no fallback and
+  exits 2 when neither tool is present. The kernel drops the lock when the process exits, however it
+  exits.
+- **`claude stop <id>`** ends a running background session; `<id>` is the `id` of its
+  `claude agents --json` row. A `CANCEL` message alone leaves an idle partner alive with its `pid`.
 - **Unverified:** the docs describe no parent/spawner relationship; a partner reaches the
   coordinator only by its session name, as a peer. The design relies on names only.
 
@@ -155,7 +163,7 @@ Success:
 | `scripts/frontier.sh` | Which issues to launch next; refuses a cyclic graph |
 | `scripts/ff-merge.sh` | Fast-forward-only merge into the ticket branch |
 | `scripts/parse-msg.sh` | Validates one partner → coordinator message line |
-| `scripts/ledger.sh` | Atomic ledger writes, run lock, intents, outbox, sender binding, dedup, transitions and resume reconciliation |
+| `scripts/ledger.sh` | Atomic ledger writes under a kernel write lock, run lock, intents, outbox, sender binding, dedup, transitions and resume reconciliation |
 
 Changes elsewhere: `chain-sdlc-process.md` stage 5 gains the sequential-vs-parallel question and the
 hand-off; `dev-workflow/.claude-plugin/plugin.json` version 0.1.7 → 0.1.8;
@@ -181,25 +189,27 @@ git.
 
 The ledger is the single source of coordinator state (Decision 13). It lives in git metadata at
 `$(git rev-parse --git-common-dir)/partner-sessions/<KEY>/ledger.json`, never in a working tree and
-never committed; the run lock (`lock/`) and an append-only diagnostic log (`ledger.log`, not state)
-sit in the same directory. It records the coordinator's session name and ID, and per issue: status,
+never committed; the run lock (`lock/`), the write lock file (`write.lock`) and an append-only
+diagnostic log (`ledger.log`, not state) sit in the same directory. It records the coordinator's session name and ID, and per issue: status,
 blockers, generation, partner session name and full `sessionId`, worktree, branch, start SHA,
 persisted claims, gate results, rework count, and outbox.
 
-- **Single writer.** Only one coordinator runs per ticket, enforced by a run lock (`lock/`, a
-  directory created with `mkdir`, holding a `holder` file with the coordinator's session ID and a
-  random nonce). The lock is **live** if the holder's session ID equals the caller's own, or is
-  listed in `claude agents --json` with a live process (a `pid` that passes `kill -0`; where no
-  `pid` is reported: listed with `state` not in {`stopped`, `failed`, `done`}). A missing or empty
-  `holder` is not live. A caller that finds a live lock held by another session stops and tells
-  the user. Otherwise it takes the lock over exclusively: it creates a `takeover` directory beside the lock with `mkdir` (only one
-  contender succeeds) and immediately writes its own session ID to `takeover/owner`, re-checks that
-  the holder is still not live, writes a new holder with its own nonce to a temp file and renames it
-  into place, re-reads it to confirm its own nonce, removes `takeover`, and logs the takeover (old
-  holder, time). A leftover `takeover` directory whose owner is not live (or that has no owner and is
-  older than 60 s, which only a crash between the `mkdir` and the `owner` write can leave) is removed
-  once and the takeover retried. Every ledger write first re-checks that the
-  holder's nonce is its own; a coordinator that has lost the lock stops.
+- **Single writer.** Only one coordinator runs per ticket, enforced by a run lock (`lock/`, holding
+  a `holder` file with the coordinator's session ID and a random nonce). The lock is **live** if the
+  holder's session ID equals the caller's own, or is listed in `claude agents --json` with a live
+  process (a `pid` that passes `kill -0`; where no `pid` is reported: listed with `state` not in
+  {`stopped`, `failed`, `done`}). A missing or empty `holder` is not live. A caller that finds a live
+  lock held by another session stops and tells the user. Otherwise it replaces the holder in place
+  (new nonce) and logs the takeover (old holder, time). Every mutating call, including `lock`, first
+  takes the **write lock**: an exclusive kernel lock on `<dir>/write.lock`, held on the call's own
+  file descriptor (`lockf -s` / `flock -w`) from before the holder check through the read and the
+  rename. A takeover needs the same lock, so no writer is ever between its holder check and its
+  rename while the holder is replaced, and parallel calls never lose an update. The kernel releases
+  the lock when the call exits, however it exits (`kill -9` included), so nothing is left to detect,
+  reap or take over. A held lock is waited for `PS_WRITE_WAIT` seconds (default 10), then the call
+  prints `busy=<dir>/write.lock` and exits 41 without changing anything. Read-only calls take no
+  lock. Every mutating call also checks that the holder's nonce is its own; a coordinator that has
+  lost the run lock (exit 40) stops.
 - **Atomic writes.** Every update writes a temp file and renames it over the ledger, so a crash never
   leaves a half-written ledger. A status change and everything that must accompany it (the outbox
   command it implies, the claim it records, the intent it closes, dependents it releases) are one
@@ -214,10 +224,18 @@ persisted claims, gate results, rework count, and outbox.
   never moves an issue backwards.
 - **Outbox.** A `RESYNC`, `REWORK` or `CANCEL` is recorded in the issue's outbox, with its generation
   and full text, in the same write as the transition that requires it; the coordinator sends it
-  afterwards. The entry is cleared when that partner's next valid message for the same generation
-  arrives (or, for `CANCEL`, when the session has ended, i.e. its `claude agents --json` row is
-  absent or has no `pid`; dropped in the same write by `reconcile` or by recording that
-  observation). On resume, every remaining outbox entry is resent verbatim; partners treat a repeated coordinator message as idempotent.
+  afterwards. Only one entry exists per issue and a newer entry supersedes the older, except that
+  `CANCEL`s to two different sessions of one issue (its recorded session and an open intent's)
+  coexist. A `RESYNC` or `REWORK` is cleared only by that partner's next `DONE` or `FAILED` for the
+  same generation; a `STARTED`, `STUCK` or `SCOPE` leaves it outstanding. A `CANCEL` is cleared when
+  its session has ended (its `claude agents --json` row is absent or has no `pid`), which the
+  coordinator records after stopping the session (Error handling, Stop a session) or `reconcile`
+  observes. **Invariant:** an entry other than `CANCEL` exists only for the issue's current
+  generation while the issue is `resync-requested` or `rework-n/3`. A launch, relaunch, merge, cancel
+  or failure purges the issue's `RESYNC`/`REWORK` in the same write; a launch or relaunch also drops
+  older-generation `CANCEL`s; `reconcile` repairs any violation and logs `outbox-stale-purged`. On
+  resume, every remaining outbox entry is resent verbatim (a `CANCEL` through Stop a session);
+  partners treat a repeated coordinator message as idempotent.
 - **Generation per issue.** Each launch or relaunch of an issue's partner increments its generation;
   the ledger records the session name, full `sessionId`, and generation. Every partner → coordinator
   line carries `gen=<g>`, and every intent and outbox entry records its generation. A wake of a
@@ -286,7 +304,9 @@ the user, per dependent, whether to drop it too (`cancelled`) or remove the edge
 5. **Write the ledger** with every issue `pending`. `frontier.sh` validates the graph; a cycle stops
    the run and is shown to the user.
 6. **Launch the frontier.** `frontier.sh` returns the `pending` issues with every blocker `merged`,
-   capped by the concurrency limit. On a run's first launch (no partner has yet completed the canary
+   capped by the concurrency limit. An issue blocked by an open issue outside the ticket is not
+   launched until that issue is closed; blockers outside the ticket are recorded in `init` as
+   `{n, closed}`. On a run's first launch (no partner has yet completed the canary
    check in this ledger), use the **canary phase**:
    - Launch only the first frontier issue (sub-steps below).
    - Wait for its `STARTED #n gen=<g>`: proves partner → coordinator delivery.
@@ -315,8 +335,9 @@ the user, per dependent, whether to drop it too (`cancelled`) or remove the edge
       `launched` while closing the launch intent (one write); register `notify_when_idle`.
 7. **Wait.** The coordinator is woken by a partner message or an idle notice. On every wake it reads
    `claude agents --json` and re-registers any notice older than about 11 hours.
-8. **On a partner message:** apply sender binding and `parse-msg.sh` (Message protocol), clear any
-   matching outbox entry, then act per the transition table. A `DONE` joins the integration queue.
+8. **On a partner message:** apply sender binding and `parse-msg.sh` (Message protocol), apply it
+   (a valid `DONE` or `FAILED` for the generation clears that partner's `RESYNC`/`REWORK` entry; other
+   messages do not), then act per the transition table. A `DONE` joins the integration queue.
 9. **Integration queue.** One `DONE` at a time, in arrival order (Merge rule and Verification gate).
    A successful merge updates the ledger and launches the new frontier, including any `blocked-on`
    issue whose blocker just merged.
@@ -464,16 +485,48 @@ options below). A relaunch starts a fresh budget.
   issue `failed`, keep its worktree and branch, launch nothing that depends on it, let independent
   issues continue, and ask the user: relaunch, handle it themselves, or drop the issue (or cancel
   the whole ticket).
-  - **Relaunch** uses `claude --resume <sessionId> --bg --name <KEY>-<n> "<generation g+1 + brief
+  - **Relaunch** first stops every alive session in the issue's session history (Stop a session), so
+    that no resumed copy works the same branch, then records the relaunch intent with `priorPid`,
+    the `pid` of the issue's recorded session at that moment (null after the stops). `reconcile`
+    counts an alive row of the intent's session name as the relaunch only if its `pid` differs from
+    `priorPid`; the old process still running is not a relaunch, and the intent closes as
+    `launch-failed`. If a session is still alive after the stop procedure, the coordinator does not
+    relaunch until the user answers. It then runs
+    `claude --resume <sessionId> --bg --name <KEY>-<n> "<generation g+1 + brief
     reminder>"`, keeping the partner's context because the failure was in its own work; record the
-    new generation, name and `sessionId`; the rework budget resets to `0/3`. A `blocked-on` relaunch
+    new generation, name and `sessionId` (a copy with a new `sessionId` is possible after
+    `claude stop`; the coordinator rebinds to whatever the agents row shows); the rework budget
+    resets to `0/3`. A `blocked-on` relaunch
     instead starts a fresh `--bg` session with a fresh brief, because its old session was cancelled
     before doing the work and its base must be the current ticket head: the old branch is kept as
     `<key>-<slug>-<n>-g<old>`, the old worktree is removed, and both are recreated from the current
     ticket head (flow step 6.3). The two relaunch kinds are deliberately different.
   - **Handle it themselves:** the user tells the coordinator when done; the coordinator records
     `merged` only after verifying that the issue branch tip is an ancestor of the ticket head.
-  - **Drop:** record `cancelled` and re-evaluate its dependents (transition table).
+  - **Drop:** record `cancelled`, run Stop a session for any alive session of the issue, and
+    re-evaluate its dependents (transition table).
+- **Stop a session.** A `CANCEL` alone leaves an idle partner alive, so the coordinator ends the
+  session. Triggers: a user **drop**, **cancel-ticket**, a **relaunch**, and a `stuck-accept`; and a
+  reconcile-resent `CANCEL`. The rule: stop every alive session in the issue's session history (rows
+  matched by any recorded `sessionId`, or by the recorded name), and only sessions the coordinator
+  launched.
+  0. If no alive row matches the session has already ended: skip to step 3.
+  1. Deliver `CANCEL #n` (this is the delivery of that outbox entry) and register
+     `notify_when_idle`. Keep a "stop pending" note per row with its `sessionId` and `startedAt`.
+  2. On the idle notice, or after a background `sleep 300` with no notice, act only if the note is
+     still open and the row still matches (same `sessionId` and `startedAt`); otherwise ignore the
+     timer. Then `claude stop <id>`, with `<id>` the agents row's `id`.
+  3. Read agents up to six times, 5 s apart. When the row has no `pid`, record the observation
+     (`json done nopid`), which drops the `CANCEL`, and close the note. For `stuck-accept` it is
+     recorded while the issue is still `blocked-on`.
+  4. Still alive after the sixth read: tell the user the session's name and id and do not loop. The
+     caller holds its next action (relaunch, freeing the slot, releasing the lock) until the user
+     confirms the session is gone or says to proceed.
+  - **Ambiguity:** if more than one alive row matches, or a matching row's `sessionId` is not one the
+    ledger recorded for the issue, list the rows and ask the user before stopping. An open launch or
+    relaunch intent's session, whose `sessionId` is usually unknown, is matched by the intent's
+    recorded name and counts as launched by the coordinator. Never stop by name when the match is
+    ambiguous.
 - **`STUCK` without `needs=`:** the partner keeps its slot; the user answers in that partner.
 - **`STUCK` or `SCOPE` from a `done-claimed` or `verifying` issue:** status unchanged; logged and
   shown to the user; the queued claim proceeds.
@@ -481,12 +534,12 @@ options below). A relaunch starts a fresh budget.
   validate the edge `#n blocked-by #m` against the ledger graph. If it would create a cycle, refuse
   it and ask the user which issue absorbs the work. Otherwise ask the user; if they agree, record the
   edge in the ledger (added to the issue's blockers), then write it to GitHub after the user confirms
-  that write, send `CANCEL #n` via the outbox, record `blocked-on #m`, free the slot, and
-  launch the next frontier issue. If they decline, nothing changes and the partner keeps its slot.
+  that write, record `blocked-on #m` (which queues the `CANCEL`), run Stop a session for `#n`'s
+  session, free the slot, and launch the next frontier issue. If they decline, nothing changes and the partner keeps its slot.
 - **`SCOPE`:** tell the user, recommend the retrospective in Decision 7, and ask: continue with one
   PR, split (move issues out of this run: drop them), or stop (cancel the ticket).
-- **Cancel the ticket:** send `CANCEL` to every live partner via the outbox, record `cancelled` for
-  every non-terminal issue, release the lock. Branches and worktrees stay until the user cleans them
+- **Cancel the ticket:** record `cancelled` for every non-terminal issue (which queues a `CANCEL` for
+  every session that may still run), run Stop a session for each, then release the lock. Branches and worktrees stay until the user cleans them
   up.
 - **Resume reconciliation** (coordinator restarted, backgrounded or stopped):
   1. Take the run lock (liveness rule above).
@@ -496,7 +549,8 @@ options below). A relaunch starts a fresh budget.
   4. Return every `verifying` issue to `done-claimed` (its gate was interrupted), then re-queue every
      `done-claimed` issue that is not yet merged; each re-enters at `ff-merge.sh --check` and its
      gate is re-run.
-  5. Resend every outbox entry (`RESYNC`, `REWORK`, `CANCEL`) for its recorded generation.
+  5. Resend every outbox entry (`RESYNC`, `REWORK`, `CANCEL`) for its recorded generation; a
+     `CANCEL` is resent through Stop a session.
   6. Re-register `notify_when_idle` for each live partner and send it `STATUS?`, so a `DONE` sent
      while the coordinator was down is resent (dedup drops repeats). Stopped partners follow the
      `stopped` rule above.
@@ -521,6 +575,9 @@ options below). A relaunch starts a fresh budget.
   (permission-class mismatch, or `crossSessionInbound` not `accept`), stop and tell the user which
   setting to change. Never edit settings. No throwaway probe session is launched; real delivery in
   both directions is proven by the canary phase (flow step 6, Decision 12).
+- **Lock tool.** `/usr/bin/lockf` (macOS) or util-linux `flock` is present and can lock a file
+  descriptor (probed once on a scratch file). Otherwise stop and tell the user: every mutating
+  `ledger.sh` call needs it.
 - `gh` is authenticated for the repo; the ticket branch exists and is checked out clean.
 - The filled brief contains the integration-base rule, the push/PR ban and the `gen=` rule.
 
@@ -540,9 +597,9 @@ options below). A relaunch starts a fresh budget.
 - `ff-merge.sh`: an integration test that initializes a real ledger, records a merge intent and
   merges successfully (the ledger, in git metadata, never dirties the worktree).
 - `ledger.sh`:
-  - atomic write; lock contention; stale-lock takeover (dead holder, missing holder) and own-lock
-    recognition; concurrent takeover by two contenders (exactly one proceeds), including an
-    interruption between `mkdir` and the holder write; a writer that has lost the lock is refused;
+  - atomic write; run-lock contention; takeover of a dead or missing holder and own-lock
+    recognition; the write lock: parallel mutating calls lose no update, a held lock exits 41 after
+    `PS_WRITE_WAIT`, a killed holder frees it; a writer that has lost the lock is refused;
   - a transition and its outbox command in one write (crash right after the transition: reconcile
     resends the exact command); recording an outcome closes its intent (restart after a successful
     launch followed by `DONE` or cancel, or after a successful merge, never regresses);
@@ -561,7 +618,9 @@ options below). A relaunch starts a fresh budget.
     `cancelled` → cancel the ticket, no hand-back;
   - every row of the transition table, and illegal transitions refused; no reachable non-terminal
     status without an exit;
-  - outbox entries recorded before send, cleared on the next valid message, resent on resume;
+  - outbox entries recorded before send, `RESYNC`/`REWORK` cleared only by `DONE` or `FAILED`, resent
+    on resume; the outbox invariant (stale entries purged, `reconcile` repairs), `CANCEL`s to
+    different sessions of one issue coexisting, and a relaunch's `priorPid` check;
   - crash/reconcile at each side-effect boundary (after `launch-intent` before launch, after launch
     before record, after `merge-intent` before merge, after merge before record, during
     `verifying`, after an outbox record before send).
