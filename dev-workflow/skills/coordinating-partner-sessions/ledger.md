@@ -37,7 +37,8 @@ Top level: `key`, `ticketBranch`, `coordinator` (`name`, `sessionId`), `cap` (3)
 
 `intents` entries: `{id, kind, n, gen, open, outcome, ...}`. `launch` and `relaunch` add
 `sessionName`, `worktree`, `branch`, `baseSha`, `prior` (the status to restore if the launch
-fails). `merge` adds `candidateSha`, `expectedHead`.
+fails). `relaunch` also adds `priorPid`: the `pid` of the issue's recorded session when the intent
+was written (null if absent or ended). `merge` adds `candidateSha`, `expectedHead`.
 
 `outbox` entries: `{n, gen, to, line}`: a coordinator message to send, addressed to a session name.
 
@@ -70,7 +71,10 @@ fails). `merge` adds `candidateSha`, `expectedHead`.
   before starting a partner, and a `merge-intent` (`ledger.sh intent merge`) before merging. The
   `launch` and `gate` events take the intent ID and close it in the same write. On resume,
   `reconcile` settles each open intent against git and `claude agents --json`. Closed intents are
-  never replayed.
+  never replayed. Pass `intent relaunch` the agents file (`<agents.json>`, last argument) so it
+  records `priorPid`: `reconcile` takes an alive row of the intent's session name for the relaunch
+  only if its `pid` differs from `priorPid` (the old process still running is not a relaunch);
+  otherwise the intent closes as `launch-failed`.
 - **Outbox.** `RESYNC`, `REWORK` and `CANCEL` are queued by the write that requires them; send them
   afterwards with `ledger.sh outbox`, which prints `<n>\t<gen>\t<to>\t<line>`. Only one pending
   entry exists per issue: a newer entry supersedes the older one. A valid next message from the
@@ -108,7 +112,7 @@ All take the ledger path (from `path`) as the first argument after the verb, exc
 | `ledger.sh unlock <ledger>` | Releases the run lock |
 | `ledger.sh init <ledger> <KEY> <ticket-branch> <coord-name> <coord-session-id> <issues.json>` | Creates the ledger; all issues `pending` |
 | `ledger.sh get <ledger> [<n>]` | The state, or one issue, as JSON |
-| `ledger.sh intent <ledger> launch\|relaunch <n> <session-name> <worktree> <branch> <base-sha>` | Records a `launch-intent`; prints `intent=<id>` |
+| `ledger.sh intent <ledger> launch\|relaunch <n> <session-name> <worktree> <branch> <base-sha> [<agents.json>]` | Records a `launch-intent`; prints `intent=<id>`. `<agents.json>` (relaunch only) records `priorPid` |
 | `ledger.sh intent <ledger> merge <n> <candidate-sha> <expected-head>` | Records a `merge-intent`; prints `intent=<id>` |
 | `ledger.sh event <ledger> <n> <event> [args]` | The only way statuses change (see the table and below) |
 | `ledger.sh message <ledger> <raw-frame>` | A partner message, as the whole frame in one argument: bind, dedup, apply |

@@ -10,7 +10,7 @@ $ARGS.named as {op: $op, n: $n, live: $live,
                 cand: $cand, exp: $exp,
                 from: $from, mkind: $mkind, mgen: $mgen, mbranch: $mbranch, sha: $sha,
                 synced: $synced, needs: $needs, mreason: $mreason, head: $head,
-                sid: $sid, ag: $ag, ancids: $ancids}
+                sid: $sid, ag: $ag, ancids: $ancids, ppid: $ppid}
 |
 def ok($out): {rc: 0, out: $out, state: .};
 def noop($r): {rc: 10, reason: $r};
@@ -96,7 +96,8 @@ if $op == "intent-launch" then
       ("i" + ((.intents | length) + 1 | tostring)) as $id
       | .intents += [{ id: $id, kind: $kind, n: ($n | tonumber), gen: ($i.gen + 1),
                        prior: $i.status, sessionName: $name, worktree: $wt,
-                       branch: $br, baseSha: $base, open: true }]
+                       branch: $br, baseSha: $base, open: true }
+                     + (if $kind == "relaunch" then {priorPid: $ppid} else {} end)]
       | ok(["intent=\($id)"])
     end
 
@@ -392,12 +393,16 @@ elif $op == "reconcile" then (
         # A pid-less row of an earlier generation (or an earlier wake) of this
         # issue is never this launch. A relaunch resumes with `--resume <id>`,
         # which keeps the sessionId, so for a relaunch an alive row with an
-        # earlier ID is the relaunch (ruling T6-R3). Alive rows win, then the latest.
+        # earlier ID is the relaunch (ruling T6-R3), unless it is the very
+        # process observed at intent time (pid = the intent's priorPid; ruling
+        # CX2). Alive rows win, then the latest.
         ([$i.sessionId] + [($i.sessions // [])[].sessionId] | map(select(. != null))) as $old
+        | ($in.priorPid // null) as $pp
         | ([ $ag[] | select(.name == $in.sessionName and (.sessionId | type == "string")
                             and (.sessionId | test("^[^\\s:]+$"))
                             and ((has_v($old; .sessionId) | not)
-                                 or ($in.kind == "relaunch" and alive))) ]
+                                 or ($in.kind == "relaunch" and alive))
+                            and (($in.kind == "relaunch" and $pp != null and alive and .pid == $pp) | not)) ]
            | sort_by([(alive | if . then 1 else 0 end), (.startedAt // 0)]) | last) as $row
         | if $row != null and $i.status == $in.prior then record_launch($k; $in; $row.sessionId)
           else close_intent($in.id; "launch-failed")

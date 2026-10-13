@@ -1468,6 +1468,53 @@ expect_st "crash_after_relaunch_intent same sid" 12 launched
 [ "$(intent_open "$RI")" = "false launched" ] || fail "crash_after_relaunch_intent same sid: intent outcome '$(intent_open "$RI")'"
 echo "ok: crash_after_relaunch_intent"
 
+# ---------------------------------------------------------------- relaunch_prior_pid
+# Ruling CX2: `intent relaunch ... <agents.json>` records the pid of the issue's
+# session at intent time; reconcile accepts a same-name alive row as the
+# relaunch only if its pid differs from it.
+ipid() { jq -c --arg i "$1" '.intents[] | select(.id == $i) | .priorPid' "$L"; }
+ksetup rpp
+klaunch 12
+seed 12 failed
+kag "$T/ag-rpp-old.json" "K-12:sid-12:working:4242" "K-9:sid-9:working:4343"
+run intent "$L" relaunch 12 K-12 "$T/wt-12-r" test-x-12 "$H40" "$T/ag-rpp-old.json"
+expect_rc "relaunch_prior_pid intent" 0
+RP="$(intent_id)"
+[ "$(ipid "$RP")" = 4242 ] || fail "relaunch_prior_pid: priorPid '$(ipid "$RP")', want 4242"
+cp "$L" "$T/rpp-base.json"
+# The same process is still the only alive K-12 row: not a relaunch.
+run reconcile "$L" "$T/ag-rpp-old.json"
+expect_rc "relaunch_prior_pid same pid" 0
+expect_st "relaunch_prior_pid same pid" 12 failed
+[ "$(fld 12 gen)" = 1 ] || fail "relaunch_prior_pid same pid: gen '$(fld 12 gen)', want 1"
+[ "$(intent_open "$RP")" = "false launch-failed" ] || fail "relaunch_prior_pid same pid: intent '$(intent_open "$RP")'"
+# A new process (same sessionId, as --resume keeps it): the relaunch.
+cat "$T/rpp-base.json" >"$L"
+kag "$T/ag-rpp-new.json" "K-12:sid-12:working:4444"
+run reconcile "$L" "$T/ag-rpp-new.json"
+expect_rc "relaunch_prior_pid new pid" 0
+expect_st "relaunch_prior_pid new pid" 12 launched
+[ "$(fld 12 gen)" = 2 ] || fail "relaunch_prior_pid new pid: gen '$(fld 12 gen)', want 2"
+[ "$(intent_open "$RP")" = "false launched" ] || fail "relaunch_prior_pid new pid: intent '$(intent_open "$RP")'"
+# Both rows alive: the new process wins, the old one is never taken.
+cat "$T/rpp-base.json" >"$L"
+kag "$T/ag-rpp-both.json" "K-12:sid-12:working:4242" "K-12:sid-12c:working:4444"
+run reconcile "$L" "$T/ag-rpp-both.json"
+expect_st "relaunch_prior_pid both" 12 launched
+[ "$(fld 12 sessionId)" = sid-12c ] || fail "relaunch_prior_pid both: sessionId '$(fld 12 sessionId)', want sid-12c"
+# An ended session (no pid) at intent time records null.
+ksetup rpp2
+klaunch 12
+seed 12 failed
+kag "$T/ag-rpp-ended.json" "K-12:sid-12:done"
+run intent "$L" relaunch 12 K-12 "$T/wt-12-r" test-x-12 "$H40" "$T/ag-rpp-ended.json"
+expect_rc "relaunch_prior_pid ended intent" 0
+[ "$(ipid "$(intent_id)")" = null ] || fail "relaunch_prior_pid ended: priorPid '$(ipid "$(intent_id)")', want null"
+# agents.json only belongs to a relaunch.
+run intent "$L" launch 9 K-9 "$T/wt-9" test-x-9 "$H40" "$T/ag-rpp-ended.json"
+expect_rc "relaunch_prior_pid launch with agents" 2
+echo "ok: relaunch_prior_pid"
+
 ksetup crash-lbr
 run intent "$L" launch 12 K-12 "$T/wt-12" test-x-12 "$H40"
 kag "$T/ag-lbr.json" "K-12:sid-12:working"

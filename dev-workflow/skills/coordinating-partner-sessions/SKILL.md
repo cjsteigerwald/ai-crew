@@ -327,8 +327,10 @@ Arm again after **every** consumed notice (re-register).
 `failed`; its worktree and branch stay; its dependents stay unlaunched; independent issues go on.
 Ask the user:
 
-- **Relaunch** (`--resume`, new generation, rework budget back to 0/3): `ledger.sh intent "$L"
-  relaunch <n> <KEY>-<n> <worktree> <branch> <startSha>` (from `ledger.sh get`), then
+- **Relaunch** (`--resume`, new generation, rework budget back to 0/3): Read agents, then
+  `ledger.sh intent "$L" relaunch <n> <KEY>-<n> <worktree> <branch> <startSha> "$W/agents.json"`
+  (values from `ledger.sh get`; the agents file records the old session's `pid`, so `reconcile`
+  never takes that process for the relaunch), then
   `cd <worktree> && claude --resume <sessionId> --bg --name <KEY>-<n> "<prompt>"`, where the
   prompt states the new generation (`gen=<g+1>` on every line from now on) and points back to the
   brief. Read agents; `ledger.sh event "$L" <n> relaunch <id> <sessionId>`, then Rebind and Arm.

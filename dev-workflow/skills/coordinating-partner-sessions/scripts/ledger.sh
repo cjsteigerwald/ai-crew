@@ -6,7 +6,7 @@
 #   ledger.sh unlock <ledger>                             release the run lock
 #   ledger.sh init <ledger> <KEY> <ticket-branch> <coord-name> <coord-session-id> <issues.json>
 #   ledger.sh get <ledger> [<n>]                          the state (or one issue) as JSON
-#   ledger.sh intent <ledger> launch|relaunch <n> <session-name> <worktree> <branch> <base-sha>
+#   ledger.sh intent <ledger> launch|relaunch <n> <session-name> <worktree> <branch> <base-sha> [<agents.json>]
 #   ledger.sh intent <ledger> merge <n> <candidate-sha> <expected-head>   prints intent=<id>
 #   ledger.sh event <ledger> <n> <event> [args]           the only way statuses change
 #   ledger.sh message <ledger> <raw-frame>                a partner message: bind, dedup, apply
@@ -495,15 +495,30 @@ cmd_intent() {
   tmpdir
   case "$kind" in
     launch|relaunch)
-      [ "$#" -eq 7 ] || usage
+      [ "$#" -eq 7 ] || { [ "$#" -eq 8 ] && [ "$kind" = relaunch ]; } || usage
       name="$4"; wt="$5"; br="$6"; base="$7"
       is_word "$name" || die "bad session name: $name"
       [ -n "$wt" ] || die "empty worktree"
       is_branch "$br" || die "bad branch: $br"
       is_sha "$base" || die "bad base sha: $base"
+      # Relaunch: the pid of the issue's recorded session now (alive row by
+      # sessionId, else by name; null if none), so reconcile never takes that
+      # same process for the relaunch (ruling CX2).
+      ppid=null
+      if [ "$#" -eq 8 ]; then
+        AG="$8"
+        [ -f "$AG" ] && jq -e 'type == "array"' "$AG" >/dev/null 2>&1 || die "agents.json must be a JSON array: $AG"
+        sid0="$(jq -r --arg n "$n" '.issues[$n].sessionId // ""' "$L")" || die "cannot read $L"
+        nm0="$(jq -r --arg n "$n" '.issues[$n].sessionName // ""' "$L")" || die "cannot read $L"
+        ppid="$(jq -c --arg s "$sid0" --arg m "$nm0" '
+          [ .[] | select((.pid // null) != null) ] as $alive
+          | [ $alive[] | select($s != "" and .sessionId == $s) ] as $byid
+          | (if ($byid | length) > 0 then $byid else [ $alive[] | select($m != "" and .name == $m) ] end)
+          | sort_by(.startedAt // 0) | last | .pid // null' "$AG")" || die "cannot read $AG"
+      fi
       live="$(live_keys)"
       ljq intent-launch --arg n "$n" --arg kind "$kind" --arg name "$name" --arg wt "$wt" --arg br "$br" \
-         --arg base "$base" --argjson live "$live" >"$TMPD/res.json" || die "internal error"
+         --arg base "$base" --argjson ppid "$ppid" --argjson live "$live" >"$TMPD/res.json" || die "internal error"
       ;;
     merge)
       [ "$#" -eq 5 ] || usage
