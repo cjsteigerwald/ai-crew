@@ -78,14 +78,13 @@ was written (null if absent or ended). `merge` adds `candidateSha`, `expectedHea
 - **Outbox.** `RESYNC`, `REWORK` and `CANCEL` are queued by the write that requires them; send them
   afterwards with `ledger.sh outbox`, which prints `<n>\t<gen>\t<to>\t<line>`. Only one pending
   entry exists per issue: a newer entry supersedes the older one. The one exception: `CANCEL`s to
-  two different sessions of an issue (its recorded session and an open intent's) both stay. The
-  invariant: an outbox entry other than `CANCEL` exists only for the issue's current gen while it is
-  `resync-requested` or `rework-*`, so a launch, a merge, a cancel or a failure purges the issue's
-  `RESYNC`/`REWORK` (a launch also purges its older-gen `CANCEL`s) and `reconcile` repairs any stale
-  entry, logging `outbox-stale-purged`. Only the partner's next `DONE`
+  two different sessions of an issue (its recorded session and an open intent's) both stay. Only the partner's next `DONE`
   or `FAILED` for that generation clears its `RESYNC`/`REWORK`; a `STARTED`, `STUCK` or `SCOPE`
   leaves it outstanding (resume resends it). A `CANCEL` stays until its session has
-  ended (see `json` below).
+  ended (see `json` below). The outbox invariant: an entry other than `CANCEL` exists only for the
+  issue's current gen while it is `resync-requested` or `rework-*`, so a launch, a merge, a cancel or
+  a failure purges the issue's `RESYNC`/`REWORK` (a launch also purges its older-gen `CANCEL`s) and
+  `reconcile` repairs any stale entry, logging `outbox-stale-purged`.
 - **Claims.** A `DONE` is stored in `claim` on receipt, before verification. A repeated `DONE`
   (same issue, generation, sha) is a no-op (exit 10). A `DONE` with a new sha while the issue is
   `done-claimed` or `verifying` is refused (exit 30); the coordinator must surface that to the user.

@@ -133,7 +133,8 @@ jset() {
   jq "$@" "$expr" "$L" >"$T/seed.json" && cat "$T/seed.json" >"$L"
 }
 # seed <n> <status> — set a status; a live seed gets gen >= 1. A seed outside
-# resync-requested/rework-* drops that issue's RESYNC/REWORK entries (outbox invariant).
+# resync-requested/rework-* drops that issue's RESYNC/REWORK entries (outbox invariant);
+# tests that need the entries to stay must use jset.
 seed() {
   jset '.issues[$n].status = $s
         | if (.issues[$n].gen == 0) and ($s != "pending") then .issues[$n].gen = 1 else . end
@@ -583,7 +584,7 @@ expect_st "every_row wake-failed" 9 failed
 setup row-user "$ISS_ROW"
 commit_on test-x-12 u12
 g merge -q --ff-only test-x-12
-seed 12 failed
+jset '.issues["12"].status = "failed"'
 ev 12 user-merged
 expect_rc "every_row user-merged" 0
 expect_st "every_row user-merged" 12 merged
@@ -1833,7 +1834,7 @@ ev 12 gate fail "fix it"
 expect_outbox "user_merged_purges_work queued" "12${TAB}1${TAB}K-12${TAB}REWORK #12 fix it"
 commit_on test-x-12 ump12
 g merge -q --ff-only test-x-12
-seed 12 failed
+jset '.issues["12"].status = "failed"'
 ev 12 user-merged
 expect_rc "user_merged_purges_work" 0
 expect_st "user_merged_purges_work" 12 merged
