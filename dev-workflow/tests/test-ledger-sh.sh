@@ -495,7 +495,7 @@ seed 12 done-claimed
 ev 12 queue-check stale "$H41"
 expect_rc "every_row queue-check stale" 0
 expect_st "every_row queue-check stale" 12 resync-requested
-expect_outbox "every_row queue-check stale" "12${TAB}2${TAB}RESYNC #12 $H41"
+expect_outbox "every_row queue-check stale" "12${TAB}2${TAB}TEST-12${TAB}RESYNC #12 $H41"
 [ "$(fld 12 resyncs)" = 1 ] || fail "every_row queue-check stale: resyncs not 1"
 # queue-check ok
 seed 12 done-claimed
@@ -516,13 +516,13 @@ seed 13 verifying
 ev 13 gate resync "$H41"
 expect_rc "every_row gate resync" 0
 expect_st "every_row gate resync" 13 resync-requested
-expect_outbox "every_row gate resync" "13${TAB}1${TAB}RESYNC #13 $H41"
+expect_outbox "every_row gate resync" "13${TAB}1${TAB}-${TAB}RESYNC #13 $H41"
 # gate fail
 seed 13 verifying
 ev 13 gate fail "unit tests fail"
 expect_rc "every_row gate fail" 0
 expect_st "every_row gate fail" 13 rework-1/3
-expect_outbox "every_row gate fail" "13${TAB}1${TAB}REWORK #13 unit tests fail"
+expect_outbox "every_row gate fail" "13${TAB}1${TAB}-${TAB}REWORK #13 unit tests fail"
 jq -e '.issues["13"].gateResults | map(.text) | index("unit tests fail") != null' "$L" >/dev/null \
   || fail "every_row gate fail: evidence not stored"
 # stuck-accept
@@ -531,7 +531,7 @@ seed 12 started
 ev 12 stuck-accept 9
 expect_rc "every_row stuck-accept" 0
 expect_st "every_row stuck-accept" 12 "blocked-on #9"
-expect_outbox "every_row stuck-accept" "12${TAB}1${TAB}CANCEL #12"
+expect_outbox "every_row stuck-accept" "12${TAB}1${TAB}-${TAB}CANCEL #12"
 # json failed|stopped|done on blocked-on drops the CANCEL entry
 ev 12 json stopped
 expect_rc "every_row json stopped on blocked-on" 0
@@ -573,7 +573,7 @@ expect_rc "every_row cancel-ticket" 0
 expect_st "every_row cancel-ticket 9" 9 cancelled
 expect_st "every_row cancel-ticket 13" 13 cancelled
 expect_st "every_row cancel-ticket merged stays" 12 merged
-expect_outbox "every_row cancel-ticket" "9${TAB}1${TAB}CANCEL #9"
+expect_outbox "every_row cancel-ticket" "9${TAB}1${TAB}-${TAB}CANCEL #9"
 run outbox "$L"
 printf '%s\n' "$OUT" | grep -q 'CANCEL #13' && fail "every_row cancel-ticket: CANCEL for a non-live issue"
 # canary-passed
@@ -771,12 +771,12 @@ expect_st "resync_closes_intent" 1 resync-requested
 [ "$(jq -r --arg i "$MI" '.intents[] | select(.id == $i) | .open' "$L")" = false ] || fail "resync_closes_intent: merge intent still open"
 [ "$(jq '[.intents[] | select(.open)] | length' "$L")" = 0 ] || fail "resync_closes_intent: an intent is still open for reconcile to replay"
 [ "$(fld 1 resyncs)" = 1 ] || fail "resync_closes_intent: resyncs not 1"
-expect_outbox "resync_closes_intent" "1${TAB}1${TAB}RESYNC #1 $HEADNOW"
+expect_outbox "resync_closes_intent" "1${TAB}1${TAB}-${TAB}RESYNC #1 $HEADNOW"
 # reconcile has no open intent to replay: the issue stays resync-requested and the RESYNC is resent.
 run reconcile "$L" "$T/ag-coord.json"
 expect_rc "resync_closes_intent reconcile" 0
 expect_st "resync_closes_intent reconcile" 1 resync-requested
-printf '%s\n' "$OUT" | grep -Fxq "resend 1 RESYNC #1 $HEADNOW" || fail "resync_closes_intent: reconcile printed '$OUT'"
+printf '%s\n' "$OUT" | grep -Fxq "resend 1 - RESYNC #1 $HEADNOW" || fail "resync_closes_intent: reconcile printed '$OUT'"
 echo "ok: resync_closes_intent"
 
 # ---------------------------------------------------------------- usage
@@ -1082,7 +1082,7 @@ TKHEAD="$(g rev-parse tk)"
 msg K-12 "STUCK #12 gen=1 needs=#9 need the parser"
 expect_rc "stuck_merged_resync" 0
 expect_st "stuck_merged_resync" 12 resync-requested
-expect_outbox "stuck_merged_resync" "12${TAB}1${TAB}RESYNC #12 $TKHEAD"
+expect_outbox "stuck_merged_resync" "12${TAB}1${TAB}K-12${TAB}RESYNC #12 $TKHEAD"
 # Unmerged #13: ask the user about the edge, status unchanged.
 seed 12 started
 msg K-12 "STUCK #12 gen=1 needs=#13 need the model"
@@ -1139,7 +1139,7 @@ krelaunch 12 sid-12b
 msg K-12 "DONE #12 gen=2 test-x-12 $H40 synced=$H41"
 expect_rc "outbox_cleared DONE gen 2" 0
 ev 12 queue-check stale "$H42"
-expect_outbox "outbox_cleared" "12${TAB}2${TAB}RESYNC #12 $H42"
+expect_outbox "outbox_cleared" "12${TAB}2${TAB}K-12${TAB}RESYNC #12 $H42"
 msg K-12 "STARTED #12 gen=2"
 expect_rc "outbox_cleared STARTED" 0
 expect_st "outbox_cleared" 12 resync-requested
@@ -1173,6 +1173,19 @@ expect_rc "reconcile_stale_same_name_row" 0
 expect_st "reconcile_stale_same_name_row" 12 failed
 [ "$(fld 12 gen)" = 1 ] || fail "reconcile_stale_same_name_row: gen changed to $(fld 12 gen)"
 [ "$(jq '[.intents[] | select(.open)] | length' "$L")" = 0 ] || fail "reconcile_stale_same_name_row: intent left open"
+# Alive variant: `--resume <id>` keeps the sessionId, so a same-sid row WITH a
+# pid is the relaunch (ruling T6-R3); only pid-less earlier rows are excluded.
+ksetup stale-row-alive
+klaunch 12
+seed 12 failed
+run intent "$L" relaunch 12 K-12 "$T/wt-12-r" test-x-12 "$H40"
+expect_rc "reconcile_stale_same_name_row alive intent" 0
+kag "$T/ag-stale.json" "K-12:sid-12:working:$$"
+run reconcile "$L" "$T/ag-stale.json"
+expect_rc "reconcile_stale_same_name_row alive" 0
+expect_st "reconcile_stale_same_name_row alive" 12 launched
+[ "$(fld 12 gen)" = 2 ] || fail "reconcile_stale_same_name_row alive: gen '$(fld 12 gen)', want 2"
+[ "$(fld 12 sessionId)" = sid-12 ] || fail "reconcile_stale_same_name_row alive: sessionId '$(fld 12 sessionId)'"
 echo "ok: reconcile_stale_same_name_row"
 
 # ---------------------------------------------------------------- cancel_cleared_when_gone
@@ -1193,26 +1206,50 @@ for gone in stopped done failed; do
   run reconcile "$L" "$T/ag-cg.json"
   expect_no_line_prefix "cancel_cleared_when_gone $gone" "resend 12"
 done
+# Ended = row absent or no pid (ruling T6-C1): a `done` row with a pid is an
+# idle live session and keeps its CANCEL; a `working` row without a pid has ended.
+cat "$T/cg-base.json" >"$L"
+kag "$T/ag-cg.json" "K-12:sid-12:done:$$"
+run reconcile "$L" "$T/ag-cg.json"
+expect_line "cancel_cleared_when_gone done with pid" "resend 12 K-12 CANCEL #12"
+cat "$T/cg-base.json" >"$L"
+kag "$T/ag-cg.json" "K-12:sid-12:working"
+run reconcile "$L" "$T/ag-cg.json"
+expect_no_line_prefix "cancel_cleared_when_gone working without pid" "resend 12"
 cat "$T/cg-base.json" >"$L"
 ev 12 json stopped
 expect_rc "cancel_cleared_when_gone json stopped" 0
 run outbox "$L"
 [ -z "$OUT" ] || fail "cancel_cleared_when_gone: json stopped left '$OUT'"
+# `json done` alone may be an idle live row: the CANCEL stays; `json done nopid` drops it.
+cat "$T/cg-base.json" >"$L"
+ev 12 json done
+expect_rc "cancel_cleared_when_gone json done with pid" 10
+expect_outbox "cancel_cleared_when_gone json done with pid" "12${TAB}1${TAB}K-12${TAB}CANCEL #12"
+ev 12 json done nopid
+expect_rc "cancel_cleared_when_gone json done nopid" 0
+run outbox "$L"
+[ -z "$OUT" ] || fail "cancel_cleared_when_gone: json done nopid left '$OUT'"
+# A woken (rebound) partner inherits the pending CANCEL addressed to its old name.
+cat "$T/cg-base.json" >"$L"
+run session "$L" 12 K-12w sid-12w
+expect_rc "cancel_cleared_when_gone session rebind" 0
+expect_outbox "cancel_cleared_when_gone session rebind" "12${TAB}1${TAB}K-12w${TAB}CANCEL #12"
 cat "$T/cg-base.json" >"$L"
 kag "$T/ag-cg.json" "K-12:sid-12:working:$$"
 run reconcile "$L" "$T/ag-cg.json"
-expect_line "cancel_cleared_when_gone working" "resend 12 CANCEL #12"
-expect_outbox "cancel_cleared_when_gone working" "12${TAB}1${TAB}CANCEL #12"
+expect_line "cancel_cleared_when_gone working" "resend 12 K-12 CANCEL #12"
+expect_outbox "cancel_cleared_when_gone working" "12${TAB}1${TAB}K-12${TAB}CANCEL #12"
 echo "ok: cancel_cleared_when_gone"
 
 # ---------------------------------------------------------------- crash after a transition (outbox in the same write)
-kag "$T/ag-all.json" "K-9:sid-9:working" "K-12:sid-12:working" "K-13:sid-13:working"
+kag "$T/ag-all.json" "K-9:sid-9:working:$$" "K-12:sid-12:working:$$" "K-13:sid-13:working:$$"
 ksetup crash-stale
 klaunch 12
 msg K-12 "$DONE12"
 ev 12 queue-check stale "$H41"
 run reconcile "$L" "$T/ag-all.json"
-expect_line "crash_after_queue_stale" "resend 12 RESYNC #12 $H41"
+expect_line "crash_after_queue_stale" "resend 12 K-12 RESYNC #12 $H41"
 echo "ok: crash_after_queue_stale"
 
 ksetup crash-resync
@@ -1220,7 +1257,7 @@ klaunch 12
 seed 12 verifying
 ev 12 gate resync "$H41"
 run reconcile "$L" "$T/ag-all.json"
-expect_line "crash_after_gate_resync" "resend 12 RESYNC #12 $H41"
+expect_line "crash_after_gate_resync" "resend 12 K-12 RESYNC #12 $H41"
 echo "ok: crash_after_gate_resync"
 
 ksetup crash-fail
@@ -1228,14 +1265,14 @@ klaunch 12
 seed 12 verifying
 ev 12 gate fail "unit tests: 2 of 5 fail in parser_test"
 run reconcile "$L" "$T/ag-all.json"
-expect_line "crash_after_gate_fail" "resend 12 REWORK #12 unit tests: 2 of 5 fail in parser_test"
+expect_line "crash_after_gate_fail" "resend 12 K-12 REWORK #12 unit tests: 2 of 5 fail in parser_test"
 echo "ok: crash_after_gate_fail"
 
 ksetup crash-stuck
 klaunch 12
 ev 12 stuck-accept 9
 run reconcile "$L" "$T/ag-all.json"
-expect_line "crash_after_stuck_accept" "resend 12 CANCEL #12"
+expect_line "crash_after_stuck_accept" "resend 12 K-12 CANCEL #12"
 echo "ok: crash_after_stuck_accept"
 
 ksetup crash-cancel
@@ -1243,8 +1280,8 @@ klaunch 9
 klaunch 12
 ev 0 cancel-ticket
 run reconcile "$L" "$T/ag-all.json"
-expect_line "crash_after_cancel_ticket 9" "resend 9 CANCEL #9"
-expect_line "crash_after_cancel_ticket 12" "resend 12 CANCEL #12"
+expect_line "crash_after_cancel_ticket 9" "resend 9 K-9 CANCEL #9"
+expect_line "crash_after_cancel_ticket 12" "resend 12 K-12 CANCEL #12"
 n="$(printf '%s\n' "$OUT" | grep -c '^resend ')"
 [ "$n" = 2 ] || fail "crash_after_cancel_ticket: $n resend lines, want 2 ('$OUT')"
 echo "ok: crash_after_cancel_ticket"
@@ -1252,10 +1289,13 @@ echo "ok: crash_after_cancel_ticket"
 # ---------------------------------------------------------------- crash at intents
 ksetup crash-li
 run intent "$L" launch 12 K-12 "$T/wt-12" test-x-12 "$H40"
+expect_rc "crash_after_launch_intent intent" 0
+LI="$(intent_id)"
 run reconcile "$L" "$T/ag-empty.json"
 expect_rc "crash_after_launch_intent" 0
 expect_st "crash_after_launch_intent" 12 pending
 [ "$(jq '[.intents[] | select(.open)] | length' "$L")" = 0 ] || fail "crash_after_launch_intent: intent left open"
+[ "$(intent_open "$LI")" = "false launch-failed" ] || fail "crash_after_launch_intent: intent outcome '$(intent_open "$LI")'"
 echo "ok: crash_after_launch_intent"
 
 ksetup crash-ri
@@ -1263,11 +1303,15 @@ klaunch 12
 jset '.issues["12"].rework = 2'
 seed 12 failed
 run intent "$L" relaunch 12 K-12 "$T/wt-12-r" test-x-12 "$H40"
+expect_rc "crash_after_relaunch_intent intent" 0
+RI="$(intent_id)"
 cp "$L" "$T/ri-base.json"
 run reconcile "$L" "$T/ag-empty.json"
+expect_rc "crash_after_relaunch_intent absent" 0
 expect_st "crash_after_relaunch_intent absent" 12 failed
 [ "$(fld 12 gen)" = 1 ] || fail "crash_after_relaunch_intent absent: gen changed"
 [ "$(jq '[.intents[] | select(.open)] | length' "$L")" = 0 ] || fail "crash_after_relaunch_intent absent: intent left open"
+[ "$(intent_open "$RI")" = "false launch-failed" ] || fail "crash_after_relaunch_intent absent: intent outcome '$(intent_open "$RI")'"
 cat "$T/ri-base.json" >"$L"
 kag "$T/ag-ri.json" "K-12:sid-12:done" "K-12:sid-12n:working:$$"
 run reconcile "$L" "$T/ag-ri.json"
@@ -1277,6 +1321,15 @@ expect_st "crash_after_relaunch_intent present" 12 launched
 [ "$(fld 12 sessionId)" = sid-12n ] || fail "crash_after_relaunch_intent present: sessionId '$(fld 12 sessionId)'"
 [ "$(jq '[.intents[] | select(.open)] | length' "$L")" = 0 ] || fail "crash_after_relaunch_intent present: intent left open"
 expect_line "crash_after_relaunch_intent present status" "status 12"
+# Same sessionId, alive: `--resume <id>` keeps the ID (ruling T6-R3).
+cat "$T/ri-base.json" >"$L"
+kag "$T/ag-ri.json" "K-12:sid-12:working:$$"
+run reconcile "$L" "$T/ag-ri.json"
+expect_rc "crash_after_relaunch_intent same sid" 0
+expect_st "crash_after_relaunch_intent same sid" 12 launched
+[ "$(fld 12 gen)" = 2 ] || fail "crash_after_relaunch_intent same sid: gen '$(fld 12 gen)', want 2"
+[ "$(fld 12 rework)" = 0 ] || fail "crash_after_relaunch_intent same sid: rework not reset"
+[ "$(intent_open "$RI")" = "false launched" ] || fail "crash_after_relaunch_intent same sid: intent outcome '$(intent_open "$RI")'"
 echo "ok: crash_after_relaunch_intent"
 
 ksetup crash-lbr
@@ -1296,10 +1349,13 @@ commit_on test-x-12 m12
 CAND="$(g rev-parse test-x-12)"; PIN="$(g rev-parse tk)"
 seed 12 verifying
 run intent "$L" merge 12 "$CAND" "$PIN"
+expect_rc "crash_after_merge_intent intent" 0
+MI="$(intent_id)"
 run reconcile "$L" "$T/ag-all.json"
 expect_st "crash_after_merge_intent" 12 done-claimed
 expect_line "crash_after_merge_intent" "requeue 12"
 [ "$(jq '[.intents[] | select(.open)] | length' "$L")" = 0 ] || fail "crash_after_merge_intent: intent left open"
+[ "$(intent_open "$MI")" = "false interrupted" ] || fail "crash_after_merge_intent: intent outcome '$(intent_open "$MI")'"
 echo "ok: crash_after_merge_intent"
 
 ksetup crash-mbr
@@ -1391,7 +1447,7 @@ for variant in merge stale; do
     ev 12 queue-check stale "${FOUT#head=}"
     expect_rc "crash_during_verifying queue-check stale" 0
     expect_st "crash_during_verifying stale" 12 resync-requested
-    expect_outbox "crash_during_verifying stale" "12${TAB}1${TAB}RESYNC #12 $PIN"
+    expect_outbox "crash_during_verifying stale" "12${TAB}1${TAB}K-12${TAB}RESYNC #12 $PIN"
   fi
 done
 echo "ok: crash_during_verifying"
@@ -1430,8 +1486,8 @@ expect_rc "reconcile_idempotent second" 0
 cmp -s "$L" "$T/idem-after.json" || fail "reconcile_idempotent: second run changed the ledger"
 [ "$(ls -i "$L" | awk '{print $1}')" = "$INO1" ] || fail "reconcile_idempotent: second run rewrote the ledger"
 expect_line "reconcile_idempotent" "requeue 12"
-expect_line "reconcile_idempotent" "resend 13 REWORK #13 lint fails"
-expect_line "reconcile_idempotent" "resend 9 CANCEL #9"
+expect_line "reconcile_idempotent" "resend 13 K-13 REWORK #13 lint fails"
+expect_line "reconcile_idempotent" "resend 9 K-9 CANCEL #9"
 expect_line "reconcile_idempotent" "status 13"
 echo "ok: reconcile_idempotent"
 
@@ -1445,6 +1501,42 @@ expect_rc "message_text_inert" 0
 expect_line "message_text_inert" "ask-user=stuck 12 $EVIL"
 [ ! -e "$T/pwned" ] && [ ! -e "$T/pwned2" ] && [ ! -e "$T/pwned3" ] || fail "message_text_inert: message text was executed"
 echo "ok: message_text_inert"
+
+# ---------------------------------------------------------------- cancel_targets_intent_session
+# Ruling T6-C2: an open launch/relaunch intent's session may already be running
+# (crash between launch and record), so drop and cancel-ticket queue a CANCEL to
+# the intent's session name in the same write.
+ksetup cti
+run intent "$L" launch 12 K-12 "$T/wt-12" test-x-12 "$H40"
+expect_rc "cancel_targets_intent_session intent" 0
+ev 12 drop
+expect_rc "cancel_targets_intent_session drop" 0
+expect_outbox "cancel_targets_intent_session drop" "12${TAB}1${TAB}K-12${TAB}CANCEL #12"
+kag "$T/ag-cti.json" "K-12:sid-12:working:$$"
+run reconcile "$L" "$T/ag-cti.json"
+expect_line "cancel_targets_intent_session resend" "resend 12 K-12 CANCEL #12"
+run reconcile "$L" "$T/ag-empty.json"
+expect_no_line_prefix "cancel_targets_intent_session session gone" "resend 12"
+# relaunch intent on a failed issue, then drop
+ksetup cti-r
+klaunch 12
+seed 12 failed
+run intent "$L" relaunch 12 K-12r "$T/wt-12-r" test-x-12 "$H40"
+expect_rc "cancel_targets_intent_session relaunch intent" 0
+ev 12 drop
+expect_outbox "cancel_targets_intent_session relaunch drop" "12${TAB}2${TAB}K-12r${TAB}CANCEL #12"
+# cancel-ticket: #12 pending with an open intent, #9 live -> two CANCELs
+ksetup cti-t
+klaunch 9
+run intent "$L" launch 12 K-12 "$T/wt-12" test-x-12 "$H40"
+expect_rc "cancel_targets_intent_session ticket intent" 0
+ev 0 cancel-ticket
+expect_rc "cancel_targets_intent_session cancel-ticket" 0
+expect_outbox "cancel_targets_intent_session cancel-ticket 9" "9${TAB}1${TAB}K-9${TAB}CANCEL #9"
+expect_outbox "cancel_targets_intent_session cancel-ticket 12" "12${TAB}1${TAB}K-12${TAB}CANCEL #12"
+run outbox "$L"
+[ "$(printf '%s\n' "$OUT" | grep -c 'CANCEL #')" = 2 ] || fail "cancel_targets_intent_session: want 2 CANCELs, got '$OUT'"
+echo "ok: cancel_targets_intent_session"
 
 if [ "$FAIL" -ne 0 ]; then exit 1; fi
 echo "all ledger tests passed"

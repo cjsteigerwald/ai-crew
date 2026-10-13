@@ -12,7 +12,7 @@
 #   ledger.sh message <ledger> <raw-frame>                a partner message: bind, dedup, apply
 #   ledger.sh session <ledger> <n> <session-name> <session-id>   rebind a woken partner
 #   ledger.sh reconcile <ledger> <agents.json>            resume: prints requeue|resend|status lines
-#   ledger.sh outbox <ledger>                             <n>\t<gen>\t<line> per pending entry
+#   ledger.sh outbox <ledger>                             <n>\t<gen>\t<to-session>\t<line> per entry
 #   ledger.sh slots <ledger>                              live count (frontier.sh --live-count)
 #   ledger.sh done <ledger>                               handback | cancel-ticket; exit 1 = not done
 #   ledger.sh summary <ledger>                            Markdown table for the PR body
@@ -469,7 +469,8 @@ cmd_event() {
     edge-remove|wake-failed|canary-passed|user-merged) [ "$#" -eq 0 ] || usage ;;
     drop|cancel-ticket) [ "$#" -le 1 ] || usage ;;
     json)
-      [ "$#" -eq 1 ] || usage
+      # `json done nopid`: the row has ended (no pid); a bare `done` may be idle and alive.
+      [ "$#" -eq 1 ] || { [ "$#" -eq 2 ] && [ "$a1" = done ] && [ "$a2" = nopid ]; } || usage
       case "$a1" in failed|stopped|blocked|done|working) ;; *) usage ;; esac ;;
     *) die "unknown event: $ev" ;;
   esac
@@ -567,7 +568,8 @@ cmd_reconcile() {
   owner_check
   [ -f "$AG" ] && jq -e 'type == "array"' "$AG" >/dev/null 2>&1 || die "agents.json must be a JSON array: $AG"
   tmpdir
-  ag="$(jq -c '[.[] | {sessionId: (.sessionId // null), name: (.name // null),
+  # pid is kept: a row is alive only while it has one (ruling T6-C1).
+  ag="$(jq -c '[.[] | {sessionId: (.sessionId // null), name: (.name // null), pid: (.pid // null),
                         state: (.state // null), startedAt: (.startedAt // 0)}]' "$AG")" \
     || die "cannot read $AG"
   # Open merge intents whose candidate is already an ancestor of the ticket head.
@@ -602,7 +604,8 @@ cmd_reconcile() {
 cmd_outbox() {
   [ "$#" -eq 1 ] || usage
   set_paths "$1"; need_ledger
-  jq -r '.outbox[] | "\(.n)\t\(.gen)\t\(.line)"' "$L"
+  jq -r '. as $s | .outbox[]
+         | "\(.n)\t\(.gen)\t\(.to // $s.issues[(.n | tostring)].sessionName // "-")\t\(.line)"' "$L"
 }
 
 cmd_slots() {

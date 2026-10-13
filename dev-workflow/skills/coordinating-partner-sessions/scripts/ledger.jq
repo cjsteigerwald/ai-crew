@@ -32,10 +32,24 @@ def close_intent($id; $outcome):
 def close_issue_intents($k; $outcome):
   .intents |= map(if .open and ((.n | tostring) == $k) then .open = false | .outcome = $outcome else . end);
 def one_line: gsub("[\t\r\n]+"; " ");
-# Add an outbox entry for issue $k at its current gen; it supersedes any older entry for $k.
-def outbox_put($k; $line):
-  (.issues[$k].gen) as $g
-  | .outbox = ([.outbox[] | select(.n != ($k | tonumber))] + [{n: ($k | tonumber), gen: $g, line: ($line | one_line)}]);
+# Add an outbox entry for issue $k, generation $g, addressed to session name $to;
+# it supersedes any older entry for $k.
+def outbox_put_to($k; $g; $to; $line):
+  .outbox = ([.outbox[] | select(.n != ($k | tonumber))]
+             + [{n: ($k | tonumber), gen: $g, to: $to, line: ($line | one_line)}]);
+# The usual case: to the issue's recorded session, at its current gen.
+def outbox_put($k; $line): outbox_put_to($k; .issues[$k].gen; .issues[$k].sessionName; $line);
+# An entry's target: its `to`, else (older entries) the issue's recorded session name.
+def entry_to($s): .to // $s.issues[(.n | tostring)].sessionName;
+# CANCEL #k to the session of k's open launch/relaunch intent, if any: the
+# session may already run (a crash between launch and record). Call it before
+# the intent is closed (ruling T6-C2).
+def cancel_intent_session($k):
+  ([ .intents[] | select(.open and (.n | tostring) == $k and (.kind == "launch" or .kind == "relaunch")) ]
+   | first) as $in
+  | if $in == null then . else outbox_put_to($k; $in.gen; $in.sessionName; "CANCEL #\($k)") end;
+def has_launch_intent($k):
+  any(.intents[]; .open and (.n | tostring) == $k and (.kind == "launch" or .kind == "relaunch"));
 def outbox_drop_cancel($k):
   .outbox |= map(select((.n == ($k | tonumber) and (.line | startswith("CANCEL #"))) | not));
 # Clear issue $k's RESYNC/REWORK entries for gen $g (a valid message arrived).
@@ -206,6 +220,7 @@ elif $op == "event" then (
            | .key | tonumber ] | sort | map(tostring) | join(",")) as $deps
       | .issues[$n].status = "cancelled"
       | .issues[$n].reason = (if $a1 == "" then null else $a1 end)
+      | cancel_intent_session($n)
       | close_issue_intents($n; "cancelled")
       | ok(["cancelled", "dependents=\($deps)"])
     end
@@ -213,7 +228,9 @@ elif $op == "event" then (
   elif $ev == "json" then
     if $a1 == "failed" and active($n) then
       .issues[$n].status = "failed" | .issues[$n].reason = "session failed" | ok(["failed"])
-    elif ($a1 == "failed" or $a1 == "stopped" or $a1 == "done")
+    # Ended = no pid (ruling T6-C1): `done` with a pid is an idle live session,
+    # so `done` drops the CANCEL only when the coordinator passes `nopid`.
+    elif ($a1 == "failed" or $a1 == "stopped" or ($a1 == "done" and $a2 == "nopid"))
          and (blocked($st) or $st == "cancelled")
          and any(.outbox[]; .n == ($n | tonumber) and (.line | startswith("CANCEL #"))) then
       outbox_drop_cancel($n) | ok([$st])
@@ -238,7 +255,9 @@ elif $op == "event" then (
     | if ($todo | length) == 0 then noop("no issue left to cancel")
       else
         reduce $todo[] as $k (.;
-          (if islive($k) then outbox_put($k; "CANCEL #\($k)") else . end)
+          (if has_launch_intent($k) then cancel_intent_session($k)
+           elif islive($k) then outbox_put($k; "CANCEL #\($k)")
+           else . end)
           | .issues[$k].status = "cancelled"
           | .issues[$k].reason = (if $a1 == "" then null else $a1 end)
           | close_issue_intents($k; "cancelled"))
@@ -327,7 +346,10 @@ elif $op == "session" then (
     then refuse("session name \($name) is recorded for another issue")
     elif $i.sessionName == $name and $i.sessionId == $sid then noop("#\($n) already bound to \($name) \($sid)")
     else
-      .issues[$n].sessionName = $name | .issues[$n].sessionId = $sid
+      . as $s0
+      # Entries addressed to the old session now go to the woken one.
+      | .outbox |= map(if .n == ($n | tonumber) and entry_to($s0) == $i.sessionName then .to = $name else . end)
+      | .issues[$n].sessionName = $name | .issues[$n].sessionId = $sid
       | .issues[$n].sessions = (($i.sessions // []) + [{gen: $i.gen, name: $name, sessionId: $sid}])
       | ok([$i.status])
     end)
@@ -338,7 +360,8 @@ elif $op == "session" then (
 # rows of `claude agents --json --all`), every verifying back to done-claimed,
 # CANCEL entries of ended sessions dropped. Closed intents are never touched.
 elif $op == "reconcile" then (
-  def ended: .state == "stopped" or .state == "done" or .state == "failed";
+  # A row is alive only while it has a pid (Task 1 spike; ruling T6-C1).
+  def alive: (.pid // null) != null;
   reduce (.intents[] | select(.open)) as $in (.;
     ($in.n | tostring) as $k | .issues[$k] as $i
     | if $i == null or terminal($i.status) then .
@@ -352,12 +375,16 @@ elif $op == "reconcile" then (
           | close_intent($in.id; "interrupted")
         end
       else
-        # A row of an earlier generation (or an earlier wake) of this issue is never this launch.
+        # A pid-less row of an earlier generation (or an earlier wake) of this
+        # issue is never this launch. A relaunch resumes with `--resume <id>`,
+        # which keeps the sessionId, so for a relaunch an alive row with an
+        # earlier ID is the relaunch (ruling T6-R3). Alive rows win, then the latest.
         ([$i.sessionId] + [($i.sessions // [])[].sessionId] | map(select(. != null))) as $old
         | ([ $ag[] | select(.name == $in.sessionName and (.sessionId | type == "string")
                             and (.sessionId | test("^[^\\s:]+$"))
-                            and (has_v($old; .sessionId) | not)) ]
-           | sort_by(.startedAt // 0) | last) as $row
+                            and ((has_v($old; .sessionId) | not)
+                                 or ($in.kind == "relaunch" and alive))) ]
+           | sort_by([(alive | if . then 1 else 0 end), (.startedAt // 0)]) | last) as $row
         | if $row != null and $i.status == $in.prior then record_launch($k; $in; $row.sessionId)
           else close_intent($in.id; "launch-failed")
           end
@@ -366,20 +393,23 @@ elif $op == "reconcile" then (
   | . as $s
   | .outbox |= map(select(
       if (.line | startswith("CANCEL #")) then
-        ($s.issues[(.n | tostring)].sessionId) as $cs
-        | $cs != null and any($ag[]; .sessionId == $cs and (ended | not))
+        # Kept while its target session (by name) has an alive row.
+        entry_to($s) as $to
+        | $to != null and any($ag[]; .name == $to and alive)
       else true end))
   | ok([]))
 
-# Read-only, on the reconciled state: requeue (claimSeq order), resend (every
-# outbox entry, verbatim), status (every other live issue, by number).
+# Read-only, on the reconciled state: requeue (claimSeq order), resend <n>
+# <to-session> <line> (every outbox entry, verbatim), status (every other live
+# issue, by number).
 elif $op == "reconcile-actions" then (
   ([ .issues | to_entries[] | select(.value.status == "done-claimed")
      | {k: .key, q: (.value.claim.claimSeq // 0)} ]
    | sort_by([.q, (.k | tonumber)]) | map(.k)) as $rq
+  | . as $s
   | { rc: 0,
       out: ([ $rq[] | "requeue \(.)" ]
-            + [ .outbox[] | "resend \(.n) \(.line)" ]
+            + [ .outbox[] | "resend \(.n) \(entry_to($s) // "-") \(.line)" ]
             + [ .issues | keys | map(tonumber) | sort[] | tostring
                 | select(islive(.) and (has_v($rq; .) | not)) | "status \(.)" ]) })
 
