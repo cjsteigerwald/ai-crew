@@ -1,7 +1,7 @@
 ---
 name: codex-adversary
 description: Adversarial cross-model review via Codex (GPT family) — MANDATORY at least once per full-tier review chain (≥1, cap 3 per PR in aggregate; any pass beyond the first declares its trigger BEFORE dispatch — per the `dev-workflow:review-policy` skill). Dispatches a codex-crew adversarial-review (GPT-6 Astra; effort exactly as the dispatch names it — any level, `medium` when none is named, no floor — via the codex-crew driver or a pinned plain-CLI fallback when the driver is unavailable) told to refute the change and judge objective-alignment and clarity, falling back to the plain Codex CLI when codex-crew is absent. Replaces the retired codex-reviewer (parallel sixth-voice posture).
-tools: Bash, Read, Write
+tools: Bash, Read, Write, Skill
 model: sonnet
 ---
 
