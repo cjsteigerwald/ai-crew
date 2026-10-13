@@ -188,8 +188,8 @@ Two events are not rows of the transition table:
 | `failed` | User drops the issue | `cancelled` | `event <n> drop [reason]` |
 | `pending`, `blocked-on #m`, any live, `failed` | User cancels the ticket (`CANCEL` via outbox to live partners) | `cancelled` | `event <any n> cancel-ticket [reason]` (cancels every issue not terminal) |
 
-The rework count belongs to a generation: a relaunch (either kind) starts the new generation at
-`0/3`. When an issue becomes `cancelled`, every issue blocked on it is re-evaluated: `drop` prints
+The rework count belongs to a generation: every new generation, from a launch or a relaunch,
+starts at `0/3`. When an issue becomes `cancelled`, every issue blocked on it is re-evaluated: `drop` prints
 `dependents=<list>`; ask the user, per dependent, whether to drop it too (`cancelled`) or remove the
 edge (`pending`). A `failed` issue's dependents stay `pending` (or `blocked-on`) until the user
 resolves the failure.

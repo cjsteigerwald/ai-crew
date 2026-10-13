@@ -437,14 +437,64 @@ if [ -f "$PS_DIR/partner-brief.md" ]; then
     grep -qF -- "$pin" "$PS_DIR/partner-brief.md" || pfail "coordinating-partner-sessions/partner-brief.md: missing '$pin'"
   done
 fi
+PS_SKILL="$PS_DIR/SKILL.md"
+ps_desc_len=0
+ps_lines=0
+if [ -f "$PS_SKILL" ]; then
+  fm="$(extract_frontmatter "$PS_SKILL")"
+  echo "$fm" | grep -qE '^name:[[:space:]]*coordinating-partner-sessions[[:space:]]*$' || pfail "coordinating-partner-sessions/SKILL.md: frontmatter name is not 'coordinating-partner-sessions'"
+  ps_desc="$(echo "$fm" | awk '
+    /^description:/ { indesc=1; next }
+    indesc && /^[^[:space:]]/ { exit }
+    indesc { sub(/^[[:space:]]+/, ""); printf "%s%s", sep, $0; sep=" " }
+  ')"
+  ps_desc_len="$(printf '%s' "$ps_desc" | wc -c | tr -d ' ')"
+  [ "$ps_desc_len" -gt 0 ] || pfail "coordinating-partner-sessions/SKILL.md: could not read the description"
+  [ "$ps_desc_len" -le 1024 ] || pfail "coordinating-partner-sessions/SKILL.md: description is $ps_desc_len chars (max 1024)"
+  ps_lines="$(wc -l < "$PS_SKILL" | tr -d ' ')"
+  [ "$ps_lines" -lt 500 ] || pfail "coordinating-partner-sessions/SKILL.md: $ps_lines lines (keep under 500; push detail into supporting files)"
+  for support in ledger.md readiness.md partner-brief.md; do
+    grep -qF "]($support)" "$PS_SKILL" || pfail "coordinating-partner-sessions/SKILL.md: does not link $support"
+  done
+  # The coordinator loop's load-bearing rules: merge rule, gate, canary,
+  # preflight, resume, failure paths and hand-back.
+  for pin in 'fast-forward only' 'RESYNC' 'REWORK' 'STATUS?' 'gen=' \
+             'Git state matches the claim' 'Tests pass, run by the coordinator' 'Every AC has evidence' \
+             'dev-workflow:fresh-verifier' 'Partners never push or open PRs' 'third failed gate' \
+             'stop and ask the user' 'held for approval' 'v2.1.236' 'v2.1.248' 'not in plan mode' \
+             'integration base is the ticket branch' '/rename' 'canary-passed' 'sleep 600' \
+             'only a canary that has ended' 'cross-session-message' \
+             'For each `cancelled` issue, mark its AC `deferred` in the settled AC list, with the reason stored by `drop` or `cancel-ticket`.' \
+             'Refs owner/repo#' 'notify_when_idle' 're-register' 'skip steps 3–5' 'PS_OWNER' \
+             'ledger.sh summary' 'after the user confirms' '/retro' 'skill-retrospective'; do
+    grep -qF -- "$pin" "$PS_SKILL" || pfail "coordinating-partner-sessions/SKILL.md: missing '$pin'"
+  done
+else
+  pfail "coordinating-partner-sessions/SKILL.md not found"
+fi
+for s in parse-msg.sh frontier.sh ff-merge.sh ledger.sh; do
+  [ -f "$PS_DIR/scripts/$s" ] || pfail "coordinating-partner-sessions/scripts/$s not found"
+  [ -x "$PS_DIR/scripts/$s" ] || pfail "coordinating-partner-sessions/scripts/$s is not executable"
+done
 # Public-repo hygiene: no organisation-specific ticket skill names.
 if [ -d "$PS_DIR" ]; then
   ps_ces="$(grep -rniwE 'ces' "$PS_DIR" 2>/dev/null || true)"
   [ -z "$ps_ces" ] || pfail "coordinating-partner-sessions/: organisation-specific term 'ces' found: $ps_ces"
 fi
 if [ "$PARTNER_FAILS" -eq 0 ]; then
-  echo "ok: coordinating-partner-sessions reference files present and pinned"
+  echo "ok: coordinating-partner-sessions skill present (description $ps_desc_len chars, SKILL.md $ps_lines lines), reference files linked and pinned"
 fi
+
+echo "== coordinating-partner-sessions scripts =="
+# Run with the interpreter running this file, so `/bin/bash run.sh` on macOS
+# exercises bash 3.2 end to end.
+for t in parse-msg frontier ff-merge ledger coordinator-contract; do
+  if "$BASH" "$HERE/test-$t-sh.sh"; then
+    :
+  else
+    fail "test-$t-sh.sh reported a failure (see above)"
+  fi
+done
 
 echo "== Result =="
 if [ "$FAIL" -ne 0 ]; then
