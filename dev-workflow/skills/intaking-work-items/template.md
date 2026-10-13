@@ -116,7 +116,8 @@ skipped".>
 task list). mattpocock: the spec issue (`owner/repo#N`) and the ticket issues (`owner/repo#N` —
 `AC-n` each), plus any superseded tickets. sdlc-process: the work branch, the
 published issue links (each with `AC-n`), sdlc-process holds and their resolutions, and any
-superseded tickets. Every chain: **Last completed stage:** <stage, or
+superseded tickets, and, if parallel partners were chosen, the ledger location
+`$(git rev-parse --git-common-dir)/partner-sessions/<KEY>/ledger.json`. Every chain: **Last completed stage:** <stage, or
 "none">. Before step 6: "None — chain not started".>
 ```
 
