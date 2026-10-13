@@ -86,6 +86,11 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Provision jq and report bash
+        run: |
+          command -v jq >/dev/null || brew install jq
+          jq --version
+          /bin/bash --version | head -1
       - name: Run tests
         run: |
           set -euo pipefail

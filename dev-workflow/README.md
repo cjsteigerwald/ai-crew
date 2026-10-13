@@ -17,6 +17,7 @@ two domain specialists.
 | `investigating-incidents` | Orchestrates a root-cause investigation: ticket gate, evidence ordering, hypothesis refutation, confidence gates, artifact production, close-out. |
 | `skill-retrospective` | Capture-and-consolidate loop that keeps a skill library self-improving. |
 | `copilot-agent-readiness` | Audits and remediates a repo to maximize GitHub Copilot coding agent output quality. |
+| `coordinating-partner-sessions` | Builds a ticket's published GitHub issues in parallel: one sdlc-process partner session per issue, each in its own worktree and branch, coordinated from this session. |
 | `review-policy` | The tiered review policy (Exempt / Routine / Full chain, codex-adversary governance, evidence rule) that the other skills and agents here cite. |
 
 ## Agents
