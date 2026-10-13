@@ -18,18 +18,20 @@
 #   ledger.sh summary <ledger>                            Markdown table for the PR body
 #
 # The ledger is <git-common-dir>/partner-sessions/<KEY>/ledger.json; the run lock
-# (lock/holder = "<session-id> <nonce>"), the transient takeover/ directory and the
+# (lock/holder = "<session-id> <nonce>"), the write lock file write.lock and the
 # append-only ledger.log are its siblings. Every mutating call (unlock, init,
 # intent, event, message, session, reconcile) needs PS_OWNER=<sid>:<nonce>
 # matching lock/holder, computes the whole new state with one jq program
 # (ledger.jq, beside this script) and writes it with temp file + mv -f.
 #
-# Write mutex (ruling CX1): every read-modify-write, a lock takeover and unlock
-# hold lock/write/ (mkdir; lock/write/pid = the writer's own $$) from before the
-# owner check that guards them until they exit, so a takeover can never land
-# between a writer's owner check and its mv. A held mutex is waited for (about
-# 10 s, then exit 2; a takeover exits 40); it is stale only if `kill -0 <pid>`
-# fails (a pid-less one: once older than a minute), and is then removed once.
+# Write lock: every mutating call, and `lock`, holds an exclusive OS lock on
+# write.lock (`lockf -s` on macOS/BSD, `flock -w` on Linux) on this process's
+# own fd 9, from before its owner check until it exits. The kernel drops it when
+# the process ends, however it ends (SIGKILL included), so there is nothing to
+# reap, and no takeover or second writer can land between a writer's owner check
+# and its mv. A held lock is waited for PS_WRITE_WAIT seconds (default 10, an
+# integer >= 1), then exit 41 with busy=<dir>/write.lock. Read-only subcommands
+# take no lock (mv keeps the ledger a whole snapshot).
 #
 # `message` takes the whole <cross-session-message from="…">…</…> frame as one
 # argument and hands it to parse-msg.sh --frame as argv; a frame that fails to
@@ -39,13 +41,13 @@
 # Exit: 0 applied (prints the new status or the requested output), 10 idempotent
 # no-op, 20 message rejected (prints reason=), 30 illegal transition refused
 # (logged), 40 lock held by a live other session or PS_OWNER no longer matches
-# (prints holder=), 2 usage or I/O error. `done` exits 1 for "not done".
+# (prints holder=), 41 write lock busy (prints busy=), 2 usage or I/O error.
+# `done` exits 1 for "not done".
 #
-# PS_LOCK_TEST_PAUSE=<file> (tests only): `lock` pauses after its liveness check
-# until <file> exists, so a test can finish a rival takeover inside that window.
-# PS_WRITE_TEST_PAUSE=<file> (tests only): a mutating call pauses after its
-# first owner check, before it takes the write mutex, until <file> exists.
-# Both hooks are inert unless set.
+# PS_WRITE_TEST_PAUSE=<file> (tests only): a mutating call, holding the write
+# lock, pauses after its owner check and before its read until <file> exists
+# (about 10 s at most); it first writes its own $$ to <file>.waiting. PS_LOCKF
+# (tests only) replaces /usr/bin/lockf. Both are inert unless set.
 #
 # Never calls claude or gh; free text is passed to jq with --arg, never evaluated.
 # Bash 3.2 compatible.
@@ -81,19 +83,17 @@ TMPD=""
 cleanup() {
   [ -n "$TMPD" ] && rm -rf "$TMPD"
   [ -n "${LTMP:-}" ] && rm -f "$LTMP"
-  wm_release
   return 0
 }
 trap cleanup EXIT
 tmpdir() { [ -n "$TMPD" ] || TMPD="$(mktemp -d "${TMPDIR:-/tmp}/ledger.XXXXXX")" || die "mktemp failed"; }
 
-# set_paths <ledger> — L, D, LOCK, TK, LOG.
+# set_paths <ledger> — L, D, LOCK, LOG.
 set_paths() {
   L="$1"
   [ -n "$L" ] || usage
   D="$(dirname "$L")"
   LOCK="$D/lock"
-  TK="$D/takeover"
   LOG="$D/ledger.log"
 }
 
@@ -140,95 +140,54 @@ EOF
   return "$live"
 }
 
-# takeover_stale — the existing takeover/ was left by a crash: its owner is not
-# live (or is this session, from an earlier interrupted attempt), or it has no
-# owner and is older than 60 s.
-takeover_stale() {
-  o=""
-  [ -f "$TK/owner" ] && read -r o <"$TK/owner"
-  if [ -n "$o" ]; then
-    [ "$o" = "$OWN" ] && return 0
-    is_live "$o" && return 1
-    return 0
+# ------------------------------------------------------------------ write lock
+
+WLOCKED=0
+# take_write_lock — an exclusive OS lock on $D/write.lock, held on this
+# process's own fd 9 until it exits (the kernel drops it on any exit, SIGKILL
+# included; no lock-tool process outlives the acquisition). Waits
+# PS_WRITE_WAIT seconds, then prints busy= and exits 41. Children (jq,
+# frontier.sh) inherit fd 9 and exit before this process does.
+take_write_lock() {
+  [ -d "$D" ] || die "no ledger directory $D (run ledger.sh path first)"
+  wait="${PS_WRITE_WAIT:-10}"
+  { is_num "$wait" && [ "$wait" -ge 1 ]; } || die "PS_WRITE_WAIT must be an integer >= 1: $wait"
+  lf="$D/write.lock"
+  exec 9>>"$lf" || die "cannot open $lf"
+  rc=0
+  if [ -x "${PS_LOCKF:-/usr/bin/lockf}" ]; then   # macOS / BSD
+    "${PS_LOCKF:-/usr/bin/lockf}" -s -t "$wait" 9 || rc=$?
+    if [ "$rc" -eq 75 ]; then echo "busy=$lf"; exit 41; fi   # EX_TEMPFAIL = timed out
+    [ "$rc" -eq 0 ] || die "lockf failed (rc $rc) on $lf"
+  elif command -v flock >/dev/null 2>&1; then     # Linux util-linux
+    flock -w "$wait" 9 || rc=$?
+    if [ "$rc" -eq 1 ]; then echo "busy=$lf"; exit 41; fi     # timed out
+    [ "$rc" -eq 0 ] || die "flock failed (rc $rc) on $lf"
+  else
+    die "a lock tool is required: /usr/bin/lockf (macOS) or flock (util-linux)"
   fi
-  [ -n "$(find "$TK" -maxdepth 0 -mmin +1 2>/dev/null)" ]
-}
-
-# take_mutex — mkdir takeover/ (the exclusive step), then write its owner.
-take_mutex() {
-  if ! mkdir "$TK" 2>/dev/null; then
-    takeover_stale || return 1
-    rm -rf "$TK"
-    logl "takeover-stale-removed by=$OWN"
-    mkdir "$TK" 2>/dev/null || return 1
-  fi
-  printf '%s\n' "$OWN" >"$TK/owner.tmp.$$" && mv -f "$TK/owner.tmp.$$" "$TK/owner"
-}
-
-# ------------------------------------------------------------------ write mutex
-
-WM=""
-WHELD=0
-# wm_pid — the pid recorded in lock/write/pid, or empty.
-wm_pid() {
-  p=""
-  [ -f "$WM/pid" ] && read -r p <"$WM/pid"
-  printf '%s' "$p"
-}
-
-# wm_acquire — take lock/write/ for this process. Waits while a live process
-# holds it; a stale one (its pid fails `kill -0`, or pid-less and older than a
-# minute) is removed once. Returns 1 if $LOCK is gone or the wait runs out.
-wm_acquire() {
-  WM="$LOCK/write"
-  removed=0
-  w=0
-  while :; do
-    if mkdir "$WM" 2>/dev/null; then
-      WHELD=1
-      printf '%s\n' "$$" >"$WM/pid" || { rm -rf "$WM"; WHELD=0; return 1; }
-      return 0
-    fi
-    [ -d "$LOCK" ] || return 1
-    if [ "$removed" -eq 0 ]; then
-      p="$(wm_pid)"
-      stale=0
-      if [ -n "$p" ]; then
-        { is_num "$p" && kill -0 "$p" 2>/dev/null; } || stale=1
-      elif [ -n "$(find "$WM" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
-        stale=1
-      fi
-      # Re-read just before removing: another process may have replaced it.
-      if [ "$stale" -eq 1 ] && [ "$(wm_pid)" = "$p" ]; then
-        rm -rf "$WM"
-        removed=1
-        logl "write-mutex-stale-removed pid=${p:-none} by=$$"
-        continue
-      fi
-    fi
-    w=$((w + 1))
-    [ "$w" -lt 200 ] || return 1
-    sleep 0.05
-  done
-}
-
-# wm_release — drop lock/write/ if this process holds it (also run on exit).
-wm_release() {
-  [ "$WHELD" -eq 1 ] || return 0
-  WHELD=0
-  [ "$(wm_pid)" = "$$" ] && rm -rf "$WM"
-  return 0
+  WLOCKED=1
 }
 
 cmd_lock() {
   [ "$#" -eq 3 ] || usage
   set_paths "$1"; OWN="$2"; AG="$3"
+  take_write_lock
   is_word "$OWN" || die "bad session id: $OWN"
   [ -f "$AG" ] && jq -e 'type == "array"' "$AG" >/dev/null 2>&1 || die "agents.json must be a JSON array: $AG"
-  [ -d "$D" ] || die "no ledger directory $D (run ledger.sh path first)"
 
+  # Under the write lock no writer is between its owner check and its mv, so
+  # the holder can be judged and replaced in place. The mkdir write mutex and
+  # takeover/ of earlier versions are dead weight here: remove them first.
+  for x in "$LOCK/write" "$D/takeover"; do
+    if [ -e "$x" ]; then
+      rm -rf "$x" || die "cannot remove $x"
+      logl "legacy-lock-dir-removed $x by=$OWN"
+    fi
+  done
   fresh=0
-  mkdir "$LOCK" 2>/dev/null && fresh=1
+  [ -d "$LOCK" ] || fresh=1
+  mkdir -p "$LOCK" || die "cannot create $LOCK"
   read_holder
   if [ "$fresh" -eq 0 ] && [ -n "$HSID" ] && [ "$HSID" = "$OWN" ] && [ -n "$HNONCE" ]; then
     echo "owner=$OWN:$HNONCE"
@@ -239,50 +198,12 @@ cmd_lock() {
     echo "holder=$HSID"
     exit 40
   fi
-  # Test hook: hold a contender between its liveness check and the takeover.
-  if [ -n "${PS_LOCK_TEST_PAUSE:-}" ]; then
-    : >"$PS_LOCK_TEST_PAUSE.waiting"
-    w=0
-    while [ ! -e "$PS_LOCK_TEST_PAUSE" ] && [ "$w" -lt 200 ]; do sleep 0.05; w=$((w + 1)); done
-  fi
-  if ! take_mutex; then
-    o=""; [ -f "$TK/owner" ] && read -r o <"$TK/owner"
-    logl "refused lock by=$OWN takeover-in-progress owner=${o:-none}"
-    echo "holder=$HSID"
-    exit 40
-  fi
-  # Under takeover/ and the write mutex (so no write of the old holder is
-  # between its owner check and its mv): re-check, write a fresh holder, confirm it.
-  old="$HSID"
-  mkdir -p "$LOCK" || { rm -rf "$TK"; die "cannot create $LOCK"; }
-  if ! wm_acquire; then
-    rm -rf "$TK"
-    logl "refused lock by=$OWN write-in-progress pid=$(wm_pid)"
-    echo "holder=$HSID"
-    exit 40
-  fi
-  read_holder
-  if [ -n "$HSID" ] && [ "$HSID" != "$old" ] && is_live "$HSID"; then
-    rm -rf "$TK"
-    logl "refused lock by=$OWN holder=$HSID"
-    echo "holder=$HSID"
-    exit 40
-  fi
   old="$HSID"
   nonce="$(mknonce)"
-  [ -n "$nonce" ] || { rm -rf "$TK"; die "no nonce"; }
+  [ -n "$nonce" ] || die "no nonce"
   if ! { printf '%s %s\n' "$OWN" "$nonce" >"$LOCK/holder.tmp.$$" && mv -f "$LOCK/holder.tmp.$$" "$LOCK/holder"; }; then
-    rm -f "$LOCK/holder.tmp.$$"; rm -rf "$TK"; die "cannot write $LOCK/holder"
+    rm -f "$LOCK/holder.tmp.$$"; die "cannot write $LOCK/holder"
   fi
-  read_holder
-  if [ "$HSID" != "$OWN" ] || [ "$HNONCE" != "$nonce" ]; then
-    rm -rf "$TK"
-    logl "refused lock by=$OWN lost-race holder=$HSID"
-    echo "holder=$HSID"
-    exit 40
-  fi
-  wm_release
-  rm -rf "$TK"
   if [ "$fresh" -eq 1 ]; then
     logl "lock-acquired holder=$OWN"
   else
@@ -302,27 +223,24 @@ owner_check() {
   fi
 }
 
-# begin_write — the start of every read-modify-write (and unlock): a fast owner
-# check, then the write mutex, then the owner check again under it. Everything
-# the call reads and writes after this is fenced against a takeover.
+# begin_write — the start of every read-modify-write (and unlock), under the
+# write lock: the owner check. Everything the call reads and writes after this
+# is fenced against a takeover, which needs the same lock.
 begin_write() {
+  [ "$WLOCKED" -eq 1 ] || die "internal error: write without the write lock"
   owner_check
-  # Test hook: hold the writer between its first owner check and the mutex.
+  # Test hook: hold the writer, and so the write lock, before its read.
   if [ -n "${PS_WRITE_TEST_PAUSE:-}" ]; then
-    : >"$PS_WRITE_TEST_PAUSE.waiting"
+    printf '%s\n' "$$" >"$PS_WRITE_TEST_PAUSE.waiting.tmp" && mv -f "$PS_WRITE_TEST_PAUSE.waiting.tmp" "$PS_WRITE_TEST_PAUSE.waiting"
     w=0
-    while [ ! -e "$PS_WRITE_TEST_PAUSE" ] && [ "$w" -lt 200 ]; do sleep 0.05; w=$((w + 1)); done
+    while [ ! -e "$PS_WRITE_TEST_PAUSE" ] && [ "$w" -lt 200 ]; do sleep 0.05 9>&-; w=$((w + 1)); done
   fi
-  if ! wm_acquire; then
-    # $LOCK gone: the owner check below refuses with 40.
-    [ -d "$LOCK" ] && die "write mutex $LOCK/write is held by live pid $(wm_pid)"
-  fi
-  owner_check
 }
 
 cmd_unlock() {
   [ "$#" -eq 1 ] || usage
   set_paths "$1"
+  take_write_lock
   begin_write
   rm -rf "$LOCK" || die "cannot remove $LOCK"
   logl "unlock holder=$HSID"
@@ -332,24 +250,16 @@ cmd_unlock() {
 # ------------------------------------------------------------------ writes
 
 # write_state <file> — validate, re-check the owner, then mv -f over the ledger.
-# The caller holds the write mutex (begin_write), and a takeover takes it too,
-# so the holder cannot change between this check and the mv. The holder is
-# still read again after the mv, as a backstop: a change there is logged as
-# write-after-takeover and exits 40 so this coordinator stops.
+# The caller holds the write lock, and a takeover needs it too, so the holder
+# cannot change between this check and the mv.
 write_state() {
-  [ "$WHELD" -eq 1 ] || die "internal error: write without the write mutex"
+  [ "$WLOCKED" -eq 1 ] || die "internal error: write without the write lock"
   LTMP="$L.tmp.$$"
   cat "$1" >"$LTMP" || die "cannot write $LTMP"
   jq -e 'type == "object"' "$LTMP" >/dev/null 2>&1 || die "refusing to write an invalid ledger"
   owner_check
   mv -f "$LTMP" "$L" || die "cannot replace $L"
   LTMP=""
-  read_holder
-  if [ "${PS_OWNER:-}" != "$HSID:$HNONCE" ]; then
-    logl "write-after-takeover by ${PS_OWNER%%:*} (${CMD:-write}) holder=${HSID:-none}"
-    echo "holder=$HSID"
-    exit 40
-  fi
 }
 
 # ------------------------------------------------------------------ path / init / get
@@ -366,6 +276,7 @@ cmd_path() {
 cmd_init() {
   [ "$#" -eq 6 ] || usage
   set_paths "$1"
+  take_write_lock
   key="$2"; tb="$3"; cname="$4"; csid="$5"; issues="$6"
   begin_write
   [ ! -e "$L" ] || die "ledger already exists: $L"
@@ -487,6 +398,7 @@ apply() {
 cmd_intent() {
   [ "$#" -ge 3 ] || usage
   set_paths "$1"; kind="$2"; n="$3"
+  take_write_lock
   CMD="intent $kind #$n"
   need_ledger
   begin_write
@@ -538,6 +450,7 @@ cmd_intent() {
 cmd_event() {
   [ "$#" -ge 3 ] || usage
   set_paths "$1"; n="$2"; ev="$3"; shift 3
+  take_write_lock
   CMD="event #$n $ev"
   need_ledger
   begin_write
@@ -610,6 +523,7 @@ ticket_head() {
 cmd_message() {
   [ "$#" -eq 2 ] || usage
   set_paths "$1"; raw="$2"
+  take_write_lock
   CMD="message"
   need_ledger
   begin_write
@@ -648,6 +562,7 @@ cmd_message() {
 cmd_session() {
   [ "$#" -eq 4 ] || usage
   set_paths "$1"; n="$2"; name="$3"; sid="$4"
+  take_write_lock
   CMD="session #$n"
   need_ledger
   begin_write
@@ -665,6 +580,7 @@ cmd_session() {
 cmd_reconcile() {
   [ "$#" -eq 2 ] || usage
   set_paths "$1"; AG="$2"
+  take_write_lock
   CMD="reconcile"
   need_ledger
   begin_write

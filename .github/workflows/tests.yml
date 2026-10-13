@@ -16,7 +16,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+          # ledger.sh's write lock: util-linux flock ships with the runner image.
+          flock --version
       - name: Run tests
         run: |
           set -euo pipefail
@@ -91,6 +94,8 @@ jobs:
           command -v jq >/dev/null || brew install jq
           jq --version
           /bin/bash --version | head -1
+          # ledger.sh's write lock: macOS ships /usr/bin/lockf.
+          ls -l /usr/bin/lockf
       - name: Run tests
         run: |
           set -euo pipefail

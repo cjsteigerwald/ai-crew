@@ -270,104 +270,6 @@ run lock "$L" S2 "$T/ag-nopid-stopped.json"
 expect_rc "lock_no_pid_fallback stopped" 0
 echo "ok: lock_no_pid_fallback"
 
-# ---------------------------------------------------------------- lock_concurrent_takeover
-agents "$T/ag-race.json" "S1=$DEADPID" "S2=$$" "S3=$$"
-# contend <sid> <prefix> <go-file> — wait for the barrier, then lock.
-contend() {
-  while [ ! -f "$3" ]; do sleep 0.05; done
-  (cd "$R" && "$BASH" "$LSH" lock "$L" "$1" "$T/ag-race.json" >"$2.out" 2>"$2.err")
-  echo $? >"$2.rc"
-}
-# check_race <name> — exactly one 0 and one 40; holder carries the winner's nonce.
-check_race() {
-  rc2="$(cat "$T/c2.rc")"; rc3="$(cat "$T/c3.rc")"
-  win=""
-  if [ "$rc2" = 0 ] && [ "$rc3" = 40 ]; then win=c2
-  elif [ "$rc2" = 40 ] && [ "$rc3" = 0 ]; then win=c3
-  else fail "$1: expected one 0 and one 40, got S2=$rc2 S3=$rc3 ($(cat "$T/c2.err" "$T/c3.err"))"; return
-  fi
-  tok="$(cat "$T/$win.out")"; tok="${tok#owner=}"
-  hold="$(cat "$(dirname "$L")/lock/holder")"
-  [ "$hold" = "${tok%%:*} ${tok#*:}" ] || fail "$1: holder '$hold' is not the winner's token '$tok'"
-}
-i=1
-while [ "$i" -le 10 ]; do
-  mkrepo "race$i"
-  run path TEST; L="$OUT"
-  run lock "$L" S1 "$T/ag-s1.json"
-  rm -f "$T/go" "$T"/c2.* "$T"/c3.*
-  contend S2 "$T/c2" "$T/go" &
-  p2=$!
-  contend S3 "$T/c3" "$T/go" &
-  p3=$!
-  touch "$T/go"
-  wait "$p2"; wait "$p3"
-  check_race "lock_concurrent_takeover race $i"
-  i=$((i + 1))
-done
-for order in "S2 S3" "S3 S2"; do
-  mkrepo "serial-${order% *}"
-  run path TEST; L="$OUT"
-  run lock "$L" S1 "$T/ag-s1.json"
-  rm -f "$T/go" "$T"/c2.* "$T"/c3.*
-  touch "$T/go"
-  for s in $order; do
-    case "$s" in S2) contend S2 "$T/c2" "$T/go" ;; S3) contend S3 "$T/c3" "$T/go" ;; esac
-  done
-  check_race "lock_concurrent_takeover serial $order"
-  first="${order% *}"
-  [ "$win" = "$(echo "$first" | sed 's/S/c/')" ] || fail "lock_concurrent_takeover serial $order: first contender did not win"
-done
-# Interleaved: S3 has judged S1 dead and is paused before its takeover; S2
-# completes a whole takeover; S3 resumes and must re-check and refuse.
-mkrepo interleaved
-run path TEST; L="$OUT"
-run lock "$L" S1 "$T/ag-s1.json"
-rm -f "$T/pause" "$T/pause.waiting" "$T"/c2.* "$T"/c3.*
-( cd "$R" && PS_LOCK_TEST_PAUSE="$T/pause" "$BASH" "$LSH" lock "$L" S3 "$T/ag-race.json" >"$T/c3.out" 2>"$T/c3.err"
-  echo $? >"$T/c3.rc" ) &
-p3=$!
-w=0
-while [ ! -f "$T/pause.waiting" ] && [ "$w" -lt 200 ]; do sleep 0.05; w=$((w + 1)); done
-[ -f "$T/pause.waiting" ] || fail "lock_concurrent_takeover interleaved: S3 never reached the pause"
-(cd "$R" && "$BASH" "$LSH" lock "$L" S2 "$T/ag-race.json" >"$T/c2.out" 2>"$T/c2.err"); echo $? >"$T/c2.rc"
-touch "$T/pause"
-wait "$p3"
-check_race "lock_concurrent_takeover interleaved"
-[ "$win" = c2 ] || fail "lock_concurrent_takeover interleaved: the paused contender won"
-echo "ok: lock_concurrent_takeover"
-
-# ---------------------------------------------------------------- stale_takeover_dir
-mkrepo tk1
-run path TEST; L="$OUT"
-run lock "$L" S1 "$T/ag-s1.json"
-mkdir "$(dirname "$L")/takeover"
-touch -t 200001010000 "$(dirname "$L")/takeover"
-run lock "$L" S2 "$T/ag-s1dead.json"
-expect_rc "stale_takeover_dir old ownerless" 0
-[ ! -d "$(dirname "$L")/takeover" ] || fail "stale_takeover_dir: takeover dir left behind"
-
-mkrepo tk2
-run path TEST; L="$OUT"
-run lock "$L" S1 "$T/ag-s1.json"
-mkdir "$(dirname "$L")/takeover"
-run lock "$L" S2 "$T/ag-s1dead.json"
-expect_rc "stale_takeover_dir fresh ownerless" 40
-
-mkrepo tk3
-run path TEST; L="$OUT"
-run lock "$L" S1 "$T/ag-s1.json"
-mkdir "$(dirname "$L")/takeover"
-echo S3 >"$(dirname "$L")/takeover/owner"
-touch -t 200001010000 "$(dirname "$L")/takeover"
-agents "$T/ag-tk3.json" "S1=$DEADPID" "S2=$$" "S3=$$"
-run lock "$L" S2 "$T/ag-tk3.json"
-expect_rc "stale_takeover_dir live owner" 40
-agents "$T/ag-tk3.json" "S1=$DEADPID" "S2=$$" "S3=$DEADPID"
-run lock "$L" S2 "$T/ag-tk3.json"
-expect_rc "stale_takeover_dir dead owner" 0
-echo "ok: stale_takeover_dir"
-
 # ---------------------------------------------------------------- lost_lock_refused
 mkrepo lost
 run path TEST; L="$OUT"
@@ -863,105 +765,176 @@ for s in pending launched started "blocked-on #2" done-claimed verifying rework-
 done
 echo "ok: no_stranded_status"
 
-# ---------------------------------------------------------------- write_fencing
-# Ruling CX1 (supersedes T5's "one last write"): the old owner passed its owner
-# check and is paused mid-write; a takeover completes and the new owner writes;
-# the old writer resumes, re-checks under the write mutex and exits 40 without
-# writing, so the new owner's state survives.
-setup wf
-agents "$T/ag-wf.json" "sid-coord=$DEADPID" "S9=$$"
-OLDTOK="$PS_OWNER"
-rm -f "$T/wpause" "$T/wpause.waiting"
-( cd "$R" && PS_WRITE_TEST_PAUSE="$T/wpause" "$BASH" "$LSH" event "$L" 1 canary-passed >"$T/w.out" 2>"$T/w.err"
-  echo $? >"$T/w.rc" ) &
-pw=$!
-w=0
-while [ ! -f "$T/wpause.waiting" ] && [ "$w" -lt 200 ]; do sleep 0.05; w=$((w + 1)); done
-[ -f "$T/wpause.waiting" ] || fail "write_fencing: writer never reached the pause"
-run lock "$L" S9 "$T/ag-wf.json"
-expect_rc "write_fencing takeover" 0
-NEWTOK="${OUT#owner=}"
-PS_OWNER="$NEWTOK" ev 3 drop "new owner"
-expect_rc "write_fencing new owner write" 0
-cp "$L" "$T/wf-new.json"
-touch "$T/wpause"
-wait "$pw"
-[ "$(cat "$T/w.rc")" = 40 ] || fail "write_fencing: old writer rc $(cat "$T/w.rc"), want 40 ($(cat "$T/w.err"))"
-grep -qx 'holder=S9' "$T/w.out" || fail "write_fencing: expected holder=S9, got '$(cat "$T/w.out")'"
-cmp -s "$L" "$T/wf-new.json" || fail "write_fencing: the old writer overwrote the new owner's state"
-[ "$(jq -r .canary "$L")" = pending ] || fail "write_fencing: the old writer's canary-passed landed"
-expect_st "write_fencing new state" 3 cancelled
-[ ! -d "$(dirname "$L")/lock/write" ] || fail "write_fencing: write mutex left behind"
-PS_OWNER="$OLDTOK"
-echo "ok: write_fencing"
+# ================================================================ write lock
+# Every mutating call holds an OS lock (lockf/flock) on <dir>/write.lock, on its
+# own fd, from before its owner check until it exits (supersedes rulings CX1 and
+# T5-M2(a)). No lock-tool process outlives the acquisition.
 
-# ---------------------------------------------------------------- write_mutex
-# lock/write/pid held by a live process: a write waits; once that process is
-# gone (kill -0 fails) the mutex is stale, removed once, and the write goes on.
-setup wm
-WMD="$(dirname "$L")/lock/write"
-sleep 30 &
-SP=$!
-mkdir "$WMD" && echo "$SP" >"$WMD/pid"
-cp "$L" "$T/wm-before.json"
-( cd "$R" && "$BASH" "$LSH" event "$L" 1 canary-passed >"$T/wm.out" 2>"$T/wm.err"; echo $? >"$T/wm.rc" ) &
-pm=$!
-sleep 1
-cmp -s "$L" "$T/wm-before.json" || fail "write_mutex: a write went past a live write mutex"
-[ ! -f "$T/wm.rc" ] || fail "write_mutex: the writer did not wait (rc $(cat "$T/wm.rc"), $(cat "$T/wm.err"))"
-kill "$SP"; wait "$SP" 2>/dev/null
-wait "$pm"
-[ "$(cat "$T/wm.rc")" = 0 ] || fail "write_mutex: writer rc $(cat "$T/wm.rc") after the holder died ($(cat "$T/wm.err"))"
-[ "$(jq -r .canary "$L")" = passed ] || fail "write_mutex: the write did not land after the holder died"
-grep -q 'write-mutex-stale-removed' "$(dirname "$L")/ledger.log" || fail "write_mutex: no write-mutex-stale-removed in ledger.log"
-[ ! -d "$WMD" ] || fail "write_mutex: write mutex left behind after the write"
-# A takeover waits for a live writer too, and goes on once the mutex is released.
-agents "$T/ag-wm.json" "sid-coord=$DEADPID" "S9=$$"
-sleep 30 &
-SP=$!
-mkdir "$WMD" && echo "$SP" >"$WMD/pid"
-rm -f "$T/wmt.rc"
-( cd "$R" && "$BASH" "$LSH" lock "$L" S9 "$T/ag-wm.json" >"$T/wmt.out" 2>"$T/wmt.err"; echo $? >"$T/wmt.rc" ) &
-pm=$!
-sleep 1
-read -r hs _ <"$(dirname "$L")/lock/holder"
-[ "$hs" = sid-coord ] || fail "write_mutex: a takeover went past a live write mutex (holder $hs)"
-rm -rf "$WMD"
-wait "$pm"
-kill "$SP"; wait "$SP" 2>/dev/null
-[ "$(cat "$T/wmt.rc")" = 0 ] || fail "write_mutex: takeover rc $(cat "$T/wmt.rc") after release ($(cat "$T/wmt.err"))"
-read -r hs _ <"$(dirname "$L")/lock/holder"
-[ "$hs" = S9 ] || fail "write_mutex: holder '$hs' after the takeover, want S9"
-# unlock takes the mutex as well.
-PS_OWNER="$(cat "$T/wmt.out")"; PS_OWNER="${PS_OWNER#owner=}"
-sleep 30 &
-SP=$!
-mkdir "$WMD" && echo "$SP" >"$WMD/pid"
-rm -f "$T/wmu.rc"
-( cd "$R" && "$BASH" "$LSH" unlock "$L" >"$T/wmu.out" 2>"$T/wmu.err"; echo $? >"$T/wmu.rc" ) &
-pm=$!
-sleep 1
-[ -f "$(dirname "$L")/lock/holder" ] || fail "write_mutex: unlock went past a live write mutex"
-rm -rf "$WMD"
-wait "$pm"
-kill "$SP"; wait "$SP" 2>/dev/null
-[ "$(cat "$T/wmu.rc")" = 0 ] || fail "write_mutex: unlock rc $(cat "$T/wmu.rc") after release ($(cat "$T/wmu.err"))"
-[ ! -d "$(dirname "$L")/lock" ] || fail "write_mutex: lock dir left after unlock"
-PS_OWNER="$OLDTOK"
-# The read is fenced too: two concurrent writes never lose an update.
+# start_paused <tag> <args...> — ledger.sh <args> in the background with
+# PS_WRITE_TEST_PAUSE=$T/pause-<tag>, waited for until it holds the write lock. Sets
+# PW (the background subshell) and WPID (the paused ledger.sh's own $$).
+# `touch "$T/pause-<tag>"` releases it; its rc lands in $T/pause-<tag>.rc.
+start_paused() {
+  tag="$1"; shift
+  rm -f "$T/pause-$tag" "$T/pause-$tag.waiting" "$T/pause-$tag.rc"
+  ( cd "$R" && PS_WRITE_TEST_PAUSE="$T/pause-$tag" "$BASH" "$LSH" "$@" >"$T/pause-$tag.out" 2>"$T/pause-$tag.err"
+    echo $? >"$T/pause-$tag.rc" ) 2>/dev/null &
+  PW=$!
+  w=0
+  while [ ! -s "$T/pause-$tag.waiting" ] && [ "$w" -lt 200 ]; do sleep 0.05; w=$((w + 1)); done
+  WPID=""
+  [ -s "$T/pause-$tag.waiting" ] && read -r WPID <"$T/pause-$tag.waiting"
+  [ -n "$WPID" ] || fail "start_paused $tag: the writer never reached the pause ($(cat "$T/pause-$tag.err"))"
+}
+# lock_tools_under <pid> — pids of lockf/flock processes whose parent is <pid>.
+lock_tools_under() {
+  ps -A -o pid= -o ppid= -o comm= | awk -v p="$1" '
+    $2 == p { c = $3; sub(/.*\//, "", c); if (c == "lockf" || c == "flock") print $1 }'
+}
+
+# ---------------------------------------------------------------- lock_released_on_kill9
+setup k9
+start_paused k9 event "$L" 1 canary-passed
+[ -n "$WPID" ] && kill -9 "$WPID"
+wait "$PW" 2>/dev/null
+PS_WRITE_WAIT=2 ev 1 canary-passed
+expect_rc "lock_released_on_kill9 next write" 0
+jq -e 'type == "object"' "$L" >/dev/null || fail "lock_released_on_kill9: ledger not a JSON object"
+[ "$(jq -r .canary "$L")" = passed ] || fail "lock_released_on_kill9: the next write did not land"
+echo "ok: lock_released_on_kill9"
+
+# ---------------------------------------------------------------- parallel_writers_no_lost_update
+I12=""
 i=1
-while [ "$i" -le 5 ]; do
-  setup "wmc$i"
-  ( cd "$R" && "$BASH" "$LSH" event "$L" 2 drop a >/dev/null 2>&1 ) &
-  pa=$!
-  ( cd "$R" && "$BASH" "$LSH" event "$L" 3 drop b >/dev/null 2>&1 ) &
-  pb=$!
-  wait "$pa"; wait "$pb"
-  { [ "$(st 2)" = cancelled ] && [ "$(st 3)" = cancelled ]; } \
-    || fail "write_mutex concurrent $i: lost update (#2 $(st 2), #3 $(st 3))"
+while [ "$i" -le 12 ]; do I12="$I12${I12:+,}$(iss "$i")"; i=$((i + 1)); done
+setup par "[$I12]"
+pids=""
+i=1
+while [ "$i" -le 12 ]; do
+  ( cd "$R" && PS_WRITE_WAIT=60 "$BASH" "$LSH" event "$L" "$i" drop "r$i" >/dev/null 2>"$T/par$i.err"
+    echo $? >"$T/par$i.rc" ) &
+  pids="$pids $!"
   i=$((i + 1))
 done
-echo "ok: write_mutex"
+for p in $pids; do wait "$p"; done
+i=1
+while [ "$i" -le 12 ]; do
+  [ "$(cat "$T/par$i.rc")" = 0 ] || fail "parallel_writers_no_lost_update: #$i rc $(cat "$T/par$i.rc") ($(cat "$T/par$i.err"))"
+  expect_st "parallel_writers_no_lost_update" "$i" cancelled
+  i=$((i + 1))
+done
+LASTCMD="parallel drops"; assert_outbox_invariant "$L"
+echo "ok: parallel_writers_no_lost_update"
+
+# ---------------------------------------------------------------- busy_timeout_41
+setup busy
+start_paused busy event "$L" 1 canary-passed
+cp "$L" "$T/busy-before.json"
+lt="$(lock_tools_under "$WPID")"
+[ -z "$lt" ] || fail "busy_timeout_41: a lock-tool process is alive under the writer ($lt)"
+PS_WRITE_WAIT=1 ev 2 drop busy
+expect_rc "busy_timeout_41" 41
+[ "$OUT" = "busy=$(dirname "$L")/write.lock" ] || fail "busy_timeout_41: printed '$OUT'"
+cmp -s "$L" "$T/busy-before.json" || fail "busy_timeout_41: the ledger changed"
+touch "$T/pause-busy"
+wait "$PW"
+[ "$(cat "$T/pause-busy.rc")" = 0 ] || fail "busy_timeout_41: the paused writer rc $(cat "$T/pause-busy.rc") ($(cat "$T/pause-busy.err"))"
+[ "$(jq -r .canary "$L")" = passed ] || fail "busy_timeout_41: the paused writer's write did not land"
+echo "ok: busy_timeout_41"
+
+# ---------------------------------------------------------------- lock_held_until_writer_exits
+setup held
+start_paused held event "$L" 1 canary-passed
+for p in $(lock_tools_under "$WPID"); do kill -9 "$p" 2>/dev/null; done
+PS_WRITE_WAIT=1 ev 2 drop held
+expect_rc "lock_held_until_writer_exits" 41
+touch "$T/pause-held"
+wait "$PW"
+[ "$(cat "$T/pause-held.rc")" = 0 ] || fail "lock_held_until_writer_exits: the paused writer rc $(cat "$T/pause-held.rc") ($(cat "$T/pause-held.err"))"
+echo "ok: lock_held_until_writer_exits"
+
+# ---------------------------------------------------------------- takeover_serialized
+agents "$T/ag-race.json" "S1=$DEADPID" "S2=$$" "S3=$$"
+# contend <sid> <prefix> <go-file> — wait for the barrier, then lock.
+contend() {
+  while [ ! -f "$3" ]; do sleep 0.05; done
+  (cd "$R" && "$BASH" "$LSH" lock "$L" "$1" "$T/ag-race.json" >"$2.out" 2>"$2.err")
+  echo $? >"$2.rc"
+}
+# check_race <name> — exactly one 0 and one 40; holder carries the winner's nonce.
+check_race() {
+  rc2="$(cat "$T/c2.rc")"; rc3="$(cat "$T/c3.rc")"
+  win=""
+  if [ "$rc2" = 0 ] && [ "$rc3" = 40 ]; then win=c2
+  elif [ "$rc2" = 40 ] && [ "$rc3" = 0 ]; then win=c3
+  else fail "$1: expected one 0 and one 40, got S2=$rc2 S3=$rc3 ($(cat "$T/c2.err" "$T/c3.err"))"; return
+  fi
+  tok="$(cat "$T/$win.out")"; tok="${tok#owner=}"
+  hold="$(cat "$(dirname "$L")/lock/holder")"
+  [ "$hold" = "${tok%%:*} ${tok#*:}" ] || fail "$1: holder '$hold' is not the winner's token '$tok'"
+}
+i=1
+while [ "$i" -le 5 ]; do
+  mkrepo "race$i"
+  run path TEST; L="$OUT"
+  run lock "$L" S1 "$T/ag-s1.json"
+  rm -f "$T/go" "$T"/c2.* "$T"/c3.*
+  contend S2 "$T/c2" "$T/go" &
+  p2=$!
+  contend S3 "$T/c3" "$T/go" &
+  p3=$!
+  touch "$T/go"
+  wait "$p2"; wait "$p3"
+  check_race "takeover_serialized race $i"
+  i=$((i + 1))
+done
+echo "ok: takeover_serialized"
+
+# ---------------------------------------------------------------- lost_owner_refused
+setup lostown
+agents "$T/ag-lo.json" "sid-coord=$DEADPID" "S2=$$"
+OLDTOK="$PS_OWNER"
+run lock "$L" S2 "$T/ag-lo.json"
+expect_rc "lost_owner_refused takeover" 0
+cp "$L" "$T/lo-before.json"
+PS_OWNER="$OLDTOK" ev 1 canary-passed
+expect_rc "lost_owner_refused write" 40
+printf '%s\n' "$OUT" | grep -qx 'holder=S2' || fail "lost_owner_refused: expected holder=S2, got '$OUT'"
+cmp -s "$L" "$T/lo-before.json" || fail "lost_owner_refused: ledger changed"
+echo "ok: lost_owner_refused"
+
+# ---------------------------------------------------------------- legacy_lock_dirs_ignored
+# A lock/write/ or takeover/ left by the mkdir mutex is removed by the next
+# `lock`, even on the own-holder path.
+setup legacy
+mkdir -p "$(dirname "$L")/lock/write" "$(dirname "$L")/takeover"
+echo 1 >"$(dirname "$L")/lock/write/pid"
+echo S3 >"$(dirname "$L")/takeover/owner"
+run lock "$L" sid-coord "$T/ag-coord.json"
+expect_rc "legacy_lock_dirs_ignored" 0
+[ "$OUT" = "owner=$PS_OWNER" ] || fail "legacy_lock_dirs_ignored: printed '$OUT', want owner=$PS_OWNER"
+[ ! -e "$(dirname "$L")/lock/write" ] || fail "legacy_lock_dirs_ignored: lock/write left"
+[ ! -e "$(dirname "$L")/takeover" ] || fail "legacy_lock_dirs_ignored: takeover left"
+grep -q 'legacy-lock-dir-removed' "$(dirname "$L")/ledger.log" || fail "legacy_lock_dirs_ignored: no legacy-lock-dir-removed in ledger.log"
+ev 1 canary-passed
+expect_rc "legacy_lock_dirs_ignored write after" 0
+echo "ok: legacy_lock_dirs_ignored"
+
+# ---------------------------------------------------------------- no_lock_tool_refused
+# Neither /usr/bin/lockf nor flock reachable: a mutating call refuses (exit 2).
+setup nolock
+mkdir -p "$T/stubbin"
+for tool in jq git bash dirname; do
+  tp="$(command -v "$tool")" && ln -sf "$tp" "$T/stubbin/$tool"
+done
+cp "$L" "$T/nolock-before.json"
+OUT="$(cd "$R" && PATH="$T/stubbin" PS_LOCKF=/nonexistent "$BASH" "$LSH" event "$L" 1 canary-passed 2>"$T/err")"
+RC=$?
+ERR="$(cat "$T/err")"
+expect_rc "no_lock_tool_refused" 2
+case "$ERR" in *"lock tool"*) ;; *) fail "no_lock_tool_refused: stderr '$ERR' does not name the lock tool" ;; esac
+cmp -s "$L" "$T/nolock-before.json" || fail "no_lock_tool_refused: ledger changed"
+echo "ok: no_lock_tool_refused"
 
 # ---------------------------------------------------------------- init_blockers_in_set
 mkrepo initv
@@ -1723,6 +1696,22 @@ expect_rc "message_text_inert" 0
 expect_line "message_text_inert" "ask-user=stuck 12 $EVIL"
 [ ! -e "$T/pwned" ] && [ ! -e "$T/pwned2" ] && [ ! -e "$T/pwned3" ] || fail "message_text_inert: message text was executed"
 echo "ok: message_text_inert"
+
+# ---------------------------------------------------------------- frame_argv_preserved
+# The whole frame is one argv argument: quotes, $(…), backticks and a tab reach
+# the stored reason byte for byte, and nothing runs.
+ksetup argv
+klaunch 12
+FR="a \"q\" \$(x) \`y\` ${TAB} z"
+( cd "$R" && "$BASH" "$LSH" message "$L" "$(frame K-12 "FAILED #12 gen=1 $FR")" >"$T/argv.out" 2>"$T/argv.err" )
+RC=$?
+[ "$RC" -eq 0 ] || fail "frame_argv_preserved: rc $RC ($(cat "$T/argv.err"))"
+got="$(jq -r '.issues["12"].reason' "$L")"
+[ "${got#FAILED: }" = "$FR" ] || fail "frame_argv_preserved: stored reason '$got', want 'FAILED: $FR'"
+for f in x y; do
+  [ ! -e "$R/$f" ] && [ ! -e "$T/$f" ] || fail "frame_argv_preserved: file '$f' created"
+done
+echo "ok: frame_argv_preserved"
 
 # ---------------------------------------------------------------- cancel_targets_intent_session
 # Ruling T6-C2: an open launch/relaunch intent's session may already be running

@@ -49,6 +49,9 @@ says which call to make when; it does not restate the table.
 - **Never edit settings**, and never launch `/retro` or `dev-workflow:skill-retrospective`.
 - **A GitHub write happens only after the user confirms that write.**
 - Exit `40` from any `ledger.sh` call means this session lost the run lock: stop and tell the user.
+- Exit `41` from any `ledger.sh` call means the ledger is busy (another call holds `write.lock`):
+  wait 5 s and retry once; still `41`: tell the user and show `lsof "<dir of $L>/write.lock"`.
+  Run mutating `ledger.sh` calls one at a time anyway, so their order is yours.
 
 ## Conventions used below
 
@@ -109,6 +112,10 @@ says which call to make when; it does not restate the table.
    checked out in this session's cwd, and `git status --porcelain --untracked-files=no` is empty
    (untracked files, such as partner worktrees under `.claude/worktrees/`, do not count).
 6. Make `W` (`mktemp -d`) and note it.
+7. **Lock tool.** `[ -x /usr/bin/lockf ] || command -v flock` succeeds; if not, stop and tell the
+   user `ledger.sh` needs `/usr/bin/lockf` (macOS) or `flock` (util-linux). Then probe it on a
+   descriptor once: `exec 9>>"$W/probe.lock"; /usr/bin/lockf -s -t 0 9` (or `flock -n 9`) exits 0.
+   A failure is an old lock tool without descriptor support: stop and name it.
 
 ## Inputs
 
@@ -122,6 +129,7 @@ and the issue numbers published for the ticket. Partner names are `<KEY>-<n>`; p
 2. `bash "$S/ledger.sh" lock "$L" "$CLAUDE_CODE_SESSION_ID" "$W/agents.json"` prints
    `owner=<sid>:<nonce>`. Record `<sid>:<nonce>` and export it as `PS_OWNER` in every later call.
    Exit `40` (prints `holder=`): another live coordinator holds the run. Stop and tell the user.
+   Exit `41` (prints `busy=`): another call is mid-write; retry as the Hard rules say.
 3. **No ledger file yet:** continue at step 3.
 4. **Ledger exists — resume:**
    1. `ledger.sh get "$L" | jq -r .coordinator.name` must equal this session's name (partners
@@ -254,7 +262,8 @@ A partner message arrives as `<cross-session-message from="<name>">…</cross-se
      match the expected `<cross-session-message from="…">` shape): tell the user, with the reason.
    - `30`: refused. A `DONE` with a new sha while the issue is `done-claimed` or `verifying` is
      refused: tell the user; the gate verifies the claimed sha. Any other refusal: tell the user.
-   - `40`: lost lock, stop. `2`: a coordinator bug, stop.
+   - `40`: lost lock, stop. `41`: busy, wait 5 s and retry once (Hard rules). `2`: a coordinator
+     bug, stop.
 4. Send the outbox.
 
 ## 9. Integration queue

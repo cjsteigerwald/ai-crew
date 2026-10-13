@@ -428,7 +428,7 @@ if [ -f "$PS_DIR/ledger.md" ]; then
              '`rework-n/3`' '`resync-requested`' '`merged`' '`failed`' '`cancelled`' 'generation' 'outbox' \
              'done nopid' 'exit 30' 'supersedes' 'gen=<g>' 'canary-passed' 'launch-failed' \
              'launch-intent' 'merge-intent' 'partner-sessions/<KEY>/ledger.json' 'git-common-dir' \
-             'never committed' 'PS_OWNER' 'ledger.sh event'; do
+             'never committed' 'PS_OWNER' 'ledger.sh event' 'write.lock' 'exit 41' 'lockf -s' 'flock -w'; do
     grep -qF -- "$pin" "$PS_DIR/ledger.md" || pfail "coordinating-partner-sessions/ledger.md: missing '$pin'"
   done
 fi

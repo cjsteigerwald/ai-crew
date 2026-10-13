@@ -8,9 +8,10 @@ is its only writer; never edit the JSON by hand and never keep state anywhere el
 - Path: `$(git rev-parse --git-common-dir)/partner-sessions/<KEY>/ledger.json`. Get it, and create
   its directory, with `ledger.sh path <KEY>`. It lives in git metadata (the `git-common-dir`), so
   every worktree of the repository sees the same one.
-- Beside it: `lock/` (the run lock; `lock/holder` holds `<session-id> <nonce>`; `lock/write/`
-  is the transient write mutex), `takeover/` (transient, present only while a lock is being taken
-  over) and `ledger.log` (append-only diagnostics, not state).
+- Beside it: `lock/` (the run lock; `lock/holder` holds `<session-id> <nonce>`), `write.lock`
+  (the file every mutating call holds a kernel lock on; never committed, never reaped) and
+  `ledger.log` (append-only diagnostics, not state). A `lock/write/` or `takeover/` left by an
+  earlier version is removed by the next `lock`.
 - It is never committed and never inside a working tree. What leaves it is `ledger.sh summary`,
   a Markdown table the coordinator puts in the ticket PR body.
 
@@ -154,12 +155,16 @@ Two events are not rows of the transition table:
    holder is not live is taken over.
 4. Exit 40 from any call means this coordinator lost the lock: stop.
 5. `ledger.sh unlock <ledger>` on finish.
-6. **Write mutex.** Every read-modify-write, every takeover and `unlock` hold `lock/write/`
-   (created with `mkdir`; `lock/write/pid` is the writer's own process ID) across the owner check,
-   the read and the `mv`. So a takeover never lands between a writer's owner check and its write:
-   the old writer either finishes first or re-checks after the takeover and exits 40 without
-   writing. A held mutex is waited for (about 10 s; then exit 2, or 40 from `lock`). It is stale
-   only when `kill -0 <pid>` fails (a local process check), and is then removed once.
+6. **Write lock.** `lock` and every mutating call hold an exclusive kernel lock on `write.lock`
+   for their whole run, from before the owner check through the read and the `mv`: `lockf -s`
+   (macOS, `/usr/bin/lockf`) or `flock -w` (Linux, util-linux) on the call's own open file
+   descriptor. So a takeover or a second writer never lands between a writer's owner check and
+   its write, and parallel calls never lose an update. The kernel releases the lock when the call
+   exits, however it exits (`kill -9` included): there is no stale lock to detect or remove. A
+   held lock is waited for `PS_WRITE_WAIT` seconds (default 10), then the call prints
+   `busy=<dir>/write.lock` and exits 41 without changing anything. Read-only calls (`path`, `get`,
+   `outbox`, `slots`, `done`, `summary`) take no lock; the `mv` keeps the ledger a whole snapshot.
+   With neither lock tool present every mutating call exits 2.
 
 ## Exit codes
 
@@ -170,6 +175,7 @@ Two events are not rows of the transition table:
 | 20 | Partner message rejected (bad frame, wrong `from`, wrong `gen`, wrong branch); prints `reason=` |
 | 30 | Illegal transition refused (logged) |
 | 40 | Lock held by a live other session, or `PS_OWNER` no longer matches |
+| 41 | Ledger busy: another mutating call holds `write.lock` (exit 41 after `PS_WRITE_WAIT` seconds; prints `busy=`) |
 | 2 | Usage or I/O error |
 | 1 | `done` only: the ticket is not finished |
 
