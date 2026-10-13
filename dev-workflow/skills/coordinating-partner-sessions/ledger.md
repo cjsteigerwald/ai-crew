@@ -210,7 +210,8 @@ resolves the failure.
 
 The `<head>` in `queue-check stale <head>` and `gate resync <head>` is the sha from the `head=<sha>`
 line that `ff-merge.sh` printed with exit 10. `ff-merge.sh` exit 3 (merge call only) means the ticket
-branch is not checked out there or the worktree is dirty; fix that, it is not a resync.
+branch is not checked out there or a tracked file there is modified (untracked files do not
+count); fix that, it is not a resync.
 
 A call whose transition is not in the table exits 30 (refused, ledger unchanged). Other outcomes
 keep their own codes: a repeat of an applied call exits 10, bad arguments exit 2, a rejected

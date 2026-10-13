@@ -151,17 +151,37 @@ run ticket
 expect "missing args" 2
 echo "ok: malformed sha"
 
-# dirty worktree
+# dirty worktree: only tracked changes count (ruling FV1)
 mkrepo dirty
 cand; HEAD0="$(g rev-parse ticket)"
-echo x >"$R/untracked"
+echo x >"$R/f"
 run ticket "$CAND" "$HEAD0"
 expect "dirty worktree" 3
-[ -f "$R/untracked" ] || fail "dirty worktree: untracked file removed"
+[ "$(cat "$R/f")" = x ] || fail "dirty worktree: tracked modification lost"
 [ "$(g rev-parse ticket)" = "$HEAD0" ] || fail "dirty worktree: ticket changed"
 run --check ticket "$CAND"
 expect "dirty worktree (check ignores worktree)" 0
 echo "ok: dirty worktree"
+
+# an untracked file alone does not block the merge
+mkrepo untracked
+cand; HEAD0="$(g rev-parse ticket)"
+echo x >"$R/untracked"
+run ticket "$CAND" "$HEAD0"
+expect "untracked file" 0
+[ -f "$R/untracked" ] || fail "untracked file: removed"
+[ "$(g rev-parse ticket)" = "$CAND" ] || fail "untracked file: ticket not at candidate"
+echo "ok: untracked file"
+
+# partner worktrees under .claude/worktrees/ do not block the merge
+mkrepo nested-wt
+cand; HEAD0="$(g rev-parse ticket)"
+g branch partner-x
+g worktree add -q "$R/.claude/worktrees/x" partner-x
+run ticket "$CAND" "$HEAD0"
+expect "nested worktree" 0
+[ "$(g rev-parse ticket)" = "$CAND" ] || fail "nested worktree: ticket not at candidate"
+echo "ok: nested worktree"
 
 # wrong branch checked out
 mkrepo wrongbranch

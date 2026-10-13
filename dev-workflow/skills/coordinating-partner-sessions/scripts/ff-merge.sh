@@ -9,7 +9,9 @@
 #   ff-merge.sh <ticket-branch> <sha> <pinned-head>
 #       fast-forwards only if the ticket head equals <pinned-head> and is an
 #       ancestor of <sha>; exit 0 printing head=<sha>, else exit 10 printing the
-#       current head=. Exit 3: branch not checked out here, or worktree dirty.
+#       current head=. Exit 3: branch not checked out here, or a tracked file
+#       is modified (untracked files, e.g. partner worktrees under .claude/,
+#       do not count; a merge that would overwrite one fails as exit 1).
 #
 # Exit 2: argument errors, malformed or nonexistent SHA.
 # Only ever runs `git merge --ff-only`; never stashes, resets or rebases.
@@ -59,7 +61,7 @@ if [ "$CUR" != "$BRANCH" ]; then
   echo "ff-merge: $BRANCH is not checked out here (on '${CUR:-detached}')" >&2
   exit 3
 fi
-if [ -n "$(git status --porcelain)" ]; then
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   echo "ff-merge: worktree is dirty" >&2
   exit 3
 fi

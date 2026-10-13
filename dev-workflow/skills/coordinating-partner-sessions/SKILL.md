@@ -105,7 +105,8 @@ says which call to make when; it does not restate the table.
    `accept`, or a permission-class mismatch), stop and name the setting to change. Never edit
    settings. If the files do not settle it, say so; the canary (step 6) proves real delivery.
 5. **GitHub and git.** `gh auth status` succeeds for the repo. The ticket branch exists and is
-   checked out in this session's cwd, and `git status --porcelain` is empty.
+   checked out in this session's cwd, and `git status --porcelain --untracked-files=no` is empty
+   (untracked files, such as partner worktrees under `.claude/worktrees/`, do not count).
 6. Make `W` (`mktemp -d`) and note it.
 
 ## Inputs
@@ -284,7 +285,7 @@ One `DONE` at a time, in queue order. For the head issue `n`, read `branch`, `te
      (prints `merged`; issues `blocked-on #n` become `pending` in the same write). Run step 6.
    - Exit `10` (`head=<head>`): `ledger.sh event "$L" <n> gate resync <head> <id>`, then Send the
      outbox.
-   - Exit `3`: wrong cwd or a dirty ticket checkout. Stop and tell the user; the merge intent
+   - Exit `3`: wrong cwd, or a modified tracked file in the ticket checkout. Stop and tell the user; the merge intent
      stays open for `reconcile`.
    - Exit `1`: unexpected merge failure. Stop and tell the user.
 5. Take the next queue entry. After a merge, every other queued claim is stale and gets `RESYNC`
