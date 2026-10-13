@@ -22,6 +22,9 @@ def active($k): islive($k) and ((.issues[$k].status == "done-claimed" or .issues
 def intent_at($id): (.intents | map(.id == $id) | index(true));
 def close_intent($id; $outcome):
   .intents |= map(if .id == $id then .open = false | .outcome = $outcome else . end);
+# Close every open intent of issue $k (drop, cancel-ticket).
+def close_issue_intents($k; $outcome):
+  .intents |= map(if .open and ((.n | tostring) == $k) then .open = false | .outcome = $outcome else . end);
 def one_line: gsub("[\t\r\n]+"; " ");
 # Add an outbox entry for issue $k at its current gen; it supersedes any older entry for $k.
 def outbox_put($k; $line):
@@ -188,6 +191,7 @@ elif $op == "event" then (
            | .key | tonumber ] | sort | map(tostring) | join(",")) as $deps
       | .issues[$n].status = "cancelled"
       | .issues[$n].reason = (if $a1 == "" then null else $a1 end)
+      | close_issue_intents($n; "cancelled")
       | ok(["cancelled", "dependents=\($deps)"])
     end
 
@@ -221,7 +225,8 @@ elif $op == "event" then (
         reduce $todo[] as $k (.;
           (if islive($k) then outbox_put($k; "CANCEL #\($k)") else . end)
           | .issues[$k].status = "cancelled"
-          | .issues[$k].reason = (if $a1 == "" then null else $a1 end))
+          | .issues[$k].reason = (if $a1 == "" then null else $a1 end)
+          | close_issue_intents($k; "cancelled"))
         | ok(["cancelled"])
       end
 

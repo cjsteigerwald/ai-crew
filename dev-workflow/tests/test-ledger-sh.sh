@@ -836,5 +836,67 @@ for s in pending launched started "blocked-on #2" done-claimed verifying rework-
 done
 echo "ok: no_stranded_status"
 
+# ---------------------------------------------------------------- write_after_takeover
+# A takeover that lands between a writer's owner check and its mv: the writer
+# re-reads the holder after the mv, logs write-after-takeover and exits 40.
+setup wat
+agents "$T/ag-wat.json" "sid-coord=$DEADPID" "S9=$$"
+rm -f "$T/wpause" "$T/wpause.waiting"
+( cd "$R" && PS_WRITE_TEST_PAUSE="$T/wpause" "$BASH" "$LSH" event "$L" 1 canary-passed >"$T/w.out" 2>"$T/w.err"
+  echo $? >"$T/w.rc" ) &
+pw=$!
+w=0
+while [ ! -f "$T/wpause.waiting" ] && [ "$w" -lt 200 ]; do sleep 0.05; w=$((w + 1)); done
+[ -f "$T/wpause.waiting" ] || fail "write_after_takeover: writer never reached the pause"
+run lock "$L" S9 "$T/ag-wat.json"
+expect_rc "write_after_takeover takeover" 0
+touch "$T/wpause"
+wait "$pw"
+[ "$(cat "$T/w.rc")" = 40 ] || fail "write_after_takeover: writer rc $(cat "$T/w.rc"), want 40 ($(cat "$T/w.err"))"
+grep -qx 'holder=S9' "$T/w.out" || fail "write_after_takeover: expected holder=S9, got '$(cat "$T/w.out")'"
+grep -q 'write-after-takeover' "$(dirname "$L")/ledger.log" || fail "write_after_takeover: no write-after-takeover in ledger.log"
+echo "ok: write_after_takeover"
+
+# ---------------------------------------------------------------- init_blockers_in_set
+mkrepo initv
+run path TEST; L="$OUT"
+run lock "$L" sid-coord "$T/ag-coord.json"
+PS_OWNER="${OUT#owner=}"; export PS_OWNER
+printf '[%s,%s]\n' "$(iss 1)" "$(iss 2 '[5]')" >"$T/issues.json"
+run init "$L" TEST tk TEST-coord sid-coord "$T/issues.json"
+expect_rc "init_blockers_in_set unknown blocker" 2
+[ ! -e "$L" ] || fail "init_blockers_in_set: ledger written for an unknown blocker"
+printf '[%s,{"n":2,"blockers":[1],"external":[{"n":5,"closed":true}],"branch":"test-x-2","testCmd":"true","ac":[]}]\n' \
+  "$(iss 1)" >"$T/issues.json"
+run init "$L" TEST tk TEST-coord sid-coord "$T/issues.json"
+expect_rc "init_blockers_in_set external blocker" 0
+echo "ok: init_blockers_in_set"
+
+# ---------------------------------------------------------------- drop_cancel_close_intents
+intent_open() { jq -r --arg i "$1" '.intents[] | select(.id == $i) | "\(.open) \(.outcome // "")"' "$L"; }
+setup dci
+run intent "$L" launch 1 TEST-1 "$T/wt-1" test-x-1 "$H40"
+I1="$(intent_id)"
+ev 1 drop
+expect_rc "drop_cancel_close_intents drop" 0
+[ "$(intent_open "$I1")" = "false cancelled" ] || fail "drop_cancel_close_intents: drop left launch intent '$(intent_open "$I1")'"
+seed 2 failed
+run intent "$L" relaunch 2 TEST-2 "$T/wt-2" test-x-2 "$H40"
+I2="$(intent_id)"
+ev 2 drop
+[ "$(intent_open "$I2")" = "false cancelled" ] || fail "drop_cancel_close_intents: drop left relaunch intent '$(intent_open "$I2")'"
+setup dci2
+ev 1 canary-passed
+run intent "$L" launch 1 TEST-1 "$T/wt-1" test-x-1 "$H40"
+I1="$(intent_id)"
+seed 2 verifying
+run intent "$L" merge 2 "$H40" "$H41"
+I2="$(intent_id)"
+ev 0 cancel-ticket
+expect_rc "drop_cancel_close_intents cancel-ticket" 0
+[ "$(intent_open "$I1")" = "false cancelled" ] || fail "drop_cancel_close_intents: cancel-ticket left launch intent '$(intent_open "$I1")'"
+[ "$(intent_open "$I2")" = "false cancelled" ] || fail "drop_cancel_close_intents: cancel-ticket left merge intent '$(intent_open "$I2")'"
+echo "ok: drop_cancel_close_intents"
+
 if [ "$FAIL" -ne 0 ]; then exit 1; fi
 echo "all ledger tests passed"

@@ -28,6 +28,8 @@
 #
 # PS_LOCK_TEST_PAUSE=<file> (tests only): `lock` pauses after its liveness check
 # until <file> exists, so a test can finish a rival takeover inside that window.
+# PS_WRITE_TEST_PAUSE=<file> (tests only): a ledger write pauses between its
+# owner check and its mv until <file> exists. Both hooks are inert unless set.
 #
 # Never calls claude or gh; free text is passed to jq with --arg, never evaluated.
 # Bash 3.2 compatible.
@@ -231,13 +233,28 @@ cmd_unlock() {
 # ------------------------------------------------------------------ writes
 
 # write_state <file> — validate, re-check the owner, then mv -f over the ledger.
+# The check and the mv are not atomic, so the holder is read again after the
+# mv: a takeover that landed in between means this coordinator has lost the
+# lock and wrote once more; it logs that and exits 40 so it stops.
 write_state() {
   LTMP="$L.tmp.$$"
   cat "$1" >"$LTMP" || die "cannot write $LTMP"
   jq -e 'type == "object"' "$LTMP" >/dev/null 2>&1 || die "refusing to write an invalid ledger"
   owner_check
+  # Test hook: hold the writer between its owner check and the mv.
+  if [ -n "${PS_WRITE_TEST_PAUSE:-}" ]; then
+    : >"$PS_WRITE_TEST_PAUSE.waiting"
+    w=0
+    while [ ! -e "$PS_WRITE_TEST_PAUSE" ] && [ "$w" -lt 200 ]; do sleep 0.05; w=$((w + 1)); done
+  fi
   mv -f "$LTMP" "$L" || die "cannot replace $L"
   LTMP=""
+  read_holder
+  if [ "${PS_OWNER:-}" != "$HSID:$HNONCE" ]; then
+    logl "write-after-takeover by ${PS_OWNER%%:*} (${CMD:-write}) holder=${HSID:-none}"
+    echo "holder=$HSID"
+    exit 40
+  fi
 }
 
 # ------------------------------------------------------------------ path / init / get
@@ -270,6 +287,9 @@ cmd_init() {
            and ((.ac // []) | type == "array"))
          and ((map(.n) | unique | length) == length)' "$issues" >/dev/null 2>&1 \
     || die "issues.json must be a non-empty array of {n, blockers, external, branch, testCmd, ac}"
+  # Every in-ticket blocker must be an issue of the set (external blockers are separate).
+  jq -e 'map(.n) as $ns | all(.[]; all((.blockers // [])[]; . as $b | $ns | index([$b]) != null))' \
+    "$issues" >/dev/null 2>&1 || die "issues.json: a blocker is not an issue of this ticket (use external)"
   tmpdir
   jq --arg key "$key" --arg tb "$tb" --arg cname "$cname" --arg csid "$csid" '
     { key: $key, ticketBranch: $tb,
