@@ -41,17 +41,35 @@ def outbox_put_to($k; $g; $to; $line):
 def outbox_put($k; $line): outbox_put_to($k; .issues[$k].gen; .issues[$k].sessionName; $line);
 # An entry's target: its `to`, else (older entries) the issue's recorded session name.
 def entry_to($s): .to // $s.issues[(.n | tostring)].sessionName;
+# Add CANCEL #k for session $to at gen $g. It supersedes k's other entries,
+# except CANCELs to other sessions: a failed issue's recorded session and its
+# open relaunch intent's session may both run (ruling CX3).
+def outbox_cancel_to($k; $g; $to):
+  . as $s
+  | .outbox = ([.outbox[] | select(.n != ($k | tonumber)
+                                   or ((.line | startswith("CANCEL #")) and entry_to($s) != $to))]
+               + [{n: ($k | tonumber), gen: $g, to: $to, line: "CANCEL #\($k)"}]);
 # CANCEL #k to the session of k's open launch/relaunch intent, if any: the
 # session may already run (a crash between launch and record). Call it before
 # the intent is closed (ruling T6-C2).
 def cancel_intent_session($k):
   ([ .intents[] | select(.open and (.n | tostring) == $k and (.kind == "launch" or .kind == "relaunch")) ]
    | first) as $in
-  | if $in == null then . else outbox_put_to($k; $in.gen; $in.sessionName; "CANCEL #\($k)") end;
-def has_launch_intent($k):
-  any(.intents[]; .open and (.n | tostring) == $k and (.kind == "launch" or .kind == "relaunch"));
+  | if $in == null then . else outbox_cancel_to($k; $in.gen; $in.sessionName) end;
+# CANCEL #k to k's recorded session if it may still run: a live status, or
+# `failed` (ruling CX3). Call it before the status changes. A blocked-on
+# issue's session got its CANCEL from stuck-accept.
+def cancel_recorded_session($k):
+  .issues[$k] as $i
+  | if islive($k) or ($i.status == "failed" and $i.sessionName != null)
+    then outbox_cancel_to($k; $i.gen; $i.sessionName) else . end;
+# A CANCEL entry of issue $k addressed to its recorded session ($s = the state).
+def recorded_cancel($s; $k):
+  .n == ($k | tonumber) and (.line | startswith("CANCEL #"))
+  and entry_to($s) == $s.issues[$k].sessionName;
+# The recorded session has ended: drop its CANCEL (an intent session's stays).
 def outbox_drop_cancel($k):
-  .outbox |= map(select((.n == ($k | tonumber) and (.line | startswith("CANCEL #"))) | not));
+  . as $s | .outbox |= map(select(recorded_cancel($s; $k) | not));
 # Clear issue $k's RESYNC/REWORK entries for gen $g (a valid message arrived).
 # A CANCEL entry stays until its session has ended (json event or reconcile).
 def outbox_clear_gen($k; $g):
@@ -233,9 +251,10 @@ elif $op == "event" then (
            | select((terminal(.value.status) | not) and .key != $n
                     and has_v(.value.blockers // []; $num))
            | .key | tonumber ] | sort | map(tostring) | join(",")) as $deps
+      | cancel_recorded_session($n)
+      | cancel_intent_session($n)
       | .issues[$n].status = "cancelled"
       | .issues[$n].reason = (if $a1 == "" then null else $a1 end)
-      | cancel_intent_session($n)
       | close_issue_intents($n; "cancelled")
       | ok(["cancelled", "dependents=\($deps)"])
     end
@@ -247,7 +266,7 @@ elif $op == "event" then (
     # so `done` drops the CANCEL only when the coordinator passes `nopid`.
     elif ($a1 == "failed" or $a1 == "stopped" or ($a1 == "done" and $a2 == "nopid"))
          and (blocked($st) or $st == "cancelled")
-         and any(.outbox[]; .n == ($n | tonumber) and (.line | startswith("CANCEL #"))) then
+         and (. as $s | any(.outbox[]; recorded_cancel($s; $n))) then
       outbox_drop_cancel($n) | ok([$st])
     else noop("observation \($a1) on #\($n) \($st)")
     end
@@ -270,9 +289,8 @@ elif $op == "event" then (
     | if ($todo | length) == 0 then noop("no issue left to cancel")
       else
         reduce $todo[] as $k (.;
-          (if has_launch_intent($k) then cancel_intent_session($k)
-           elif islive($k) then outbox_put($k; "CANCEL #\($k)")
-           else . end)
+          cancel_recorded_session($k)
+          | cancel_intent_session($k)
           | .issues[$k].status = "cancelled"
           | .issues[$k].reason = (if $a1 == "" then null else $a1 end)
           | close_issue_intents($k; "cancelled"))

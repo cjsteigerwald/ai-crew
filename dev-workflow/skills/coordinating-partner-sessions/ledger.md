@@ -77,7 +77,8 @@ was written (null if absent or ended). `merge` adds `candidateSha`, `expectedHea
   otherwise the intent closes as `launch-failed`.
 - **Outbox.** `RESYNC`, `REWORK` and `CANCEL` are queued by the write that requires them; send them
   afterwards with `ledger.sh outbox`, which prints `<n>\t<gen>\t<to>\t<line>`. Only one pending
-  entry exists per issue: a newer entry supersedes the older one. A valid next message from the
+  entry exists per issue: a newer entry supersedes the older one. The one exception: `CANCEL`s to
+  two different sessions of an issue (its recorded session and an open intent's) both stay. A valid next message from the
   partner for that generation clears its `RESYNC`/`REWORK`. A `CANCEL` stays until its session has
   ended (see `json` below).
 - **Claims.** A `DONE` is stored in `claim` on receipt, before verification. A repeated `DONE`
@@ -89,8 +90,9 @@ was written (null if absent or ended). `merge` adds `candidateSha`, `expectedHea
 - **Sessions.** `ledger.sh session <ledger> <n> <name> <session-id>` rebinds a woken partner. It
   keeps gen and status and retargets pending outbox entries to the new name.
 - **Drop and cancel.** `drop` and `cancel-ticket` close the issue's open intents (outcome
-  `cancelled`) and queue `CANCEL` to the session name of an open launch intent, since that
-  session may already run.
+  `cancelled`) and queue `CANCEL` to every session of the issue that may still run: its recorded
+  session if the issue is live or `failed`, and the session name of an open launch or relaunch
+  intent (that session may already run).
 - **Resume.** `ledger.sh reconcile <ledger> <agents.json>` settles open intents, returns every
   `verifying` issue to `done-claimed`, drops `CANCEL` entries whose session has ended, and prints
   action lines for the coordinator: `requeue <n>` (a `done-claimed` issue, in claim order),
@@ -98,8 +100,8 @@ was written (null if absent or ended). `merge` adds `candidateSha`, `expectedHea
   send `STATUS? #<n>`).
 - **`json` events.** `ledger.sh event <ledger> <n> json <failed|stopped|blocked|done|working>`
   records a `claude agents --json` observation. `failed` fails a working issue. `failed`,
-  `stopped` or `done nopid` drops a pending `CANCEL` for a `blocked-on` or `cancelled` issue whose
-  session ended. A bare `json done` keeps it and exits 10, because `done` with a `pid` is alive.
+  `stopped` or `done nopid` drops a pending `CANCEL` to the recorded session of a `blocked-on` or
+  `cancelled` issue, since that session ended (a `CANCEL` to an open intent's other session stays). A bare `json done` keeps it and exits 10, because `done` with a `pid` is alive.
 
 ## Command reference
 
@@ -197,7 +199,7 @@ Two events are not rows of the transition table:
 | `failed` | User: relaunch (`--resume`, new generation, rework budget reset to 0/3) | `launched` | `intent relaunch`, then `event <n> relaunch <id> <session-id>` |
 | `failed` | User: handled it themselves; coordinator verifies the issue branch tip is an ancestor of the ticket head | `merged` | `event <n> user-merged` |
 | `failed` | User drops the issue | `cancelled` | `event <n> drop [reason]` |
-| `pending`, `blocked-on #m`, any live, `failed` | User cancels the ticket (`CANCEL` via outbox to live partners) | `cancelled` | `event <any n> cancel-ticket [reason]` (cancels every issue not terminal) |
+| `pending`, `blocked-on #m`, any live, `failed` | User cancels the ticket (`CANCEL` via outbox to live and `failed` partners) | `cancelled` | `event <any n> cancel-ticket [reason]` (cancels every issue not terminal) |
 
 The rework count belongs to a generation: every new generation, from a launch or a relaunch,
 starts at `0/3`. When an issue becomes `cancelled`, every issue blocked on it is re-evaluated: `drop` prints

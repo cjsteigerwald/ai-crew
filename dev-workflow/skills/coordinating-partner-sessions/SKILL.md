@@ -84,7 +84,7 @@ says which call to make when; it does not restate the table.
 - **Send the outbox** after every write that may queue a message: `ledger.sh outbox "$L"` prints
   `<n>\t<gen>\t<to>\t<line>`; Deliver each `<line>` to `<to>`. An entry stays listed until the
   partner's next valid message clears it (`CANCEL`: until its session ends), and a newer entry for
-  the same issue supersedes it. Deliver each entry once per run; resume resends all of them.
+  the same issue supersedes it (two `CANCEL`s to two sessions of one issue both stay). Deliver each entry once per run; resume resends all of them.
 
 ## 1. Preflight — stop on any failure
 
@@ -327,7 +327,9 @@ Arm again after **every** consumed notice (re-register).
 `failed`; its worktree and branch stay; its dependents stay unlaunched; independent issues go on.
 Ask the user:
 
-- **Relaunch** (`--resume`, new generation, rework budget back to 0/3): Read agents, then
+- **Relaunch** (`--resume`, new generation, rework budget back to 0/3): Read agents. If the
+  issue's recorded session is still alive, first Deliver `CANCEL #<n>` to it and Arm; relaunch only
+  once a Read shows that session ended (a resumed copy beside it would work the same branch). Then
   `ledger.sh intent "$L" relaunch <n> <KEY>-<n> <worktree> <branch> <startSha> "$W/agents.json"`
   (values from `ledger.sh get`; the agents file records the old session's `pid`, so `reconcile`
   never takes that process for the relaunch), then
@@ -344,7 +346,7 @@ Ask the user:
   becomes `pending` without that blocker; then run step 6). Send the outbox.
 - **Cancel the ticket:** ask the reason, `ledger.sh event "$L" <n> cancel-ticket "<reason>"`
   (any `n`; every non-terminal issue becomes `cancelled`). Send the outbox (`CANCEL` to live
-  partners), then step 10.
+  and `failed` partners), then step 10.
 
 **`STUCK needs=#m`** (`ask-user=edge <n> <m>`):
 

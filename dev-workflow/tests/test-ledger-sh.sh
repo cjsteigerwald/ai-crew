@@ -1721,5 +1721,44 @@ run outbox "$L"
 [ "$(printf '%s\n' "$OUT" | grep -c 'CANCEL #')" = 2 ] || fail "cancel_targets_intent_session: want 2 CANCELs, got '$OUT'"
 echo "ok: cancel_targets_intent_session"
 
+# ---------------------------------------------------------------- cancel_failed_session
+# Ruling CX3: a `failed` issue's recorded session may still be alive, so drop
+# and cancel-ticket queue CANCEL to it as well.
+ksetup cfs
+klaunch 12
+seed 12 failed
+ev 12 drop "gone"
+expect_rc "cancel_failed_session drop" 0
+expect_outbox "cancel_failed_session drop" "12${TAB}1${TAB}K-12${TAB}CANCEL #12"
+ksetup cfs-t
+klaunch 9
+klaunch 12
+seed 12 failed
+ev 0 cancel-ticket "stop"
+expect_rc "cancel_failed_session cancel-ticket" 0
+expect_outbox "cancel_failed_session cancel-ticket 9" "9${TAB}1${TAB}K-9${TAB}CANCEL #9"
+expect_outbox "cancel_failed_session cancel-ticket 12" "12${TAB}1${TAB}K-12${TAB}CANCEL #12"
+# A failed session plus an open relaunch intent under another name: both get one.
+ksetup cfs-r
+klaunch 12
+seed 12 failed
+run intent "$L" relaunch 12 K-12r "$T/wt-12-r" test-x-12 "$H40"
+expect_rc "cancel_failed_session relaunch intent" 0
+ev 12 drop
+expect_outbox "cancel_failed_session relaunch drop old" "12${TAB}1${TAB}K-12${TAB}CANCEL #12"
+expect_outbox "cancel_failed_session relaunch drop new" "12${TAB}2${TAB}K-12r${TAB}CANCEL #12"
+# The recorded session ending drops only its own CANCEL.
+ev 12 json done nopid
+expect_rc "cancel_failed_session ended" 0
+run outbox "$L"
+printf '%s\n' "$OUT" | grep -Fxq "12${TAB}1${TAB}K-12${TAB}CANCEL #12" && fail "cancel_failed_session: ended session's CANCEL kept ('$OUT')"
+printf '%s\n' "$OUT" | grep -Fxq "12${TAB}2${TAB}K-12r${TAB}CANCEL #12" || fail "cancel_failed_session: intent session's CANCEL dropped ('$OUT')"
+# A never-launched issue has no session: nothing queued.
+ksetup cfs-p
+ev 13 drop
+run outbox "$L"
+[ -z "$OUT" ] || fail "cancel_failed_session: pending drop queued '$OUT'"
+echo "ok: cancel_failed_session"
+
 if [ "$FAIL" -ne 0 ]; then exit 1; fi
 echo "all ledger tests passed"
