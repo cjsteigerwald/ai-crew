@@ -96,10 +96,12 @@ says which call to make when; it does not restate the table.
      the row's `sessionId` and `pid` (agents rows carry `id`, `sessionId`, `name`, `pid`, `state`,
      `startedAt`).
   2. On the idle notice, or after a background `sleep 300` with no notice, read the noted row
-     (by its `sessionId`, else by name). Ignore the trigger if the note is closed, or if the row's
-     `pid` differs from the noted `pid`. If the row is absent or has no `pid`, go to step 3.
-     Otherwise `claude stop <id>`, where `<id>` is the `id` of that row, matched by recorded
-     `sessionId`, else by name.
+     (by its `sessionId`, else by name). Ignore the trigger if the note is closed. If the row's
+     `pid` differs from the noted `pid`, the noted process ended: close the note with no ledger
+     write, tell the user a new process now runs that session, and do not stop it without their
+     confirmation. If the row is absent or has no `pid`, go to step 3. Otherwise
+     `claude stop <id>`, where `<id>` is the `id` of that row, matched by recorded `sessionId`,
+     else by name.
   3. Read agents up to 6 times, 5 s apart. When the row has no `pid`:
      `ledger.sh event "$L" <n> json done nopid`, and close the note. For `stuck-accept`, record it
      while the issue is still `blocked-on`, which drops the `CANCEL`. That event drops only the
@@ -347,9 +349,9 @@ the next.
 After every terminal change, run `ledger.sh done "$L"`. Exit `1`: not finished, keep waiting.
 
 In both branches, before `ledger.sh unlock`, finish every open stop-pending note: its Stop a
-session reaches step 3, or the user answers its step-4 hold. Otherwise its `json done nopid`
-write after the unlock exits `40` (for example, the last issue is dropped, `done` prints
-`handback`, and its stop still waits on `sleep 300`).
+session reaches step 3, step 2 closed it, or the user answers its step-4 hold. Otherwise its
+`json done nopid` write after the unlock exits `40` (for example, the last issue is dropped,
+`done` prints `handback`, and its stop still waits on `sleep 300`).
 
 - **`cancel-ticket`** (every issue `cancelled`): treat it as cancelling the ticket. First list
   any outstanding `CANCEL` lines (`ledger.sh outbox "$L"`) to the user. Finish every open

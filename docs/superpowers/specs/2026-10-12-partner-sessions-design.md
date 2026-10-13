@@ -347,7 +347,8 @@ the user, per dependent, whether to drop it too (`cancelled`) or remove the edge
    issue whose blocker just merged.
 10. **When every issue is `merged` or `cancelled`:**
     - In both cases below, before the run lock is released, every open stop-pending note is
-      finished: its Stop a session reaches step 3, or the user answers its step-4 hold. Otherwise
+      finished: its Stop a session reaches step 3, step 2 closed it, or the user answers its
+      step-4 hold. Otherwise
       its `json done nopid` write after the release exits 40 (for example, the last issue is
       dropped, the run is ready to hand back, and its stop still waits on `sleep 300`).
     - If every issue is `cancelled`, treat it as **cancel the ticket** (Error handling): release the
@@ -523,8 +524,10 @@ options below). A relaunch starts a fresh budget.
      `notify_when_idle`. Keep a "stop pending" note per process: the issue, and the row's
      `sessionId` and `pid`.
   2. On the idle notice, or after a background `sleep 300` with no notice, read the noted row (by
-     its `sessionId`, else by name). Ignore the trigger if the note is closed, or if the row's `pid`
-     differs from the noted `pid`. If the row is absent or has no `pid`, go to step 3. Otherwise
+     its `sessionId`, else by name). Ignore the trigger if the note is closed. If the row's `pid`
+     differs from the noted `pid`, the noted process ended: close the note with no ledger write,
+     tell the user a new process now runs that session, and do not stop it without their
+     confirmation. If the row is absent or has no `pid`, go to step 3. Otherwise
      `claude stop <id>`, with `<id>` the `id` of that row, matched by recorded `sessionId`, else by
      name.
   3. Read agents up to six times, 5 s apart. When the row has no `pid`, record the observation
