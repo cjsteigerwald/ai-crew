@@ -358,7 +358,17 @@ if [ -f "$INTAKE_SKILL" ]; then
   grep -qF '## 9. Close-out' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing step 9 Close-out"
   grep -qF 'confirmed seam list' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: handoff missing the confirmed seam list"
   grep -qF 'Intake: plan skipped' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the 'Intake: plan skipped' PR line"
-  grep -qF 'Never invoke a `superpowers:*` skill at any step, even if a session hook or a skill'"'"'s description says it applies. On the Skip and plan-skip paths, implement with `dev-workflow:plan-implementation` lanes.' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: Controls missing the superpowers guard line"
+  # The guard line is the ONLY superpowers mention in the intake SKILL.md, and it must be exactly this line.
+  GUARD_LINE="$(cat <<'GUARD_EOF'
+- Never invoke a `superpowers:*` skill at any step, even if a session hook or a skill's description says it applies. On the 6.3 Skip path (no chain), implement with `dev-workflow:plan-implementation` lanes, treating the settled AC list (active AC only) and the user's go-ahead as the approved plan; on a chain's plan-skip, the chain's own Implement stage runs.
+GUARD_EOF
+)"
+  [ "$(grep -c superpowers "$INTAKE_SKILL")" = 1 ] || ifail "intaking-work-items/SKILL.md: superpowers must appear only on the guard line"
+  grep -qxF -- "$GUARD_LINE" "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: Controls missing the exact superpowers guard line"
+  grep -qF 'gh pr create --draft' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: Ship missing the draft PR command"
+  grep -qF 'nothing is pushed until the user' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: stops missing the no-push-until-the-user-says rule"
+  grep -qF 'wrong or untestable' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: stops missing the wrong-or-untestable-AC stop"
+  grep -qF '**Review base.**' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: Run log and stops missing the review base"
   grep -qF '## Run log and stops' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the Run log and stops section"
   grep -qF 'a seam is not in the AC→test table' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: stops missing the missing-seam stop"
   # D2: every run is attended; unattended mode is gone from intake and the README row.
@@ -366,10 +376,14 @@ if [ -f "$INTAKE_SKILL" ]; then
   grep -i '| `intaking-work-items` |' "$ROOT/README.md" | grep -qi unattended && ifail "README.md: intake row still mentions unattended mode"
   [ ! -e "$INTAKE_DIR/run-modes.md" ] || ifail "intaking-work-items/run-modes.md: must not exist (unattended mode removed)"
   [ ! -e "$INTAKE_DIR/chain-superpowers.md" ] || ifail "intaking-work-items/chain-superpowers.md: must not exist (superpowers chain removed)"
-  # Wide superpowers pin: nothing in skills/ or agents/ may route to superpowers, apart from
-  # the one guard line that forbids it.
-  sp_hits="$(grep -rnE 'superpowers:|recommend superpowers|chain-superpowers|to the same standard' "$ROOT/skills" "$ROOT/agents" 2>/dev/null | grep -vF 'Never invoke a `superpowers:*` skill' || true)"
-  [ -z "$sp_hits" ] || ifail "skills/ or agents/: superpowers reference found: $sp_hits"
+  # Wide superpowers pin: nothing in skills/, agents/ or the README may route to superpowers.
+  # Only a line that exactly equals the guard line is exempt.
+  sp_hits=""
+  while IFS= read -r sp_line; do
+    sp_content="${sp_line#*:}"; sp_content="${sp_content#*:}"
+    [ "$sp_content" = "$GUARD_LINE" ] || sp_hits="$sp_hits$sp_line"$'\n'
+  done < <(grep -rnE 'superpowers:|recommend superpowers|superpowers chain|chain-superpowers|to the same standard|brainstorming|writing-plans|subagent-driven|executing-plans' "$ROOT/skills" "$ROOT/agents" "$ROOT/README.md" 2>/dev/null)
+  [ -z "$sp_hits" ] || ifail "skills/, agents/ or README.md: superpowers reference found: $sp_hits"
   grep -qF 'Recommend **sdlc-process** whenever it is installed' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: step 6 does not recommend sdlc-process whenever it is installed"
   grep -qF 'mattpocock never outranks an installed' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the rule that mattpocock never outranks an installed sdlc-process"
   grep -qF 'sdlc-process / mattpocock / **Skip**' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: chain question is not sdlc-process / mattpocock / Skip"

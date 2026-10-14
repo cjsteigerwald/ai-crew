@@ -10,9 +10,9 @@ canonical: docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partn
 
 # Handoff — partner-session coordinator (2026-10-13)
 
-> Historical: superseded on 2026-10-13 (superpowers chain and unattended mode removed); see the current skill.
+> Historical: superseded by partner-sessions-hardened-2026-10-13.handoff.md; do not resume from this file.
 
-**Resume:** `continue dev-workflows`
+**Resume:** none here; use the hardened handoff.
 
 ## Goal
 

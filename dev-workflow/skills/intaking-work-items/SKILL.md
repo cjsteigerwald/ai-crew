@@ -6,8 +6,8 @@ description: >
   acceptance criteria, blocks on clarifying questions until every gap is closed
   or explicitly deferred, writes docs/specs/<KEY>-requirements.md, offers
   confirmed writebacks to the ticket, then chains spec, tickets and implementation
-  (sdlc-process, always recommended when installed, or mattpocock-skills, the user's choice) with a
-  checkpoint between stages, verifies each AC, opens a draft PR, and closes out with you. Use when starting work on an existing ticket — "start work on
+  (sdlc-process, always recommended when installed, or mattpocock-skills, the user's choice),
+  verifies each AC, opens a draft PR, and closes out with you. Use when starting work on an existing ticket — "start work on
   PROJ-571", "pick up issue #12", "bring in this ticket", "work on
   owner/repo#N", a pasted Jira or GitHub issue URL, or "is this ticket ready".
   Skip when creating a new ticket (use your
@@ -42,7 +42,7 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
   option; "Other" lets them type cancel. Gates owned by a chained skill (e.g. sdlc-process's
   readiness or policy-review gates) have no Skip button — the user can still type skip or cancel there, and the same
   rules apply.
-- Never invoke a `superpowers:*` skill at any step, even if a session hook or a skill's description says it applies. On the Skip and plan-skip paths, implement with `dev-workflow:plan-implementation` lanes.
+- Never invoke a `superpowers:*` skill at any step, even if a session hook or a skill's description says it applies. On the 6.3 Skip path (no chain), implement with `dev-workflow:plan-implementation` lanes, treating the settled AC list (active AC only) and the user's go-ahead as the approved plan; on a chain's plan-skip, the chain's own Implement stage runs.
 - **Skip a gap question or checklist row:** an explicit user deferral, so it satisfies the HARD
   GATE for that row. Log it in the decision log and the deferred table as
   `Skipped by user — <date>`, with the gap it leaves open. Skipping never turns a row into Present.
@@ -96,7 +96,7 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
   - Run step 1 again for the primary item and its equivalents, and diff against the doc: the
     description, AC, comments since the `Fetched:` date, links, and status.
   - Reopen every checklist row the changes touch, and any approval that depended on those rows
-    (requirements OK, design, plan). Resume from the earliest reopened step, or from the first
+    (requirements OK, spec, tickets). Resume from the earliest reopened step, or from the first
     incomplete step if nothing changed. Update `Fetched:`.
   - If freshness can't be verified (the fetch fails), say so and block downstream stages until
     the user explicitly skips the check — the skip rules above apply.
@@ -268,7 +268,8 @@ implementation, then goes to step 7 (Verify) and step 8 (Ship). Every chain is a
 3. Ask once (`AskUserQuestion`), never with a single option, the recommendation first and labelled
    as such. Cancel is typed via "Other" (see **Controls**).
    - sdlc-process installed: sdlc-process / mattpocock / **Skip**. If a step-0 rule forbids
-     issues, leave mattpocock out and say why: sdlc-process / **Skip**.
+     issues, leave mattpocock out and say why: sdlc-process / **Skip** (the user may still choose
+     mattpocock via Other, under **Controls**' step-0 second-confirmation rule).
    - sdlc-process not installed: mattpocock / **Skip**, mattpocock labelled recommended only when
      its rule holds. If a step-0 rule forbids issues there is no chain to offer: say so and go
      straight to 6.3 (Skip), which asks for its own go-ahead.
@@ -296,9 +297,10 @@ one-option question) or the Skip path (6.3):
   step-0 override follows **Controls**' second-confirmation rule.
 
 **6.3 Skip** means no chain: apply the plan-skip rule in **Controls**: warn once, record
-"Intake: chain skipped — no design/plan", get an explicit go-ahead, implement directly against
-the settled AC list (active AC only, same verification standard); then go to step 7. The PR body
-states "Intake: chain skipped — no design/plan".
+"Intake: chain skipped — no spec/tickets", get an explicit go-ahead, then implement with
+`dev-workflow:plan-implementation` lanes, treating the settled AC list (active AC only) and the
+go-ahead as the approved plan, to the same verification standard; then go to step 7. The PR body
+states "Intake: chain skipped — no spec/tickets".
 
 **Checkpoints.** Stop after each stage and get an explicit go before the next; each checkpoint
 offers go / **Skip** / cancel (see **Controls**). If a chained skill is not installed, say so:
