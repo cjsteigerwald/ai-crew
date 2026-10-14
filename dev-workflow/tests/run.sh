@@ -382,7 +382,7 @@ GUARD_EOF
   while IFS= read -r sp_line; do
     sp_content="${sp_line#*:}"; sp_content="${sp_content#*:}"
     [ "$sp_content" = "$GUARD_LINE" ] || sp_hits="$sp_hits$sp_line"$'\n'
-  done < <(grep -rnE 'superpowers:|recommend superpowers|superpowers chain|chain-superpowers|to the same standard|brainstorming|writing-plans|subagent-driven|executing-plans' "$ROOT/skills" "$ROOT/agents" "$ROOT/README.md" 2>/dev/null)
+  done < <(grep -rnE 'superpowers:|recommend superpowers|superpowers chain|chain-superpowers|to the same standard|brainstorming|writing-plans|subagent-driven|executing-plans|test-driven-development|verification-before-completion|finishing-a-development-branch|requesting-code-review|receiving-code-review|systematic-debugging|using-git-worktrees|dispatching-parallel-agents' "$ROOT/skills" "$ROOT/agents" "$ROOT/README.md" 2>/dev/null)
   [ -z "$sp_hits" ] || ifail "skills/, agents/ or README.md: superpowers reference found: $sp_hits"
   grep -qF 'Recommend **sdlc-process** whenever it is installed' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: step 6 does not recommend sdlc-process whenever it is installed"
   grep -qF 'mattpocock never outranks an installed' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the rule that mattpocock never outranks an installed sdlc-process"
