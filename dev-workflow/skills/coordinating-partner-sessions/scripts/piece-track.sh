@@ -47,8 +47,20 @@
 # is renamed over the tracking file, so a failed or interrupted write leaves the
 # previous file byte-identical. PIECE_TRACK_TEST_ABORT_BEFORE_RENAME=1 (tests
 # only) stops a write after the temp file is complete and before the rename.
-# There is no lock: only the owning orchestrator writes its file, one call at a
-# time; concurrent writers on one branch are not guarded against.
+#
+# Lock: every writing command (register, launch) holds one lock per tracking
+# file, the directory .<enc>.json.lock beside it (made with mkdir, which is
+# atomic; it holds the owner's pid), from before it reads the file until it
+# exits, so read, checks, compute and rename are one transaction. A busy lock
+# is waited for PIECE_TRACK_LOCK_TIMEOUT seconds (default 10, an integer >= 0),
+# then the command is refused with "lock held by pid N", writing nothing. A lock
+# whose pid is no longer running is stale and broken under a second mkdir lock
+# (.<enc>.json.lock.break), so two breakers cannot both win. The EXIT trap
+# releases the lock on every path. Read-only commands (path, launchable,
+# summary) take no lock: the rename means they always read a whole file.
+# PIECE_TRACK_TEST_HOLD_LOCK=<f> and PIECE_TRACK_TEST_LOCK_WAITING=<f> (tests
+# only): hold the lock until <f> exists (after creating <f>.held); create <f>
+# when first finding the lock busy.
 #
 # Exit: 0 done, 1 refused (reason on stderr), 2 usage or I/O error. Issue,
 # branch, agent and session strings are data: validated, passed to jq with
@@ -87,11 +99,19 @@ is_word() {
 }
 
 WTMP=""
+LOCKD=""   # the lock directory this process holds
+BREAKD=""  # the stale-lock breaker directory this process holds
 cleanup() {
   [ -n "$WTMP" ] && rm -f "$WTMP"
+  [ -n "$LOCKD" ] && rm -rf "$LOCKD"
+  [ -n "$BREAKD" ] && rm -rf "$BREAKD"
   return 0
 }
 trap cleanup EXIT
+# A signal ends the run through exit, so the EXIT trap still releases the lock.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # The shape every tracking file must have before it is read or written: exactly
 # one JSON value (jq -e alone would judge only the last value of a stream),
@@ -245,6 +265,72 @@ write_state() {
   WTMP=""
 }
 
+# ------------------------------------------------------------------ lock
+
+# pid_in <dir> — the pid recorded in <dir>/pid, or empty if none is readable.
+pid_in() {
+  p="$(cat "$1/pid" 2>/dev/null)" || p=""
+  case "$p" in ''|0*|*[!0-9]*) p="" ;; esac
+  [ "${#p}" -le 10 ] || p=""
+  printf '%s' "$p"
+}
+# alive <pid> — the process exists (ps also sees another user's process).
+alive() { kill -0 "$1" 2>/dev/null || ps -p "$1" >/dev/null 2>&1; }
+
+# break_stale <lock-dir> <dead-pid> — removes the lock if it still names
+# <dead-pid>, under the breaker lock; returns 1 if another breaker is at work.
+break_stale() {
+  mkdir "$1.break" 2>/dev/null || return 1
+  BREAKD="$1.break"
+  printf '%s\n' "$$" >"$BREAKD/pid" 2>/dev/null || true
+  # Only the dead holder or a breaker could change the lock, and neither can now.
+  [ "$(pid_in "$1")" = "$2" ] && rm -rf "$1"
+  rm -rf "$BREAKD"
+  BREAKD=""
+  return 0
+}
+
+# take_lock — acquires this tracking file's lock or exits; the EXIT trap
+# releases it. Writing commands call it before reading the tracking file.
+take_lock() {
+  lt="${PIECE_TRACK_LOCK_TIMEOUT:-10}"
+  is_count "$lt" || die "PIECE_TRACK_LOCK_TIMEOUT must be an integer >= 0: $lt"
+  mkdir -p "$SDIR" 2>/dev/null || die "cannot create $SDIR"
+  ld="$SDIR/.$ENC.json.lock"
+  ticks=0; misses=0; told=""
+  while :; do
+    if mkdir "$ld" 2>/dev/null; then
+      LOCKD="$ld"
+      printf '%s\n' "$$" >"$ld/pid" || die "cannot write $ld/pid"
+      break
+    fi
+    if [ ! -d "$ld" ]; then
+      # mkdir failed with no lock there: retry (it may just have been released),
+      # then give up as an I/O error.
+      misses=$((misses + 1))
+      [ "$misses" -lt 3 ] || die "cannot write a lock in $SDIR"
+      continue
+    fi
+    misses=0
+    holder="$(pid_in "$ld")"
+    if [ -n "$holder" ] && ! alive "$holder"; then
+      break_stale "$ld" "$holder" && continue
+    fi
+    if [ -z "$told" ] && [ -n "${PIECE_TRACK_TEST_LOCK_WAITING:-}" ]; then
+      : >"$PIECE_TRACK_TEST_LOCK_WAITING"
+      told=1
+    fi
+    [ "$ticks" -lt $((lt * 10)) ] || refuse "lock held by pid ${holder:-unknown}: $ld"
+    sleep 0.1
+    ticks=$((ticks + 1))
+  done
+  if [ -n "${PIECE_TRACK_TEST_HOLD_LOCK:-}" ]; then
+    : >"$PIECE_TRACK_TEST_HOLD_LOCK.held"
+    w=0
+    while [ ! -e "$PIECE_TRACK_TEST_HOLD_LOCK" ] && [ "$w" -lt 200 ]; do sleep 0.05; w=$((w + 1)); done
+  fi
+}
+
 # ------------------------------------------------------------------ commands
 
 cmd_path() {
@@ -352,6 +438,10 @@ case "$CMD" in
   *) usage ;;
 esac
 set_paths
+# Every command that writes takes the lock here and keeps it until it exits.
+case "$CMD" in
+  register|launch) take_lock ;;
+esac
 case "$CMD" in
   path) cmd_path "$@" ;;
   register) cmd_register "$@" ;;

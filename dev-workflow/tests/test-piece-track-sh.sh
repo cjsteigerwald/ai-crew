@@ -101,7 +101,7 @@ same() {
 
 # no_tmp <name> — no temp files left in the state dir.
 no_tmp() {
-  left="$(find "$SD" -type f ! -name '*.json' 2>/dev/null; find "$SD" -type f -name '.*' 2>/dev/null)"
+  left="$(find "$SD" -mindepth 1 \( -name '.*' -o \( -type f ! -name '*.json' \) \) 2>/dev/null)"
   if [ -z "$left" ]; then echo "ok: $1"; else fail "$1: leftover files: $left"; fi
 }
 
@@ -486,6 +486,136 @@ same "unwritable state dir leaves the old file" "$T/a-before.json" "$FA"
 no_tmp "unwritable state dir leaves no temp file"
 run --branch "a/b" launch 2 a s2 "a/b-2"
 expect "launch succeeds once writable" 0 "#2 running"
+
+# ------------------------------------------------------------------ locking
+#
+# Writers hold one lock per tracking file across the whole transaction.
+# PIECE_TRACK_TEST_HOLD_LOCK=<f> makes a writer, once it holds the lock, create
+# <f>.held and wait until <f> exists; PIECE_TRACK_TEST_LOCK_WAITING=<f> makes a
+# writer create <f> the first time it finds the lock busy. Together they order
+# two writers deterministically, without timing races.
+
+LT="$T/lock"
+mkdir -p "$LT"
+LASTPID=""
+# start <tag> <args...> — runs piece-track.sh in the background (exported hook
+# variables are inherited); LASTPID is its pid.
+start() {
+  tag="$1"; shift
+  ( cd "$W" && PIECE_TRACK_DIR="$SD" exec "$BASH" "$PT" "$@" ) >"$LT/$tag.out" 2>"$LT/$tag.err" &
+  LASTPID=$!
+}
+# finish <pid> <tag> — waits for it; sets RC, OUT, ERR.
+finish() {
+  wait "$1"
+  RC=$?
+  OUT="$(tr '\n' ' ' <"$LT/$2.out" | sed 's/ $//')"
+  ERR="$(cat "$LT/$2.err")"
+}
+# waitf <file> — waits up to 10 s for <file> to exist.
+waitf() {
+  i=0
+  while [ ! -e "$1" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  [ -e "$1" ]
+}
+# race <name> <args A...> -- <args B...> — A takes the lock and holds it; B
+# starts, finds the lock busy and waits; then A is released. Leaves RCA/OUTA/
+# ERRA and RC/OUT/ERR (for B).
+race() {
+  rname="$1"; shift
+  na=0
+  for x in "$@"; do [ "$x" = "--" ] && break; na=$((na + 1)); done
+  rm -f "$LT"/go "$LT"/go.held "$LT"/b.waiting
+  export PIECE_TRACK_TEST_HOLD_LOCK="$LT/go"
+  start a "${@:1:$na}"
+  pa=$LASTPID
+  unset PIECE_TRACK_TEST_HOLD_LOCK
+  waitf "$LT/go.held" || fail "$rname: first writer never held the lock"
+  shift "$((na + 1))"
+  export PIECE_TRACK_TEST_LOCK_WAITING="$LT/b.waiting"
+  start b "$@"
+  pb=$LASTPID
+  unset PIECE_TRACK_TEST_LOCK_WAITING
+  waitf "$LT/b.waiting" || fail "$rname: second writer never waited for the lock"
+  : >"$LT/go"
+  finish "$pa" a
+  RCA=$RC; OUTA=$OUT; ERRA=$ERR
+  finish "$pb" b
+}
+
+# Two launches race for the last slot: exactly one wins.
+track "$B" 0 2 2 '{}' "$(pc 1 running)" "$(pc 2 pending)" "$(pc 3 pending)"
+F="$(tpath "$B")"
+LK="$(dirname "$F")/.$(basename "$F").lock"
+race "last slot" --branch "$B" launch 2 a2 s2 "$B-2" -- --branch "$B" launch 3 a3 s3 "$B-3"
+[ "$RCA" -eq 0 ] && [ "$OUTA" = "#2 running" ] && echo "ok: first racing launch takes the last slot" \
+  || fail "first racing launch: rc $RCA ($OUTA) ($ERRA)"
+expect "second racing launch refuses at the cap" 1 "" "live cap reached (2 live, cap 2)"
+[ "$(jqf "$F" '[.pieces | to_entries[] | select(.value.state == "running") | .key]')" = '["1","2"]' ] \
+  && echo "ok: exactly one new running piece" || fail "last slot: $(jqf "$F" '.pieces')"
+no_tmp "no lock left after a race"
+
+# Two launches under the cap: both persist (no lost update).
+track "$B" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 pending)"
+race "under cap" --branch "$B" launch 1 a1 s1 "$B-1" -- --branch "$B" launch 2 a2 s2 "$B-2"
+[ "$RCA" -eq 0 ] || fail "under cap: first launch rc $RCA ($ERRA)"
+expect "second concurrent launch under the cap" 0 "#2 running"
+[ "$(jqf "$F" '[.pieces[] | [.state, .session]]')" = '[["running","s1"],["running","s2"]]' ] \
+  && echo "ok: concurrent launches both persist" || fail "lost update: $(jqf "$F" '.pieces')"
+
+# register waiting behind a launch sees the launch and refuses.
+track "$B" 0 3 2 '{"12":"closed"}' "$(pc 34 pending)" "$(pc 35 pending '[34]')" "$(pc 36 pending '[12,34]')"
+race "register vs launch" --branch "$B" launch 34 a34 s34 "$B-34" -- --branch "$B" register "$FIX/snapshot-chain.json"
+[ "$RCA" -eq 0 ] || fail "register vs launch: launch rc $RCA ($ERRA)"
+expect "register behind a launch refuses" 1 "" "#34 is running"
+[ "$(jqf "$F" '.pieces["34"].state')" = '"running"' ] && echo "ok: launched piece stays running" \
+  || fail "register reset the launch: $(jqf "$F" '.pieces["34"]')"
+no_tmp "no lock left after a refusal"
+
+# A stale lock (holder pid dead) is broken.
+track "$B" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 pending)"
+sh -c 'exit 0' &
+dead=$!
+wait "$dead"
+mkdir "$LK" && printf '%s\n' "$dead" >"$LK/pid"
+run --branch "$B" launch 1 a1 s1 "$B-1"
+expect "a stale lock is broken" 0 "#1 running"
+no_tmp "no lock left after breaking a stale lock"
+
+# A live holder past the timeout: refused, nothing written, its lock kept.
+sleep 30 &
+live=$!
+mkdir "$LK" && printf '%s\n' "$live" >"$LK/pid"
+cp "$F" "$T/before.json"
+export PIECE_TRACK_LOCK_TIMEOUT=1
+run --branch "$B" launch 2 a2 s2 "$B-2"
+unset PIECE_TRACK_LOCK_TIMEOUT
+expect "a live lock times out" 1 "" "lock held by pid $live"
+same "timed-out launch writes nothing" "$T/before.json" "$F"
+[ "$(cat "$LK/pid" 2>/dev/null)" = "$live" ] && echo "ok: a live holder's lock is not broken" || fail "live lock was broken"
+kill "$live" 2>/dev/null
+wait "$live" 2>/dev/null
+rm -rf "$LK"
+
+export PIECE_TRACK_LOCK_TIMEOUT=x
+run --branch "$B" launch 2 a2 s2 "$B-2"
+unset PIECE_TRACK_LOCK_TIMEOUT
+expect "bad lock timeout" 2 "" "PIECE_TRACK_LOCK_TIMEOUT"
+
+export PIECE_TRACK_TEST_ABORT_BEFORE_RENAME=1
+run --branch "$B" launch 2 a2 s2 "$B-2"
+unset PIECE_TRACK_TEST_ABORT_BEFORE_RENAME
+expect "abort with the lock held" 2 "" "aborting before rename"
+no_tmp "no lock left after the abort path"
+run --branch "$B" launch 2 a2 s2 "$B-2"
+expect "launch after the lock tests" 0 "#2 running"
+no_tmp "no lock left after a success"
+run --branch "$B" launch 2 a2 s2 "$B-2"
+expect "refusal after the lock tests" 1 "" "not pending"
+no_tmp "no lock left after a refusal"
+run --branch "$B" launch 2 "" s2 "$B-2"
+expect "usage error with the lock held" 2 "" "bad agent"
+no_tmp "no lock left after a usage error"
 
 # ------------------------------------------------------------------ git default location
 
