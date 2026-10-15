@@ -50,23 +50,22 @@
 #
 # Lock: every writing command (register, launch) holds one lock per tracking
 # file from before it reads the file until it exits, so read, checks, compute
-# and rename are one transaction. The lock is the symlink .<enc>.json.lock
-# beside the file, whose target is the holder's pid; `ln -s` publishes lock and
-# owner in one atomic step. A busy lock is retried every 0.1 s for
-# PIECE_TRACK_LOCK_TIMEOUT seconds (default 10, an integer >= 0); every attempt
-# counts, and at the end the command is refused (exit 1) with the reason, e.g.
-# "lock held by pid N" or "stale lock of dead pid N cannot be broken", writing
-# nothing. A lock (or breaker guard) whose pid is not running is stale and is
-# removed under the guard <entry>.break.<dead pid>; see the lock section for
-# why two breakers cannot both win and a live lock is never removed. The EXIT
-# trap releases what this process holds on every path. Read-only commands
-# (path, launchable, summary) take no lock: the rename means they always read a
-# whole file. Only register creates the state directory; a launch with no
-# tracking file is refused without creating it.
-# PIECE_TRACK_TEST_HOLD_LOCK=<f>, PIECE_TRACK_TEST_HOLD_BREAK=<f> and
-# PIECE_TRACK_TEST_LOCK_WAITING=<f> (tests only): once holding the lock (or a
-# breaker guard), create <f>.held and wait until <f> exists; create <f> when
-# first finding the lock busy.
+# and rename are one transaction. The lock is flock(2) on the persistent file
+# .<enc>.json.lock beside the tracking file (never deleted), taken by a perl
+# wrapper (perl with Fcntl is required; exit 2 without it) that re-execs this
+# script with the locked fd open. The kernel keeps it held while this run or
+# any child it started lives and frees it on any death, SIGKILL included. A
+# busy lock is retried every 0.1 s for PIECE_TRACK_LOCK_TIMEOUT seconds
+# (default 10, an integer >= 0), then the command is refused (exit 1) with
+# "lock busy (held by pid N)", writing nothing; a lock file that cannot be
+# opened is exit 2. PIECE_TRACK_LOCKED is internal: it marks the re-executed
+# run. Read-only commands (path, launchable, summary) take no lock: the rename
+# means they always read a whole file. Only register creates the state
+# directory; a launch with no tracking file is refused without creating it.
+# PIECE_TRACK_TEST_HOLD_LOCK=<f>, PIECE_TRACK_TEST_LOCK_WAITING=<f> and
+# PIECE_TRACK_TEST_LOCK_CHILD=<f> (tests only): once holding the lock, create
+# <f>.held and wait until <f> exists; create <f> when first finding the lock
+# busy; start a background `sleep 30` inside the lock and write its pid to <f>.
 #
 # Exit: 0 done, 1 refused (reason on stderr), 2 usage or I/O error. Issue,
 # branch, agent and session strings are data: validated, passed to jq with
@@ -105,16 +104,12 @@ is_word() {
 }
 
 WTMP=""
-LOCKD=""  # the lock symlink this process holds
-GUARD=""  # the stale-lock guard symlink this process holds
 cleanup() {
   [ -n "$WTMP" ] && rm -f "$WTMP"
-  release "$GUARD"
-  release "$LOCKD"
   return 0
 }
 trap cleanup EXIT
-# A signal ends the run through exit, so the EXIT trap still releases the lock.
+# A signal ends the run through exit, so the EXIT trap still removes the temp file.
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -273,123 +268,82 @@ write_state() {
 
 # ------------------------------------------------------------------ lock
 #
-# A lock is a symlink whose target is its holder's pid: `ln -s` creates it
-# whole or not at all, so there is no moment when a lock exists without an
-# owner. Only the holder (on exit) or a breaker removes it.
-#
-# Why breaking is safe: a breaker removes an entry E (a lock or a guard) only
-# while holding E's guard E.break.<P>, where P is the dead pid E named when the
-# breaker looked. Every breaker of that same stale E needs that same guard, so
-# at most one acts at a time. Under the guard it re-reads E and re-checks that
-# E still names P and that P is still not running. If so, nobody else can
-# remove or replace E before the rm: P is dead, and any other breaker of E
-# would need the guard we hold. If E was released and re-taken meanwhile, it
-# names a live pid (or a different one) and is left alone. A guard abandoned
-# by a dead breaker is itself a stale entry, broken the same way under its
-# own guard (E.break.<P>.break.<R>).
+# The lock is flock(2) on the persistent file .<enc>.json.lock, taken by a perl
+# wrapper that then execs this script again with the locked fd left open. The
+# kernel holds the lock while any process with that fd lives (this bash and
+# every jq, mv or rm it starts) and frees it when the last one ends, however it
+# ends (SIGKILL included): no stale locks to break, no pid checks. The lock
+# file is never deleted (deleting a flock file lets two holders lock different
+# inodes).
 
-# lock_pid <path> — the pid a lock symlink names, or empty.
-lock_pid() {
-  p="$(readlink "$1" 2>/dev/null)" || p=""
-  case "$p" in ''|0*|*[!0-9]*) p="" ;; esac
-  [ "${#p}" -le 10 ] || p=""
-  printf '%s' "$p"
+# Takes the lock (retrying every 0.1 s up to the timeout), writes its pid into
+# the lock file for refusal messages, then execs ARGV[2..] with the fd open.
+# ARGV: <lock file> <timeout seconds> <command...>; arguments are never parsed
+# as code.
+LOCKPL='
+my ($lock, $timeout, @cmd) = @ARGV;
+my $fh;
+unless (open($fh, ">>", $lock)) {
+  print STDERR "piece-track.sh: cannot write lock $lock: $!\n";
+  exit 2;
 }
-# alive <pid> — the process exists (ps also sees another user's process).
-alive() { kill -0 "$1" 2>/dev/null || ps -p "$1" >/dev/null 2>&1; }
-# release <path> — removes a lock symlink if this process holds it.
-release() {
-  [ -n "$1" ] && [ "$(lock_pid "$1")" = "$$" ] && rm -f "$1"
-  return 0
+my ($tries, $told) = (0, 0);
+until (flock($fh, LOCK_EX | LOCK_NB)) {
+  my $w = $ENV{PIECE_TRACK_TEST_LOCK_WAITING} // "";
+  if (!$told && $w ne "") { open(my $t, ">", $w) and close($t); $told = 1; }
+  if ($tries >= $timeout * 10) {
+    my $holder = "";
+    if (open(my $r, "<", $lock)) { $holder = <$r> // ""; chomp $holder; }
+    print STDERR "piece-track.sh: lock busy"
+      . ($holder =~ /^[0-9]+$/ ? " (held by pid $holder)" : "") . ": $lock\n";
+    exit 1;
+  }
+  select(undef, undef, undef, 0.1);
+  $tries++;
 }
+truncate($fh, 0);
+syswrite($fh, "$$\n");
+my $flags = fcntl($fh, F_GETFD, 0);
+fcntl($fh, F_SETFD, $flags & ~FD_CLOEXEC) or do {
+  print STDERR "piece-track.sh: cannot keep the lock open across exec: $!\n";
+  exit 2;
+};
+$ENV{PIECE_TRACK_LOCKED} = $lock;
+exec { $cmd[0] } @cmd;
+print STDERR "piece-track.sh: cannot exec $cmd[0]: $!\n";
+exit 2;
+'
 
-# try_break <entry> <dead-pid> — removes <entry> if it still names <dead-pid>
-# and that pid is still not running, under the guard <entry>.break.<dead-pid>.
-# Returns 0 on progress (something stale was removed, or <entry> changed), 1
-# when a live breaker holds the guard, 2 when it cannot be broken (the guard
-# cannot be made, or the removal fails).
-try_break() {
-  local e="$1" p="$2" g="$1.break.$2" gp r w
-  if ln -sn "$$" "$g" 2>/dev/null; then
-    GUARD="$g"
-    if [ -n "${PIECE_TRACK_TEST_HOLD_BREAK:-}" ]; then
-      : >"$PIECE_TRACK_TEST_HOLD_BREAK.held"
+# with_lock [--create] — makes this run hold the tracking file's lock. The
+# first call re-execs this script under the perl wrapper (and does not
+# return); in the re-executed run it checks the lock is the one this run needs
+# and returns. Without --create a missing state directory is refused as a
+# missing tracking file, so a refused command creates nothing.
+with_lock() {
+  lockf="$SDIR/.$ENC.json.lock"
+  if [ -n "${PIECE_TRACK_LOCKED:-}" ]; then
+    [ "$PIECE_TRACK_LOCKED" = "$lockf" ] || die "holding lock $PIECE_TRACK_LOCKED, but this run needs $lockf"
+    unset PIECE_TRACK_LOCKED
+    if [ -n "${PIECE_TRACK_TEST_LOCK_CHILD:-}" ]; then
+      sleep 30 &
+      printf '%s\n' "$!" >"$PIECE_TRACK_TEST_LOCK_CHILD"
+    fi
+    if [ -n "${PIECE_TRACK_TEST_HOLD_LOCK:-}" ]; then
+      : >"$PIECE_TRACK_TEST_HOLD_LOCK.held"
       w=0
-      while [ ! -e "$PIECE_TRACK_TEST_HOLD_BREAK" ] && [ "$w" -lt 200 ]; do sleep 0.05; w=$((w + 1)); done
+      while [ ! -e "$PIECE_TRACK_TEST_HOLD_LOCK" ] && [ "$w" -lt 200 ]; do sleep 0.05; w=$((w + 1)); done
     fi
-    r=0
-    if [ "$(lock_pid "$e")" = "$p" ] && ! alive "$p"; then
-      rm -f "$e" 2>/dev/null || r=2
-    fi
-    release "$g"
-    GUARD=""
-    return "$r"
+    return 0
   fi
-  if [ ! -L "$g" ]; then
-    # No guard there and none could be made: released just now, or the
-    # directory is not writable, in which case nothing stale can be removed.
-    [ -w "$(dirname "$g")" ] && return 0
-    return 2
-  fi
-  gp="$(lock_pid "$g")"
-  if [ -n "$gp" ] && ! alive "$gp"; then
-    try_break "$g" "$gp"
-    return $?
-  fi
-  return 1
-}
-
-# take_lock [--create] — acquires this tracking file's lock or exits; the EXIT
-# trap releases it. Writing commands call it before reading the tracking file.
-# Without --create a missing state directory is refused as a missing tracking
-# file, so a refused command creates nothing.
-take_lock() {
   lt="${PIECE_TRACK_LOCK_TIMEOUT:-10}"
   is_count "$lt" || die "PIECE_TRACK_LOCK_TIMEOUT must be an integer >= 0: $lt"
   if [ ! -d "$SDIR" ]; then
     [ "${1:-}" = "--create" ] || need_state
     mkdir -p "$SDIR" 2>/dev/null || die "cannot create $SDIR"
   fi
-  ld="$SDIR/.$ENC.json.lock"
-  # Every attempt counts: at most lt*10 waiting attempts, plus a few retries
-  # straight after breaking something stale.
-  ticks=0; told=""
-  while :; do
-    if ln -sn "$$" "$ld" 2>/dev/null; then
-      LOCKD="$ld"
-      break
-    fi
-    holder="$(lock_pid "$ld")"
-    why="lock held by pid ${holder:-unknown}: $ld"
-    progress=""
-    if [ ! -L "$ld" ] && [ ! -e "$ld" ]; then
-      [ -w "$SDIR" ] || die "cannot write a lock in $SDIR"
-      progress=1   # released just now
-    elif [ -n "$holder" ] && ! alive "$holder"; then
-      try_break "$ld" "$holder"
-      case "$?" in
-        0) progress=1 ;;
-        1) why="stale lock of dead pid $holder is being broken by another writer: $ld" ;;
-        *) why="stale lock of dead pid $holder cannot be broken: $ld" ;;
-      esac
-    fi
-    ticks=$((ticks + 1))
-    if [ -n "$progress" ]; then
-      [ "$ticks" -le $((lt * 10 + 10)) ] || refuse "$why"
-      continue
-    fi
-    if [ -z "$told" ] && [ -n "${PIECE_TRACK_TEST_LOCK_WAITING:-}" ]; then
-      : >"$PIECE_TRACK_TEST_LOCK_WAITING"
-      told=1
-    fi
-    [ "$ticks" -le $((lt * 10)) ] || refuse "$why"
-    sleep 0.1
-  done
-  if [ -n "${PIECE_TRACK_TEST_HOLD_LOCK:-}" ]; then
-    : >"$PIECE_TRACK_TEST_HOLD_LOCK.held"
-    w=0
-    while [ ! -e "$PIECE_TRACK_TEST_HOLD_LOCK" ] && [ "$w" -lt 200 ]; do sleep 0.05; w=$((w + 1)); done
-  fi
+  perl -MFcntl -e 1 >/dev/null 2>&1 || die "perl with Fcntl is required to lock $lockf"
+  exec perl -MFcntl=:flock,F_GETFD,F_SETFD,FD_CLOEXEC -e "$LOCKPL" \
+    "$lockf" "$lt" "$BASH" "$0" "${ARGS[@]}"
 }
 
 # ------------------------------------------------------------------ commands
@@ -485,6 +439,7 @@ cmd_summary() {
 
 # ------------------------------------------------------------------ main
 
+ARGS=("$@")  # re-passed verbatim when a writing command re-execs under the lock
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --branch) [ "$#" -ge 2 ] || usage; BR="$2"; [ -n "$BR" ] || usage; shift 2 ;;
@@ -501,8 +456,8 @@ esac
 set_paths
 # Every command that writes takes the lock here and keeps it until it exits.
 case "$CMD" in
-  register) take_lock --create ;;
-  launch) take_lock ;;
+  register) with_lock --create ;;
+  launch) with_lock ;;
 esac
 case "$CMD" in
   path) cmd_path "$@" ;;

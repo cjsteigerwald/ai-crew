@@ -99,9 +99,11 @@ same() {
   if cmp -s "$2" "$3"; then echo "ok: $1"; else fail "$1: file changed"; fi
 }
 
-# no_tmp <name> — no temp files left in the state dir.
+# no_tmp <name> — nothing left in the state dir but tracking files and their
+# persistent lock files (.<enc>.json.lock, regular files).
 no_tmp() {
-  left="$(find "$SD" -mindepth 1 \( -name '.*' -o \( -type f ! -name '*.json' \) \) 2>/dev/null)"
+  left="$(find "$SD" -mindepth 1 ! \( -type f -name '.*.json.lock' \) \
+            \( -name '.*' -o ! -type f -o ! -name '*.json' \) 2>/dev/null)"
   if [ -z "$left" ]; then echo "ok: $1"; else fail "$1: leftover files: $left"; fi
 }
 
@@ -447,7 +449,7 @@ run --branch "a-b" register "$T/sb.json"
 expect "register a-b" 0 "registered 1 pieces for a-b"
 FA="$(tpath "a/b")"; FB="$(tpath "a-b")"
 [ "$FA" != "$FB" ] && [ -f "$FA" ] && [ -f "$FB" ] && echo "ok: a/b and a-b have separate files" || fail "a/b and a-b share $FA"
-[ "$(find "$SD" -type f | wc -l | tr -d ' ')" = "2" ] || fail "expected 2 tracking files: $(find "$SD" -type f)"
+[ "$(find "$SD" -type f -name '*.json' ! -name '.*' | wc -l | tr -d ' ')" = "2" ] || fail "expected 2 tracking files: $(find "$SD" -type f)"
 cp "$FB" "$T/b-before.json"
 run --branch "a/b" launch 1 a s "a/b-1"
 expect "launch on a/b" 0 "#1 running"
@@ -575,134 +577,86 @@ expect "register behind a launch refuses" 1 "" "#34 is running"
   || fail "register reset the launch: $(jqf "$F" '.pieces["34"]')"
 no_tmp "no lock left after a refusal"
 
-# The lock is a symlink whose target is the holder's pid; a stale-lock breaker
-# first takes the guard <lock>.break.<dead pid>, also a pid symlink.
-# PIECE_TRACK_TEST_HOLD_BREAK=<f> makes a breaker, once it holds a guard,
-# create <f>.held and wait until <f> exists.
 
-# dead_pid — the pid of a process that has exited.
-dead_pid() {
-  sh -c 'exit 0' &
-  dp=$!
-  wait "$dp"
-  printf '%s' "$dp"
-}
-# hold_start <hook-var> <tag> <args...> — starts a writer with <hook-var>=$LT/go
-# and waits until it reports it holds the lock or guard; LASTPID is its pid.
+# hold_start <tag> <args...> — starts a writer that, once it holds the lock,
+# waits until $LT/go exists; returns when it holds the lock. LASTPID is its pid.
 hold_start() {
-  hv="$1"; shift
   rm -f "$LT/go" "$LT/go.held" "$LT/b.waiting"
-  export "$hv=$LT/go"
+  export PIECE_TRACK_TEST_HOLD_LOCK="$LT/go"
   start "$@"
-  unset "$hv"
-  waitf "$LT/go.held" || fail "$1: never reached its hold point"
+  unset PIECE_TRACK_TEST_HOLD_LOCK
+  waitf "$LT/go.held" || fail "$1: never held the lock"
 }
 
-# A holder killed with SIGKILL inside the lock leaves a pid-named lock that a
-# later writer breaks, with no manual cleanup.
+# A live holder past the timeout: refused with its pid, nothing written; the
+# holder then finishes normally.
 track "$B" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 pending)"
-hold_start PIECE_TRACK_TEST_HOLD_LOCK k --branch "$B" launch 1 a1 s1 "$B-1"
-pk=$LASTPID
-[ "$(readlink "$LK")" = "$pk" ] && echo "ok: the lock names its holder's pid" || fail "lock target: $(readlink "$LK")"
-kill -9 "$pk"; wait "$pk" 2>/dev/null
-run --branch "$B" launch 2 a2 s2 "$B-2"
-expect "a writer after a killed holder succeeds" 0 "#2 running"
-[ "$(jqf "$F" '[.pieces[] | .state]')" = '["pending","running"]' ] || fail "killed holder wrote: $(jqf "$F" '.pieces')"
-no_tmp "a killed holder's lock is cleaned up"
-
-# A breaker killed with SIGKILL while holding its guard: a later writer breaks
-# the abandoned guard, then the stale lock, with no manual cleanup.
-track "$B" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 pending)"
-d="$(dead_pid)"
-ln -s "$d" "$LK"
-hold_start PIECE_TRACK_TEST_HOLD_BREAK k --branch "$B" launch 1 a1 s1 "$B-1"
-pk=$LASTPID
-[ "$(readlink "$LK.break.$d")" = "$pk" ] && echo "ok: the breaker holds the guard for the dead pid" \
-  || fail "guard: $(ls -la "$SD")"
-kill -9 "$pk"; wait "$pk" 2>/dev/null
-run --branch "$B" launch 2 a2 s2 "$B-2"
-expect "a writer after a killed breaker succeeds" 0 "#2 running"
-no_tmp "a killed breaker's guard is cleaned up"
-
-# Two breakers of one stale lock: the second waits on the guard and does not
-# remove the lock; the first breaks it; both launches then land.
-track "$B" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 pending)"
-d="$(dead_pid)"
-ln -s "$d" "$LK"
-hold_start PIECE_TRACK_TEST_HOLD_BREAK a --branch "$B" launch 1 a1 s1 "$B-1"
-pa=$LASTPID
-export PIECE_TRACK_TEST_LOCK_WAITING="$LT/b.waiting"
-start b --branch "$B" launch 2 a2 s2 "$B-2"
-pb=$LASTPID
-unset PIECE_TRACK_TEST_LOCK_WAITING
-waitf "$LT/b.waiting" || fail "second breaker never waited"
-[ "$(readlink "$LK")" = "$d" ] && echo "ok: the second breaker leaves the stale lock alone" || fail "second breaker removed the lock"
-[ "$(readlink "$LK.break.$d")" = "$pa" ] && echo "ok: the first breaker keeps its guard" || fail "guard taken over"
-: >"$LT/go"
-finish "$pa" a
-expect "first breaker launches" 0 "#1 running"
-finish "$pb" b
-expect "second breaker launches after it" 0 "#2 running"
-no_tmp "no lock or guard left after two breakers"
-
-# The stale lock is replaced by a live holder while the breaker holds its
-# guard: the breaker re-checks, leaves the live lock, and times out.
-track "$B" 0 3 2 '{}' "$(pc 1 pending)"
 cp "$F" "$T/before.json"
-d="$(dead_pid)"
-ln -s "$d" "$LK"
-sleep 30 &
-live=$!
-export PIECE_TRACK_LOCK_TIMEOUT=1
-hold_start PIECE_TRACK_TEST_HOLD_BREAK a --branch "$B" launch 1 a1 s1 "$B-1"
+hold_start a --branch "$B" launch 1 a1 s1 "$B-1"
 pa=$LASTPID
-unset PIECE_TRACK_LOCK_TIMEOUT
-rm -f "$LK" && ln -s "$live" "$LK"
-: >"$LT/go"
-finish "$pa" a
-expect "a breaker facing a re-taken lock times out" 1 "" "lock held by pid $live"
-[ "$(readlink "$LK")" = "$live" ] && echo "ok: the breaker leaves the re-taken live lock" || fail "live lock removed"
-same "breaker facing a live lock writes nothing" "$T/before.json" "$F"
-kill "$live" 2>/dev/null
-wait "$live" 2>/dev/null
-rm -f "$LK"
-no_tmp "no guard left after the re-taken lock"
-
-# A stale lock this user cannot remove ends in a bounded refusal.
-d="$(dead_pid)"
-ln -s "$d" "$LK"
-chmod 555 "$SD"
-t0="$(date +%s)"
-export PIECE_TRACK_LOCK_TIMEOUT=1
-run --branch "$B" launch 1 a1 s1 "$B-1"
-unset PIECE_TRACK_LOCK_TIMEOUT
-t1="$(date +%s)"
-chmod 755 "$SD"
-expect "an unremovable stale lock is refused" 1 "" "stale lock of dead pid $d cannot be broken"
-[ $((t1 - t0)) -le 4 ] && echo "ok: the refusal is bounded ($((t1 - t0)) s)" || fail "unremovable stale lock took $((t1 - t0)) s"
-rm -f "$LK"
-
-# A stale lock (holder pid dead) is broken.
-track "$B" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 pending)"
-ln -s "$(dead_pid)" "$LK"
-run --branch "$B" launch 1 a1 s1 "$B-1"
-expect "a stale lock is broken" 0 "#1 running"
-no_tmp "no lock left after breaking a stale lock"
-
-# A live holder past the timeout: refused, nothing written, its lock kept.
-sleep 30 &
-live=$!
-ln -s "$live" "$LK"
-cp "$F" "$T/before.json"
 export PIECE_TRACK_LOCK_TIMEOUT=1
 run --branch "$B" launch 2 a2 s2 "$B-2"
 unset PIECE_TRACK_LOCK_TIMEOUT
-expect "a live lock times out" 1 "" "lock held by pid $live"
+expect "a live lock times out" 1 "" "lock busy (held by pid $pa)"
 same "timed-out launch writes nothing" "$T/before.json" "$F"
-[ "$(readlink "$LK")" = "$live" ] && echo "ok: a live holder's lock is not broken" || fail "live lock was broken"
-kill "$live" 2>/dev/null
-wait "$live" 2>/dev/null
-rm -f "$LK"
+: >"$LT/go"
+finish "$pa" a
+expect "the holder finishes after another writer timed out" 0 "#1 running"
+[ -f "$LK" ] && [ ! -L "$LK" ] && echo "ok: the lock is a persistent regular file" || fail "lock file: $(ls -la "$SD")"
+no_tmp "only the lock file is left after a timeout"
+
+# A holder killed with SIGKILL inside the lock: the kernel frees the lock, and
+# the next writer gets it at once with no cleanup.
+track "$B" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 pending)"
+hold_start k --branch "$B" launch 1 a1 s1 "$B-1"
+pk=$LASTPID
+kill -9 "$pk"; wait "$pk" 2>/dev/null
+t0="$(date +%s)"
+run --branch "$B" launch 2 a2 s2 "$B-2"
+t1="$(date +%s)"
+expect "a writer after a killed holder succeeds" 0 "#2 running"
+[ $((t1 - t0)) -le 2 ] && echo "ok: the killed holder's lock was free at once" || fail "waited $((t1 - t0)) s after a killed holder"
+[ "$(jqf "$F" '[.pieces[] | .state]')" = '["pending","running"]' ] || fail "killed holder wrote: $(jqf "$F" '.pieces')"
+no_tmp "no cleanup needed after a killed holder"
+
+# A killed holder whose child still has the lock fd open keeps the lock held:
+# writers time out until that child ends, then succeed. (A breaker or writer
+# killed while its rm or mv runs on is the same case.)
+# PIECE_TRACK_TEST_LOCK_CHILD=<f> makes a writer, inside the lock, start a
+# background `sleep 30` and write its pid to <f>.
+track "$B" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 pending)"
+rm -f "$LT/child.pid"
+export PIECE_TRACK_TEST_LOCK_CHILD="$LT/child.pid"
+hold_start k --branch "$B" launch 2 a2 s2 "$B-2"
+unset PIECE_TRACK_TEST_LOCK_CHILD
+pk=$LASTPID
+waitf "$LT/child.pid" || fail "lock child never started"
+cpid="$(cat "$LT/child.pid")"
+kill -9 "$pk"; wait "$pk" 2>/dev/null
+cp "$F" "$T/before.json"
+export PIECE_TRACK_LOCK_TIMEOUT=1
+run --branch "$B" launch 1 a1 s1 "$B-1"
+unset PIECE_TRACK_LOCK_TIMEOUT
+expect "a surviving child keeps the lock" 1 "" "lock busy"
+same "a launch blocked by the child writes nothing" "$T/before.json" "$F"
+kill "$cpid" 2>/dev/null
+i=0
+while kill -0 "$cpid" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+run --branch "$B" launch 1 a1 s1 "$B-1"
+expect "a writer succeeds once the child is gone" 0 "#1 running"
+
+# perl with Fcntl is required for the lock.
+mkdir -p "$T/fakebin"
+printf '#!/bin/sh\nexit 1\n' >"$T/fakebin/perl"
+chmod +x "$T/fakebin/perl"
+cp "$F" "$T/before.json"
+OPATH="$PATH"
+export PATH="$T/fakebin:$PATH"
+run --branch "$B" launch 2 a2 s2 "$B-2"
+export PATH="$OPATH"
+expect "no usable perl" 2 "" "perl with Fcntl is required"
+same "no usable perl writes nothing" "$T/before.json" "$F"
+
 
 export PIECE_TRACK_LOCK_TIMEOUT=x
 run --branch "$B" launch 2 a2 s2 "$B-2"
