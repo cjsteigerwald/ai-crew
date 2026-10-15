@@ -87,19 +87,19 @@ readiness, policy-review or publication gates.
    **After code-review completes, before Verify:** check the diff and tests against the active AC
    list, and flag back to the user any change that implements a non-active AC.
 
-**Parallel partners (stage 5 option).** Ask this only when two or more issues are published, and
+**Parallel pieces (stage 5 option).** Ask this only when two or more issues are published, and
 ask once, before the router hand-off, whether to run the published issues
-one after another or parallel partners. One after another is the path above, unchanged. Parallel
-partners invokes
-`dev-workflow:coordinating-partner-sessions` with the ticket key, the ticket branch, the issue
-links and the settled AC list; the coordinator then owns stage 5 and returns to SKILL.md step 7.
+one after another or parallel pieces. One after another is the path above, unchanged. Parallel
+pieces invokes
+`dev-workflow:orchestrating-pieces` with the ticket key, the ticket branch, the issue
+links and the settled AC list; the orchestrator then owns stage 5 and returns to SKILL.md step 7.
 Record the choice in the Run log. Its hand-back contract, which steps 7 and 8 rely on:
 
 - The AC of a cancelled issue are deferred in the settled AC list, with the user's reason.
 - Rule: closing keywords and Refs cover merged issues only: `Closes` where the repo lets a merge close
   the issue, otherwise `Refs owner/repo#N` (step 8's rule). Cancelled issues are listed as not
   delivered, with their reason.
-- The `ledger.sh summary` table goes into the PR body.
+- The `piece-track.sh summary` table goes into the PR body.
 - A `cancel-ticket` outcome returns no hand-back: intake stops at stage 5 and reports (Cancel
   below). It does not continue to step 7.
 
@@ -121,6 +121,7 @@ The **Controls** in SKILL.md apply, with these specifics:
   the first incomplete stage; AC rows reopened by the diff invalidate the tickets that cite them —
   regenerate those through `sdlc-process:to-tickets` (again with per-issue confirmation) and record
   the superseded ones.
-  Re-invoke `dev-workflow:coordinating-partner-sessions` (it reconciles) only when stage 5 is the
-  first incomplete stage and `$(git rev-parse --git-common-dir)/partner-sessions/<KEY>/ledger.json`
-  exists. A finished or cancelled run leaves its ledger in git metadata (cleanup is out of scope).
+  Re-invoke `dev-workflow:orchestrating-pieces` (it reconciles) only when stage 5 is the
+  first incomplete stage and the tracking file at `$(git rev-parse --git-common-dir)/piece-tracking/`
+  (`piece-track.sh path` prints it) exists. A finished or cancelled run leaves its tracking file in
+  git metadata (cleanup is out of scope).

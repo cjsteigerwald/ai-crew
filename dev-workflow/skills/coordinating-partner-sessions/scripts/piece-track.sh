@@ -60,7 +60,10 @@
 # Transitions (anything not listed is refused with exit 1, nothing written;
 # a report or mark that changes nothing exits 0 and leaves the file
 # byte-identical):
-#   launch    pending                -> running
+#   launch    pending, failed        -> running (a failed piece relaunches: agent,
+#                                       session, branch and base are re-recorded; sha,
+#                                       needs and reason are cleared; the caps and the
+#                                       uniqueness checks apply as for a first launch)
 #   STARTED   running, done, stuck   -> unchanged (a late STARTED never regresses)
 #   DONE      running, done, stuck   -> done, sha set (a new sha replaces the old:
 #                                       the resync re-report); needs, reason cleared
@@ -93,7 +96,7 @@
 # external blockers are all closed. Live pieces are running, done or stuck (a
 # session not yet ended). At most liveCap - live are listed, lowest issue first,
 # and none when depth >= depthCap. launch refuses (writing nothing) an unknown
-# issue, a piece not pending, a piece branch equal to the orchestrator's branch,
+# issue, a piece neither pending nor failed, a piece branch equal to the orchestrator's branch,
 # a session id or piece branch already recorded on another piece, a blocked
 # piece, and a launch at either cap; it does not insist on launchable's
 # lowest-first order.
@@ -692,7 +695,7 @@ cmd_launch() {
     | ([.pieces | to_entries | sort_by(.key | tonumber)[]
         | select(.key != $i and .value.branch == $pb) | .key][0]) as $dpb
     | if $p == null then "unknown issue #\($i)"
-      elif $p.state != "pending" then "#\($i) is \($p.state), not pending"
+      elif $p.state != "pending" and $p.state != "failed" then "#\($i) is \($p.state), not pending or failed"
       elif $p.unverified != null
         then "#\($i) has an unverified contained tip \($p.unverified.tip) on \($p.unverified.branch): accept or drop it"
       elif $pb == .branch then "piece branch \($pb) is the orchestrator'"'"'s branch"
@@ -705,7 +708,7 @@ cmd_launch() {
       else empty end' "$FILE")" || die "cannot read $FILE"
   [ -z "$reason" ] || refuse "$reason"
   write_state --arg i "$issue" --arg a "$agent" --arg sid "$sid" --arg pb "$pbr" --arg bs "$base" \
-    '.pieces[$i] += {state: "running", agent: $a, session: $sid, branch: $pb, base: $bs}' "$FILE"
+    '.pieces[$i] |= (del(.sha, .needs, .reason) + {state: "running", agent: $a, session: $sid, branch: $pb, base: $bs})' "$FILE"
   echo "#$issue running"
 }
 
