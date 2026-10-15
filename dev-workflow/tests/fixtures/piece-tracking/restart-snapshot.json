@@ -1,0 +1,13 @@
+{
+  "pieces": [
+    {"issue": 33}, {"issue": 34},
+    {"issue": 35, "blocked_by": [34]},
+    {"issue": 36, "blocked_by": [34, 12]},
+    {"issue": 37}, {"issue": 38}, {"issue": 39},
+    {"issue": 40, "blocked_by": [35]},
+    {"issue": 41},
+    {"issue": 42, "blocked_by": [34]},
+    {"issue": 43}, {"issue": 44}, {"issue": 45}, {"issue": 46}
+  ],
+  "external": {"12": "closed", "13": "open"}
+}

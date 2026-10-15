@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Behavioral test for coordinating-partner-sessions/scripts/piece-track.sh:
 # register, launchable, launch, record, merged, failed, dropped, finished,
-# summary and path, driven by JSON fixtures with
+# summary, reconcile and path, driven by JSON fixtures with
 # the CLI called as a subprocess. Runnable standalone.
 #
 # Bash 3.2 compatible: no associative arrays, no `mapfile`, no `${var,,}`.
@@ -1053,6 +1053,271 @@ run --branch "$B" launch 2 "" s2 "$B-2"
 expect "usage error with the lock held" 2 "" "bad agent"
 no_tmp "no lock left after a usage error"
 
+# ------------------------------------------------------------------ reconcile
+#
+# Every reconcile run below has claude, gh and git stubs first on PATH. claude
+# and gh fail loudly; git fails loudly for anything but check-ref-format (the
+# pure branch-name check set_paths makes), so no run reads live sessions,
+# GitHub or repository state: the facts come only from the fixtures.
+
+REALGIT="$(command -v git)"
+STUB="$T/stubbin"
+STUBLOG="$T/stub.log"
+mkdir -p "$STUB"
+for c in claude gh; do
+  printf '#!/bin/sh\necho "%s $*" >>"%s"\necho "stub: live %s call" >&2\nexit 99\n' "$c" "$STUBLOG" "$c" >"$STUB/$c"
+done
+printf '#!/bin/sh\n[ "$1" = check-ref-format ] && exec "%s" "$@"\necho "git $*" >>"%s"\necho "stub: live git call" >&2\nexit 99\n' \
+  "$REALGIT" "$STUBLOG" >"$STUB/git"
+chmod +x "$STUB/claude" "$STUB/gh" "$STUB/git"
+OPATH="$PATH"
+export PATH="$STUB:$PATH"
+for c in "claude agents --json" "gh issue view 1" "git status"; do
+  # shellcheck disable=SC2086 # split on purpose: a command and its arguments
+  (cd "$W" && $c) >/dev/null 2>&1
+done
+[ "$(wc -l <"$STUBLOG" | tr -d ' ')" = 3 ] && echo "ok: the claude, gh and git stubs fail loudly" \
+  || fail "stubs did not log: $(cat "$STUBLOG")"
+: >"$STUBLOG"
+
+# rec <branch> <sessions> <snapshot> <tips> [flags...] — reconcile with the
+# name prefix a- (the agent names in the fixtures are a-<issue>).
+rec() {
+  run --branch "$1" reconcile --sessions "$2" --snapshot "$3" --tips "$4" --name-prefix a- "${@:5}"
+}
+RS="$FIX/restart-sessions.json"
+RN="$FIX/restart-snapshot.json"
+RT="$FIX/restart-tips.json"
+# states <file> — "issue=state ..." in issue order.
+states() { jq -r '[.pieces | to_entries | sort_by(.key | tonumber)[] | "\(.key)=\(.value.state)"] | join(" ")' "$1"; }
+# unknowns — the unknown-session lines of the last run as "#<issue> <name>".
+unknowns() {
+  printf '%s\n' "$RAW" | sed -n 's/^unknown-session \(#[0-9]*\) session=[^ ]* name=\(.*\)$/\1 \2/p' | tr '\n' ' ' | sed 's/ $//'
+}
+
+# A stale file after a restart: every rule at once.
+F="$(tpath "$B")"
+cp "$FIX/restart-track.json" "$F"
+rec "$B" "$RS" "$RN" "$RT"
+want="external #13 added (open)
+#33 running -> merged (branch tip contained)
+#34 done -> merged (branch tip contained)
+#36 blocked by #12 -> #12, #34
+#36 running -> failed (session ended)
+#39 running -> failed (session ended)
+#41 stuck -> failed (session ended)
+#42 added (pending)
+#43 failed -> running (session live)
+unknown-session #39 session=sess-39 name=a-39
+unknown-session #42 session=sess-42 name=a-42
+reconciled feat/orch: pending 2, running 3, done 2, merged 3, stuck 1, failed 3, dropped 1; unknown sessions 2"
+[ "$RC" -eq 0 ] && [ "$RAW" = "$want" ] && echo "ok: reconcile a stale file" \
+  || fail "reconcile a stale file: rc $RC, stdout:
+$RAW
+stderr: $ERR"
+[ "$(states "$F")" = "32=pending 33=merged 34=merged 35=running 36=failed 37=done 38=done 39=failed 40=stuck 41=failed 42=pending 43=running 44=dropped 45=merged 46=running" ] \
+  && echo "ok: reconciled states" || fail "reconciled states: $(states "$F")"
+case "$ERR" in *"#32 is not in the snapshot; kept as pending"*) echo "ok: a piece missing from the snapshot is reported and kept" ;;
+  *) fail "no report for #32: $ERR" ;; esac
+case "$ERR" in *"#46 tip fact is for branch other/46, recorded p/46: ignored"*) echo "ok: a tip for another branch is reported and ignored" ;;
+  *) fail "no tip mismatch report for #46: $ERR" ;; esac
+# AC1: a contained tip is merged even with a live session; the tip becomes the sha.
+[ "$(jqf "$F" '.pieces["33"] | [.state, .branch, .sha]')" = '["merged","p/33","3333333333333333333333333333333333333333"]' ] \
+  && echo "ok: AC1 a contained tip overrides running" || fail "AC1 #33: $(jqf "$F" '.pieces["33"]')"
+# AC2: a live recorded session keeps running (matched on sessionId for #35, on id
+# for the others); a done piece stays done whether its session is live (#37) or
+# ended (#38); a stuck piece with a live session stays stuck with its reason.
+[ "$(jqf "$F" '[.pieces["35","37","38"] | .state]')" = '["running","done","done"]' ] \
+  && echo "ok: AC2 live running stays running, done stays done" || fail "AC2: $(jqf "$F" '.pieces')"
+[ "$(jqf "$F" '.pieces["40"] | [.state, .reason]')" = '["stuck","cannot reach the test db"]' ] \
+  && echo "ok: a live stuck piece stays stuck" || fail "#40: $(jqf "$F" '.pieces["40"]')"
+# AC3: an ended session, no done report, not merged: failed (#36 running, #41 stuck).
+# #39's recorded session s-39 is gone; the live a-39 has another id, so it is
+# an unknown session (AC4) and is not adopted: #39 keeps its record and fails.
+[ "$(jqf "$F" '.pieces["39"] | [.state, .agent, .session]')" = '["failed","a-39","s-39"]' ] \
+  && echo "ok: AC4 an unknown live session is not adopted" || fail "AC4 #39: $(jqf "$F" '.pieces["39"]')"
+[ "$(jqf "$F" '.pieces["42"]')" = '{"state":"pending","blockedBy":[34],"agent":null,"session":null,"branch":null}' ] \
+  && echo "ok: a new snapshot piece is added pending, its live session not adopted" || fail "#42: $(jqf "$F" '.pieces["42"]')"
+[ "$(jqf "$F" '[.pieces["44","45"] | .state]')" = '["dropped","merged"]' ] \
+  && echo "ok: dropped stays dropped, merged is never un-merged" || fail "#44/#45: $(jqf "$F" '.pieces')"
+[ "$(jqf "$F" '[.external, .pieces["36"].blockedBy, .pieces["32"].state, .depth, .liveCap, .depthCap]')" \
+  = '[{"12":"closed","13":"open"},[12,34],"pending",0,3,2]' ] \
+  && echo "ok: blockers and external refreshed, caps kept" || fail "refresh: $(jqf "$F" '[.external, .pieces["36"]]')"
+no_tmp "reconcile leaves no temp file"
+
+# Idempotent: the same inputs again change nothing.
+cp "$F" "$T/before.json"
+rec "$B" "$RS" "$RN" "$RT"
+want="unknown-session #39 session=sess-39 name=a-39
+unknown-session #42 session=sess-42 name=a-42
+reconciled feat/orch: pending 2, running 3, done 2, merged 3, stuck 1, failed 3, dropped 1; unknown sessions 2"
+[ "$RC" -eq 0 ] && [ "$RAW" = "$want" ] && echo "ok: a re-run reports only unknowns and the summary" \
+  || fail "re-run: rc $RC: $RAW ($ERR)"
+same "a re-run writes nothing" "$T/before.json" "$F"
+
+# Caps given for an existing file replace the stored ones, and are reported.
+rec "$B" "$RS" "$RN" "$RT" --live-cap 5
+case "$RAW" in "liveCap 3 -> 5"*) echo "ok: a new live cap is reported" ;; *) fail "live cap: $RAW" ;; esac
+[ "$(jqf "$F" '[.depth, .liveCap, .depthCap]')" = '[0,5,2]' ] && echo "ok: a new live cap is stored" \
+  || fail "caps: $(jqf "$F" '[.depth, .liveCap, .depthCap]')"
+
+# A recorded session live under another name is neither adopted nor failed.
+cp "$FIX/restart-track.json" "$F"
+printf '[{"kind":"background","id":"0a0b0c35","name":"renamed","sessionId":"s-35","status":"busy"}]' >"$T/sess.json"
+rec "$B" "$T/sess.json" "$RN" "$RT"
+[ "$RC" -eq 0 ] && [ "$(jqf "$F" '.pieces["35"].state')" = '"running"' ] \
+  && echo "ok: a recorded session under another name leaves the piece" || fail "renamed: rc $RC $(jqf "$F" '.pieces["35"]') ($ERR)"
+case "$ERR" in *"#35 session s-35 is live under the name renamed, not a-35: left running"*) echo "ok: the renamed session is reported" ;;
+  *) fail "no renamed report: $ERR" ;; esac
+[ "$(jqf "$F" '.pieces["33"].state')" = '"merged"' ] && echo "ok: contained tips still merge" || fail "#33 with one row"
+
+# A recorded live session for a pending piece. launch writes the record and
+# running together and nothing returns a piece to pending, so only a
+# hand-edited file has one; the record proves the launch, so it runs.
+jq '.pieces["32"] += {agent: "a-32", session: "s-32", branch: "p/32"}' "$FIX/restart-track.json" >"$F"
+printf '[{"kind":"background","id":"s-32","name":"a-32","sessionId":"u-32","status":"idle"}]' >"$T/sess.json"
+printf '{"pieces":[{"issue":32}],"external":{"12":"closed"}}' >"$T/snap.json"
+printf '{}' >"$T/tips.json"
+rec "$B" "$T/sess.json" "$T/snap.json" "$T/tips.json"
+case "$RAW" in "#32 pending -> running (session live)"*) echo "ok: a recorded live session runs a pending piece" ;;
+  *) fail "pending with a record: rc $RC: $RAW ($ERR)" ;; esac
+
+# The listing's completed rows (no status) are ended sessions; a recorded
+# session absent from the listing has ended too.
+cp "$FIX/restart-track.json" "$F"
+printf '[]' >"$T/sess.json"
+rec "$B" "$T/sess.json" "$RN" "$T/tips.json"
+[ "$(states "$F")" = "32=pending 33=failed 34=done 35=failed 36=failed 37=done 38=done 39=failed 40=failed 41=failed 42=pending 43=failed 44=dropped 45=merged 46=failed" ] \
+  && echo "ok: an empty listing fails every running and stuck piece, done stays done" || fail "empty listing: $(states "$F")"
+
+# Missing file: rebuilt from the snapshot with the given caps. With no records
+# every live session matching the scheme is unknown; a tip with no recorded
+# branch is taken as is.
+rec "rebuilt" "$RS" "$RN" "$RT" --depth 1 --live-cap 4 --depth-cap 3
+FR="$(tpath "rebuilt")"
+[ "$RC" -eq 0 ] && echo "ok: reconcile rebuilds a missing file" || fail "rebuild: rc $RC ($ERR)"
+case "$ERR" in *"no tracking file for rebuilt: rebuilt from the snapshot"*) echo "ok: the rebuild is reported" ;;
+  *) fail "no rebuild report: $ERR" ;; esac
+[ "$(states "$FR")" = "33=merged 34=merged 35=pending 36=pending 37=pending 38=pending 39=pending 40=pending 41=pending 42=pending 43=pending 44=merged 45=pending 46=merged" ] \
+  && echo "ok: rebuilt states" || fail "rebuilt states: $(states "$FR")"
+[ "$(jqf "$FR" '[.depth, .liveCap, .depthCap, .pieces["46"].branch, .pieces["46"].agent]')" = '[1,4,3,"other/46",null]' ] \
+  && echo "ok: rebuilt caps and tip branch" || fail "rebuilt: $(jqf "$FR" '[.depth, .liveCap, .depthCap, .pieces["46"]]')"
+[ "$(unknowns)" = "#33 a-33 #35 a-35 #37 a-37 #39 a-39 #40 a-40 #42 a-42 #43 a-43 #46 a-46" ] \
+  && echo "ok: every live scheme session is unknown after a rebuild" || fail "rebuilt unknowns: $(unknowns)"
+cp "$FR" "$T/before.json"
+rec "rebuilt" "$RS" "$RN" "$RT" --depth 1 --live-cap 4 --depth-cap 3
+[ "$RC" -eq 0 ] && same "a rebuilt file is stable on a re-run" "$T/before.json" "$FR" || fail "rebuild re-run rc $RC"
+
+# A corrupt file, one that fails the shape check, and another branch's file
+# are kept aside and rebuilt.
+for cf in "garbage|{not json" "badstate|{\"version\":1,\"branch\":\"badstate\",\"depth\":0,\"liveCap\":3,\"depthCap\":2,\"external\":{},\"pieces\":{\"1\":{\"state\":\"bogus\",\"blockedBy\":[]}}}" \
+          "otherbranch|$(cat "$FIX/restart-track.json")"; do
+  cb="${cf%%|*}"
+  FC="$(tpath "$cb")"
+  printf '%s' "${cf#*|}" >"$FC"
+  cp "$FC" "$T/old.json"
+  rec "$cb" "$RS" "$RN" "$RT"
+  [ "$RC" -eq 0 ] && valid="$(jqf "$FC" '[.branch, (.pieces | length), .depth, .liveCap, .depthCap]')" \
+    && [ "$valid" = "[\"$cb\",14,0,3,2]" ] && echo "ok: $cb file rebuilt with default caps" || fail "$cb: rc $RC ($ERR) $(cat "$FC")"
+  aside=""
+  for a in "$FC".corrupt.*; do [ -f "$a" ] && aside="$a"; done
+  [ -n "$aside" ] && same "$cb file kept aside" "$T/old.json" "$aside" || fail "$cb: no aside file: $(ls -a "$SD")"
+  case "$ERR" in *"kept as $aside: rebuilt from the snapshot"*) echo "ok: $cb aside reported" ;;
+    *) fail "$cb: no aside report: $ERR" ;; esac
+  rm -f "$FC".corrupt.*
+done
+
+# A cycle (or any refusal) writes nothing: no file, no aside, no change.
+cp "$FIX/restart-track.json" "$F"
+cp "$F" "$T/before.json"
+rec "$B" "$RS" "$FIX/snapshot-cycle.json" "$T/tips.json"
+expect "a cycle in the snapshot is refused" 1 "" "cycle: #34 -> #35 -> #36 -> #34"
+same "a refused cycle writes nothing" "$T/before.json" "$F"
+rec "cyc" "$RS" "$FIX/snapshot-cycle.json" "$T/tips.json"
+expect "a cycle with no file is refused" 1 "" "cycle:"
+[ ! -e "$(tpath cyc)" ] && echo "ok: a refused rebuild writes no file" || fail "cycle wrote $(tpath cyc)"
+FC="$(tpath "garbage")"
+printf '{not json' >"$FC"
+rec "garbage" "$RS" "$FIX/snapshot-cycle.json" "$T/tips.json"
+expect "a cycle over a corrupt file is refused" 1 "" "cycle:"
+[ "$(cat "$FC")" = "{not json" ] && [ -z "$(ls "$FC".corrupt.* 2>/dev/null)" ] \
+  && echo "ok: a refused rebuild leaves the corrupt file in place" || fail "refused rebuild moved $FC"
+
+# Malformed inputs are refused (exit 1), the file byte-identical.
+# rec_bad <name> <which: sessions|snapshot|tips> <text> <stderr substring>
+rec_bad() {
+  printf '[]' >"$T/s.json"; cp "$RN" "$T/n.json"; printf '{}' >"$T/t.json"
+  case "$2" in sessions) f="$T/s.json" ;; snapshot) f="$T/n.json" ;; tips) f="$T/t.json" ;; esac
+  printf '%s' "$3" >"$f"
+  rec "$B" "$T/s.json" "$T/n.json" "$T/t.json"
+  expect "$1" 1 "" "$4"
+  same "$1 writes nothing" "$T/before.json" "$F"
+}
+rec_bad "sessions not JSON" sessions '[{' "session listing is not valid JSON"
+rec_bad "sessions two values" sessions '[] []' "session listing is not valid JSON"
+rec_bad "sessions not an array" sessions '{"name":"a-35"}' "session listing is not a JSON array"
+rec_bad "session row not an object" sessions '["a-35"]' "bad session entry"
+rec_bad "session row without sessionId" sessions '[{"name":"a-35","status":"busy"}]' "bad session entry"
+rec_bad "sessionId with a space" sessions '[{"name":"a-35","sessionId":"s 35"}]' "bad session entry"
+rec_bad "numeric id" sessions '[{"name":"a-35","sessionId":"s-35","id":35}]' "bad session entry"
+rec_bad "numeric name" sessions '[{"name":35,"sessionId":"s-35"}]' "bad session entry"
+rec_bad "boolean status" sessions '[{"name":"a-35","sessionId":"s-35","status":true}]' "bad session entry"
+rec_bad "snapshot not JSON" snapshot '{"pieces":[' "snapshot is not valid JSON"
+rec_bad "snapshot blocked by a dropped-out piece" snapshot '{"pieces":[{"issue":33,"blocked_by":[32]}]}' "unknown blocker"
+rec_bad "tips not JSON" tips '{"35":' "tips are not valid JSON"
+rec_bad "tips not an object" tips '[]' "tips are not a JSON object"
+rec_bad "tips key not an issue" tips '{"x35":{"branch":"p/35","tip":"3535353535353535353535353535353535353535","contained":true}}' "bad tip entry"
+rec_bad "tips key with a leading zero" tips '{"035":{"branch":"p/35","tip":"3535353535353535353535353535353535353535","contained":true}}' "bad tip entry"
+rec_bad "tip short" tips '{"35":{"branch":"p/35","tip":"353535","contained":true}}' "bad tip entry"
+rec_bad "tip uppercase" tips '{"35":{"branch":"p/35","tip":"ABABABABABABABABABABABABABABABABABABABAB","contained":true}}' "bad tip entry"
+rec_bad "contained a string" tips '{"35":{"branch":"p/35","tip":"3535353535353535353535353535353535353535","contained":"true"}}' "bad tip entry"
+rec_bad "contained missing" tips '{"35":{"branch":"p/35","tip":"3535353535353535353535353535353535353535"}}' "bad tip entry"
+rec_bad "tip branch empty" tips '{"35":{"branch":"","tip":"3535353535353535353535353535353535353535","contained":true}}' "bad tip entry"
+rec_bad "tip branch with a newline" tips '{"35":{"branch":"p/35\n","tip":"3535353535353535353535353535353535353535","contained":true}}' "bad tip entry"
+rec_bad "tip not an object" tips '{"35":"3535353535353535353535353535353535353535"}' "bad tip entry"
+rec_bad "tip for an issue outside the set" tips '{"99":{"branch":"p/99","tip":"9999999999999999999999999999999999999999","contained":true}}' "tips for issues not in the set: #99"
+
+# Strings are data: a name with shell metacharacters is matched, never run.
+printf '[{"name":"a-$(touch pwned)","sessionId":"s;$(id)|x","status":"busy"}]' >"$T/sess.json"
+run --branch "$B" reconcile --sessions "$T/sess.json" --snapshot "$RN" --tips "$T/tips.json" --name-prefix 'a-$(touch pwned)'
+[ "$RC" -eq 0 ] && [ ! -e "$W/pwned" ] && echo "ok: session strings are data" || fail "metacharacters: rc $RC ($ERR)"
+
+# Usage and I/O errors: exit 2, nothing written.
+cp "$F" "$T/before.json"
+run --branch "$B" reconcile --sessions "$RS" --snapshot "$RN" --name-prefix a-
+expect "reconcile without --tips" 2 "" "reconcile needs"
+run --branch "$B" reconcile --sessions "$RS" --snapshot "$RN" --tips "$RT"
+expect "reconcile without --name-prefix" 2 "" "reconcile needs"
+run --branch "$B" reconcile --sessions "$RS" --snapshot "$RN" --tips "$RT" --name-prefix ""
+expect "an empty name prefix" 2 "" "--name-prefix"
+rec "$B" "$RS" "$RN" "$RT" --bogus
+expect "an unknown reconcile flag" 2 ""
+rec "$B" "$RS" "$RN" "$RT" --live-cap 0
+expect "reconcile live cap must be >= 1" 2 "" "--live-cap"
+rec "$B" "$T/missing.json" "$RN" "$RT"
+expect "a missing listing" 2 "" "cannot read"
+same "reconcile usage errors write nothing" "$T/before.json" "$F"
+
+# reconcile takes the lock: against a live holder it times out, writing nothing.
+track "lkr" 0 3 2 '{}' "$(pc 1 pending)"
+FK="$(tpath "lkr")"
+printf '{"pieces":[{"issue":1}]}' >"$T/snap1.json"
+hold_start a --branch "lkr" launch 1 a-1 s-1 "p/1"
+pa=$LASTPID
+cp "$FK" "$T/before.json"
+export PIECE_TRACK_LOCK_TIMEOUT=1
+rec "lkr" "$RS" "$T/snap1.json" "$T/tips.json"
+unset PIECE_TRACK_LOCK_TIMEOUT
+expect "reconcile waits for the lock and times out" 1 "" "lock busy (held by pid $pa)"
+same "a timed-out reconcile writes nothing" "$T/before.json" "$FK"
+: >"$LT/go"
+finish "$pa" a
+expect "the holder finishes after reconcile timed out" 0 "#1 running"
+
+[ ! -s "$STUBLOG" ] && echo "ok: reconcile made no live claude, gh or git call" \
+  || fail "live calls during reconcile tests: $(cat "$STUBLOG")"
+export PATH="$OPATH"
+
 # ------------------------------------------------------------------ git default location
 
 G="$T/repo"
@@ -1086,7 +1351,7 @@ expect "--branch overrides HEAD" 0 "$GCD/piece-tracking/x%2Fy.json"
 
 run
 expect "no subcommand" 2 ""
-for sub in path register launchable launch record merged failed dropped finished summary; do
+for sub in path register launchable launch record merged failed dropped finished summary reconcile; do
   case "$ERR" in *"piece-track.sh [--branch <b>] $sub"*) echo "ok: usage lists $sub" ;;
     *) fail "usage lacks $sub: $ERR" ;; esac
 done

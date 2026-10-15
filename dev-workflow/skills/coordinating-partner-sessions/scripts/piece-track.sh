@@ -11,6 +11,7 @@
 #   piece-track.sh [--branch <b>] dropped <issue>            any state but merged -> dropped (the user's call)
 #   piece-track.sh [--branch <b>] finished                   true or false: every piece merged or dropped
 #   piece-track.sh [--branch <b>] summary                    Markdown table for the PR body
+#   piece-track.sh [--branch <b>] reconcile --sessions <f> --snapshot <f> --tips <f> --name-prefix <p> [--depth <n>] [--live-cap <n>] [--depth-cap <n>]
 #
 # --branch names the orchestrator's own branch (default: the current branch;
 # required on a detached HEAD). One tracking file per orchestrator branch:
@@ -91,13 +92,62 @@
 # piece, and a launch at either cap; it does not insist on launchable's
 # lowest-first order.
 #
+# Reconcile (after an orchestrator restart) corrects the file from facts the
+# orchestrator gathers and passes as files; the CLI itself never asks claude,
+# gh or git (beyond git check-ref-format on --branch).
+#   --snapshot  the dependency snapshot, as for register, read from GitHub now.
+#   --sessions  the output of `claude agents --json` (Claude Code 2.1.x): an
+#               array of rows {"name": "...", "sessionId": "<uuid>", "id":
+#               "<short id>", "kind": "background"|"interactive", "status":
+#               "busy"|"idle"|"waiting", "state", "pid", "cwd", "startedAt", ...}.
+#               A row with a status is live; a row with none (the completed
+#               rows `--all` adds) has ended. name and status are strings or
+#               absent/null; sessionId is required and id optional, each a
+#               non-empty string without whitespace; other fields are ignored.
+#   --tips      per piece, the facts about its branch, absent when the branch
+#               does not exist: {"35": {"branch": "feat/orch-35", "tip":
+#               "<40 lowercase hex>", "contained": true}}; contained means the
+#               tip is the orchestrator's branch tip or an ancestor of it. Keys
+#               must be issues in the file or the snapshot.
+#   --name-prefix <p>  the session-name scheme: a piece's agent is named
+#               <p><issue> (e.g. PROJ-12-#35 for --name-prefix PROJ-12-#).
+#   --depth/--live-cap/--depth-cap  as for register; given, they replace the
+#               stored values, else the file's (or register's defaults) stand.
+# Every piece of the snapshot is kept or added (pending); its blockedBy and the
+# external states are replaced by the snapshot's. A piece in the file but not
+# in the snapshot is kept and reported on stderr. Then, per piece, in order:
+#   1. merged and dropped stay as they are. A contained tip makes any other
+#      state merged (sha = the tip, branch = the recorded one, else the tip's);
+#      a tip for another branch than the recorded one is reported and ignored.
+#   2. The recorded session live (a live row whose name is the recorded agent
+#      and whose sessionId or id is the recorded session): pending, running and
+#      failed become running; done and stuck stay.
+#   3. The recorded session not live: running and stuck become failed; done
+#      stays done (its report survived; the merge is pending). A live row with
+#      the recorded id under another name leaves the piece as it is, reported.
+#   4. A live row named <p><issue> for an issue in the set that no piece
+#      recorded is an unknown session: reported, never adopted, no state change
+#      (with no file, every such row is unknown).
+# stdout, one line each: changed caps and external states, then per issue
+# "#<n> added (pending)", "#<n> blocked by <old> -> <new>",
+# "#<n> <old> -> <new> (<why>)"; then "unknown-session #<n> session=<sessionId>
+# name=<name>" per unknown session; last "reconciled <branch>: pending N,
+# running N, ... ; unknown sessions N". Exit 0 even with unknown sessions.
+# A missing tracking file, or one that is unreadable, fails the shape check or
+# belongs to another branch, is rebuilt from the snapshot as by register (the
+# bad file renamed to <file>.corrupt.<UTC time>.<pid>, reported), then
+# corrected. Refused (exit 1, nothing written or moved): any input not exactly
+# one valid JSON value, a snapshot register would refuse (a cycle included),
+# a bad session row or tip entry, and a tip for an issue outside the set.
+# Same inputs again change nothing: the file stays byte-identical.
+#
 # Every write goes to a temp file in the tracking directory, is validated, and
 # is renamed over the tracking file, so a failed or interrupted write leaves the
 # previous file byte-identical. PIECE_TRACK_TEST_ABORT_BEFORE_RENAME=1 (tests
 # only) stops a write after the temp file is complete and before the rename.
 #
 # Lock: every writing command (register, launch, record, merged, failed,
-# dropped) holds one lock per tracking
+# dropped, reconcile) holds one lock per tracking
 # file from before it reads the file until it exits, so read, checks, compute
 # and rename are one transaction. The lock is flock(2) on the persistent file
 # .<enc>.json.lock beside the tracking file (never deleted), taken by a perl
@@ -110,7 +160,7 @@
 # opened is exit 2. PIECE_TRACK_LOCKED is internal: "<pid>:<lock file>" marks
 # the re-executed run and counts only when <pid> is that run's own pid. Read-only
 # commands (path, launchable, finished, summary) take no lock: the rename means they
-# always read a whole file. Only register creates the state directory; a launch
+# always read a whole file. Only register and reconcile create the state directory; a launch
 # with no tracking file is refused without creating it, but when the state
 # directory exists, that refused launch can leave a persistent lock file for
 # the unregistered branch. A relative PIECE_TRACK_DIR is used as ./<dir>.
@@ -122,7 +172,8 @@
 # Exit: 0 done, 1 refused (reason on stderr; a malformed report line is a
 # refusal), 2 usage or I/O error (a bad <issue> argument is usage). Issue,
 # branch, agent, session and report strings are data: validated, passed to jq with
-# --arg/--argjson, never evaluated. Never calls claude or gh. Bash 3.2 compatible.
+# --arg/--argjson, never evaluated; reconcile's inputs are read with
+# --slurpfile. Never calls claude or gh. Bash 3.2 compatible.
 set -u
 
 usage() {
@@ -268,6 +319,105 @@ BUILD='
  pieces: (reduce (.pieces | sort_by(.issue))[] as $p ({};
    .[$p.issue | tostring] = {state: "pending", blockedBy: (($p | blockers) | unique),
                              agent: null, session: null, branch: null}))}
+'
+
+# jq definitions for reconcile's session listing and tips.
+INDEFS='
+def ctl: explode | any(.[]; . < 32 or (. >= 127 and . < 160));
+def word: type == "string" and length > 0 and (explode | any(.[]; . <= 32 or (. >= 127 and . < 160)) | not);
+def text: type == "string" and length > 0 and (ctl | not);
+def optstr: . == null or type == "string";
+def badrow: (type != "object") or (.name | optstr | not) or (.sessionId | word | not)
+  or ((.id == null or (.id | word)) | not) or (.status | optstr | not);
+def badtip: (.key | test("^[1-9][0-9]{0,8}$") | not) or (.value | type != "object")
+  or (.value.branch | text | not)
+  or (.value.tip | (type == "string" and test("^[0-9a-f]{40}$")) | not)
+  or (.value.contained | type != "boolean");
+'
+SESSCHECK='if type != "array" then "session listing is not a JSON array"
+elif any(.[]; badrow) then "bad session entry: " + ([.[] | select(badrow)][0] | tojson)
+else empty end'
+TIPCHECK='if type != "object" then "tips are not a JSON object"
+elif any(to_entries[]; badtip)
+  then "bad tip entry: " + ([to_entries[] | select(badtip)][0] | "\(.key | tojson): \(.value | tojson)")
+else empty end'
+
+# reconcile, over (checked) inputs: $sf snapshot, $lf session listing, $tf
+# tips, $of the old tracking file ([] when rebuilding), $b branch, $pfx name
+# prefix, $d/$lc/$dc caps (null: keep or default). Yields {refusal} or
+# {state, changed, out: [stdout lines], err: [stderr notes]}.
+RECON='
+# A listing row is the session recorded on piece $p: name and id both match
+# (the id is the row'"'"'s sessionId or its short id).
+def has_id($p): $p.session != null and (.sessionId == $p.session or .id == $p.session);
+def is_rec($p): has_id($p) and .name == $p.agent;
+def nums: map(tonumber) | sort;
+def bl: if length == 0 then "none" else map("#\(.)") | join(", ") end;
+# Rules 1-3 for piece $p ($k its key, $t its tip fact or null): {to, why},
+# {note} or {}.
+def decide($k; $p; $t; $live):
+  if $p.state == "merged" or $p.state == "dropped" then {}
+  elif $t != null and $t.contained and ($p.branch == null or $p.branch == $t.branch)
+    then {to: "merged", why: "branch tip contained"}
+  elif $p.session == null then {}
+  elif any($live[]; is_rec($p))
+    then (if any("pending", "running", "failed"; . == $p.state) then {to: "running", why: "session live"} else {} end)
+  elif any($live[]; has_id($p))
+    then {note: "#\($k) session \($p.session) is live under the name \([$live[] | select(has_id($p)) | .name][0]), not \($p.agent): left \($p.state)"}
+  elif $p.state == "running" or $p.state == "stuck" then {to: "failed", why: "session ended"}
+  else {} end;
+
+$sf[0] as $snap | [$lf[0][] | select(.status != null)] as $live | $tf[0] as $tips
+| ($of[0] // null) as $old
+| ($snap | reduce .pieces[] as $p ({}; .[$p.issue | tostring] = ($p | blockers | unique))) as $blk
+| (if $old == null then {version: 1, branch: $b, depth: 0, liveCap: 3, depthCap: 2, external: {}, pieces: {}}
+   else $old end) as $o
+| [$tips | keys[] | select(. as $k | ($blk | has($k)) or ($o.pieces | has($k)) | not)] as $stray
+| if ($stray | length) > 0
+  then {refusal: ("tips for issues not in the set: " + ($stray | nums | map("#\(.)") | join(", ")))}
+  else
+  ($o | .depth = ($d // .depth) | .liveCap = ($lc // .liveCap) | .depthCap = ($dc // .depthCap)
+      | .external = ($snap | ext)) as $base
+  | (if $old == null then []
+     else [("depth", "liveCap", "depthCap") as $c | select($o[$c] != $base[$c]) | "\($c) \($o[$c]) -> \($base[$c])"] end
+     + [($o.external + $base.external) | keys | nums[] | tostring as $x
+        | if ($o.external | has($x) | not) then "external #\($x) added (\($base.external[$x]))"
+          elif ($base.external | has($x) | not) then "external #\($x) removed"
+          elif $o.external[$x] != $base.external[$x] then "external #\($x) \($o.external[$x]) -> \($base.external[$x])"
+          else empty end]) as $head
+  | (reduce ([($base.pieces | keys[]), ($blk | keys[])] | unique | nums[] | tostring) as $k
+      ({s: $base, out: [], err: []};
+       .s.pieces[$k] as $p0 | $tips[$k] as $t
+       | (if $p0 == null then {state: "pending", blockedBy: [], agent: null, session: null, branch: null} else $p0 end
+          | if $blk | has($k) then .blockedBy = $blk[$k] else . end) as $p
+       | decide($k; $p; $t; $live) as $r
+       | ($p | if $r.to == "merged" then .state = "merged" | .branch = (.branch // $t.branch) | .sha = $t.tip
+               elif $r.to != null then .state = $r.to else . end) as $new
+       | .s.pieces[$k] = $new
+       | .out += (if $p0 == null then ["#\($k) added (pending)"] else [] end)
+       | .out += (if $p0 != null and $p0.blockedBy != $p.blockedBy
+                  then ["#\($k) blocked by \($p0.blockedBy | bl) -> \($p.blockedBy | bl)"] else [] end)
+       | .out += (if $new.state != $p.state then ["#\($k) \($p.state) -> \($new.state) (\($r.why))"] else [] end)
+       | .err += (if $blk | has($k) then [] else ["#\($k) is not in the snapshot; kept as \($new.state)"] end)
+       | .err += (if $t != null and $p.branch != null and $p.branch != $t.branch
+                     and $p.state != "merged" and $p.state != "dropped"
+                  then ["#\($k) tip fact is for branch \($t.branch), recorded \($p.branch): ignored"] else [] end)
+       | .err += (if $r.note != null then [$r.note] else [] end))) as $acc
+  | ($acc.s | .pieces |= (to_entries | sort_by(.key | tonumber) | from_entries)) as $new
+  # Rule 4: a live session named <prefix><issue> for an issue in the set that
+  # no piece recorded is unknown: reported, never adopted.
+  | [$live[] | . as $row | (.name // "") as $nm
+     | select($nm | startswith($pfx)) | ($nm | ltrimstr($pfx)) as $i
+     | select($new.pieces | has($i))
+     | select(any($new.pieces[]; . as $p | $row | is_rec($p)) | not)
+     | {i: ($i | tonumber), sid: .sessionId, nm: $nm}] | sort_by(.i, .sid) as $unk
+  | {state: $new, changed: ($new != $old), err: $acc.err,
+     out: ($head + $acc.out
+           + [$unk[] | "unknown-session #\(.i) session=\(.sid) name=\(.nm)"]
+           + ["reconciled \($b): "
+              + (['"$STATES"'] | map(. as $st | "\($st) \([$new.pieces[] | select(.state == $st)] | length)") | join(", "))
+              + "; unknown sessions \($unk | length)"])}
+  end
 '
 
 # ------------------------------------------------------------------ location
@@ -633,6 +783,87 @@ cmd_summary() {
     || die "cannot read $FILE"
 }
 
+# one_json <file> <what> — refuses unless <file> holds exactly one JSON value.
+one_json() {
+  n="$(jq -s 'length' "$1" 2>/dev/null)" || refuse "$2 not valid JSON: $1"
+  [ "$n" = "1" ] || refuse "$2 not valid JSON (expected one value): $1"
+}
+
+cmd_reconcile() {
+  sess=""; snap=""; tips=""; pfx=""; depth=null; lcap=null; dcap=null
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --sessions) [ "$#" -ge 2 ] || usage; sess="$2"; shift 2 ;;
+      --snapshot) [ "$#" -ge 2 ] || usage; snap="$2"; shift 2 ;;
+      --tips) [ "$#" -ge 2 ] || usage; tips="$2"; shift 2 ;;
+      --name-prefix)
+        { [ "$#" -ge 2 ] && is_text "$2"; } || die "--name-prefix needs a non-empty name without control characters"
+        pfx="$2"; shift 2 ;;
+      --depth)
+        { [ "$#" -ge 2 ] && is_count "$2"; } || die "--depth needs an integer >= 0"
+        depth="$2"; shift 2 ;;
+      --live-cap)
+        { [ "$#" -ge 2 ] && is_count "$2" && [ "$2" -ge 1 ]; } || die "--live-cap needs an integer >= 1"
+        lcap="$2"; shift 2 ;;
+      --depth-cap)
+        { [ "$#" -ge 2 ] && is_count "$2"; } || die "--depth-cap needs an integer >= 0"
+        dcap="$2"; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  { [ -n "$sess" ] && [ -n "$snap" ] && [ -n "$tips" ] && [ -n "$pfx" ]; } \
+    || die "reconcile needs --sessions, --snapshot, --tips and --name-prefix"
+  for f in "$sess" "$snap" "$tips"; do
+    { [ -f "$f" ] && [ -r "$f" ]; } || die "cannot read $f"
+  done
+  one_json "$sess" "session listing is"
+  one_json "$snap" "snapshot is"
+  one_json "$tips" "tips are"
+  reason="$(jq -r "$SNAPDEFS$CHECK" "$snap")" || die "cannot check snapshot: $snap"
+  [ -z "$reason" ] || refuse "$reason"
+  reason="$(jq -r "$INDEFS$SESSCHECK" "$sess")" || die "cannot check session listing: $sess"
+  [ -z "$reason" ] || refuse "$reason"
+  reason="$(jq -r "$INDEFS$TIPCHECK" "$tips")" || die "cannot check tips: $tips"
+  [ -z "$reason" ] || refuse "$reason"
+  # A missing, unreadable or foreign file is rebuilt from the snapshot; it is
+  # read with neither need_state nor VALID, so a bad file cannot stop reconcile.
+  why=""
+  if [ -e "$FILE" ] || [ -L "$FILE" ]; then
+    [ -f "$FILE" ] || die "not a regular file: $FILE"
+    if ! valid_file "$FILE"; then why="unreadable"
+    elif ! jq -e --arg b "$BR" '.branch == $b' "$FILE" >/dev/null 2>&1; then why="foreign"
+    fi
+  else
+    why="missing"
+  fi
+  old="$FILE"
+  [ -z "$why" ] || old=/dev/null
+  res="$(jq -nc --slurpfile sf "$snap" --slurpfile lf "$sess" --slurpfile tf "$tips" --slurpfile of "$old" \
+           --arg b "$BR" --arg pfx "$pfx" --argjson d "$depth" --argjson lc "$lcap" --argjson dc "$dcap" \
+           "$SNAPDEFS$RECON")" || die "cannot reconcile $FILE"
+  reason="$(printf '%s' "$res" | jq -r '.refusal // empty')" || die "cannot reconcile $FILE"
+  [ -z "$reason" ] || refuse "$reason"
+  aside=""
+  case "$why" in
+    unreadable|foreign)
+      # Renamed aside, never deleted: the old bytes stay for the user to inspect.
+      aside="$FILE.corrupt.$(date -u +%Y%m%dT%H%M%SZ).$$"
+      mv "$FILE" "$aside" || die "cannot move $FILE aside"
+      ;;
+  esac
+  # Same inputs, same file: a reconcile that changes nothing writes nothing.
+  if [ "$(printf '%s' "$res" | jq -r '.changed')" = "true" ]; then
+    write_state -n --argjson r "$res" '$r.state'
+  fi
+  case "$why" in
+    missing) echo "piece-track.sh: no tracking file for $BR: rebuilt from the snapshot" >&2 ;;
+    unreadable) echo "piece-track.sh: unreadable tracking file kept as $aside: rebuilt from the snapshot" >&2 ;;
+    foreign) echo "piece-track.sh: tracking file of another branch kept as $aside: rebuilt from the snapshot" >&2 ;;
+  esac
+  printf '%s' "$res" | jq -r '.err[] | "piece-track.sh: " + .' >&2
+  printf '%s' "$res" | jq -r '.out[]' || die "cannot print the reconcile report"
+}
+
 # ------------------------------------------------------------------ main
 
 ARGS=("$@")  # re-passed verbatim when a writing command re-execs under the lock
@@ -646,13 +877,13 @@ done
 [ "$#" -ge 1 ] || usage
 CMD="$1"; shift
 case "$CMD" in
-  path|register|launchable|launch|record|merged|failed|dropped|finished|summary) ;;
+  path|register|launchable|launch|record|merged|failed|dropped|finished|summary|reconcile) ;;
   *) usage ;;
 esac
 set_paths
 # Every command that writes takes the lock here and keeps it until it exits.
 case "$CMD" in
-  register) with_lock --create ;;
+  register|reconcile) with_lock --create ;;
   launch|record|merged|failed|dropped) with_lock ;;
 esac
 case "$CMD" in
@@ -664,4 +895,5 @@ case "$CMD" in
   merged|failed|dropped) cmd_mark "$CMD" "$@" ;;
   finished) cmd_finished "$@" ;;
   summary) cmd_summary "$@" ;;
+  reconcile) cmd_reconcile "$@" ;;
 esac

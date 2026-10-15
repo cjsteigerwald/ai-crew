@@ -1,0 +1,16 @@
+[
+  {"kind": "interactive", "name": "orch", "sessionId": "sess-00", "pid": 4100, "cwd": "/work/repo", "startedAt": 1760500000000, "status": "idle"},
+  {"kind": "background", "id": "s-33", "name": "a-33", "sessionId": "sess-33", "pid": 4133, "cwd": "/work/repo", "startedAt": 1760500000033, "state": "working", "status": "busy"},
+  {"kind": "background", "id": "0a0b0c35", "name": "a-35", "sessionId": "s-35", "pid": 4135, "cwd": "/work/repo", "startedAt": 1760500000035, "state": "blocked", "status": "waiting", "waitingFor": "input"},
+  {"kind": "background", "id": "s-36", "name": "a-36", "sessionId": "sess-36", "cwd": "/work/repo", "startedAt": 1760500000036, "state": "done"},
+  {"kind": "background", "id": "s-37", "name": "a-37", "sessionId": "sess-37", "pid": 4137, "cwd": "/work/repo", "startedAt": 1760500000037, "state": "done", "status": "idle"},
+  {"kind": "background", "id": "s-38", "name": "a-38", "sessionId": "sess-38", "cwd": "/work/repo", "startedAt": 1760500000038, "state": "done"},
+  {"kind": "background", "id": "e0e0e039", "name": "a-39", "sessionId": "sess-39", "pid": 4139, "cwd": "/work/repo", "startedAt": 1760500000039, "state": "working", "status": "busy"},
+  {"kind": "background", "id": "s-40", "name": "a-40", "sessionId": "sess-40", "pid": 4140, "cwd": "/work/repo", "startedAt": 1760500000040, "state": "blocked", "status": "waiting", "waitingFor": "input"},
+  {"kind": "background", "id": "s-41", "name": "a-41", "sessionId": "sess-41", "cwd": "/work/repo", "startedAt": 1760500000041, "state": "done"},
+  {"kind": "background", "id": "e0e0e042", "name": "a-42", "sessionId": "sess-42", "pid": 4142, "cwd": "/work/repo", "startedAt": 1760500000042, "state": "working", "status": "busy"},
+  {"kind": "background", "id": "s-43", "name": "a-43", "sessionId": "sess-43", "pid": 4143, "cwd": "/work/repo", "startedAt": 1760500000043, "state": "working", "status": "busy"},
+  {"kind": "background", "id": "s-46", "name": "a-46", "sessionId": "sess-46", "pid": 4146, "cwd": "/work/repo", "startedAt": 1760500000046, "state": "working", "status": "busy"},
+  {"kind": "background", "id": "e0e0e099", "name": "a-99", "sessionId": "sess-99", "pid": 4199, "cwd": "/work/repo", "startedAt": 1760500000099, "state": "working", "status": "busy"},
+  {"kind": "background", "id": "e0e0e0ff", "name": "notes", "sessionId": "sess-ff", "pid": 4200, "cwd": "/work/other", "startedAt": 1760500000100, "state": "working", "status": "busy"}
+]
