@@ -4,7 +4,7 @@
 #   piece-track.sh [--branch <b>] path                       print the tracking-file path
 #   piece-track.sh [--branch <b>] register <snapshot.json> [--depth <n>] [--live-cap <n>] [--depth-cap <n>]
 #   piece-track.sh [--branch <b>] launchable                 issues to launch now, one per line, ascending
-#   piece-track.sh [--branch <b>] launch <issue> <agent> <session-id> <piece-branch>
+#   piece-track.sh [--branch <b>] launch <issue> <agent> <session-id> <piece-branch> <base-sha>
 #   piece-track.sh [--branch <b>] record <report-line>       record one piece agent's report
 #   piece-track.sh [--branch <b>] merged <issue>             done -> merged (after the fast-forward)
 #   piece-track.sh [--branch <b>] failed <issue>             running, done or stuck -> failed
@@ -36,6 +36,8 @@
 #    "pieces": {"35": {"state": "pending", "blockedBy": [12, 34],
 #                      "agent": null, "session": null, "branch": null}}}
 # state is one of pending, running, done, merged, stuck, failed, dropped.
+# launch records agent, session, branch and base: the full 40-hex SHA of the
+# commit the piece branch was created from (the orchestrator's head then).
 # record adds sha (from DONE) and needs (an issue number or null) and reason
 # (from STUCK) to a piece. register sets depth (default 0), liveCap (default 3,
 # >= 1) and depthCap (default 2). Re-registering replaces the file only while
@@ -100,14 +102,20 @@
 #               array of rows {"name": "...", "sessionId": "<uuid>", "id":
 #               "<short id>", "kind": "background"|"interactive", "status":
 #               "busy"|"idle"|"waiting", "state", "pid", "cwd", "startedAt", ...}.
-#               A row with a status is live; a row with none (the completed
-#               rows `--all` adds) has ended. name and status are strings or
-#               absent/null; sessionId is required and id optional, each a
-#               non-empty string without whitespace; other fields are ignored.
+#               A row with a pid is live (an idle row with state "done" and a
+#               pid included); a row with none has ended. Seen on 2.1.300:
+#               the completed rows `--all` adds lack both pid and status, and
+#               every live row, idle ones included, has both; the platform
+#               drops pid when the process exits. name is null/absent or
+#               non-empty text without control characters; sessionId is
+#               required and id optional, each a non-empty string without
+#               whitespace; status a string or null/absent; pid an integer
+#               >= 1 or null/absent; other fields are ignored.
 #   --tips      per piece, the facts about its branch, absent when the branch
 #               does not exist: {"35": {"branch": "feat/orch-35", "tip":
-#               "<40 lowercase hex>", "contained": true}}; contained means the
-#               tip is the orchestrator's branch tip or an ancestor of it. Keys
+#               "<40 lowercase hex>", "contained": true}}. contained is true
+#               when the tip is an ancestor of, or equal to, the orchestrator's
+#               branch head (git merge-base --is-ancestor <tip> <head>). Keys
 #               must be issues in the file or the snapshot.
 #   --name-prefix <p>  the session-name scheme: a piece's agent is named
 #               <p><issue> (e.g. PROJ-12-#35 for --name-prefix PROJ-12-#).
@@ -115,31 +123,45 @@
 #               stored values, else the file's (or register's defaults) stand.
 # Every piece of the snapshot is kept or added (pending); its blockedBy and the
 # external states are replaced by the snapshot's. A piece in the file but not
-# in the snapshot is kept and reported on stderr. Then, per piece, in order:
-#   1. merged and dropped stay as they are. A contained tip makes any other
-#      state merged (sha = the tip, branch = the recorded one, else the tip's);
-#      a tip for another branch than the recorded one is reported and ignored.
+# in the snapshot is kept, with its blockers, and reported on stderr. Then,
+# per piece, in order:
+#   1. merged and dropped stay as they are. A new piece branch forks at the
+#      orchestrator's head, so its tip is contained before any commit: a
+#      contained tip makes a piece merged only when the piece has a recorded
+#      base and the tip differs from it (sha = the tip). Tip equal to the base:
+#      no evidence, the rules below decide. No recorded base (a rebuilt file):
+#      not merged; reported as "unverified-contained #<n> tip=<sha>
+#      branch=<branch>" for the user to decide. A tip for another branch than
+#      the recorded one is reported on stderr and ignored.
 #   2. The recorded session live (a live row whose name is the recorded agent
-#      and whose sessionId or id is the recorded session): pending, running and
-#      failed become running; done and stuck stay.
+#      and whose sessionId or id is the recorded session): pending and running
+#      become running; done and stuck stay; failed stays failed (failing is
+#      the orchestrator's decision), reported on stderr.
 #   3. The recorded session not live: running and stuck become failed; done
 #      stays done (its report survived; the merge is pending). A live row with
 #      the recorded id under another name leaves the piece as it is, reported.
-#   4. A live row named <p><issue> for an issue in the set that no piece
-#      recorded is an unknown session: reported, never adopted, no state change
-#      (with no file, every such row is unknown).
+#   4. A live row named <p><n>, n any issue number in or out of the set, that
+#      no piece recorded is an unknown session (a second orchestrator on this
+#      branch, or a launch never recorded): reported, never adopted, no state
+#      change (with no file, every such row is unknown).
 # stdout, one line each: changed caps and external states, then per issue
 # "#<n> added (pending)", "#<n> blocked by <old> -> <new>",
-# "#<n> <old> -> <new> (<why>)"; then "unknown-session #<n> session=<sessionId>
-# name=<name>" per unknown session; last "reconciled <branch>: pending N,
-# running N, ... ; unknown sessions N". Exit 0 even with unknown sessions.
+# "#<n> <old> -> <new> (<why>)", "unverified-contained ..."; then
+# "unknown-session #<n> session=<sessionId> name=<name>" per unknown session;
+# last "reconciled <branch>: pending N, running N, ... ; unknown sessions N".
+# Exit 0 even with unknown sessions or unverified tips.
 # A missing tracking file, or one that is unreadable, fails the shape check or
 # belongs to another branch, is rebuilt from the snapshot as by register (the
 # bad file renamed to <file>.corrupt.<UTC time>.<pid>, reported), then
 # corrected. Refused (exit 1, nothing written or moved): any input not exactly
 # one valid JSON value, a snapshot register would refuse (a cycle included),
-# a bad session row or tip entry, and a tip for an issue outside the set.
-# Same inputs again change nothing: the file stays byte-identical.
+# a bad session row or tip entry, a tip for an issue outside the set, and a
+# result that fails the snapshot checks once the kept pieces are added (an
+# unknown blocker, an issue both a piece and external, a cycle).
+# Same inputs again change nothing: the file stays byte-identical. The bad
+# file is moved aside before the new one is written, so an I/O failure in
+# that write leaves no tracking file (the old bytes kept as .corrupt.*); the
+# next reconcile treats it as missing and rebuilds.
 #
 # Every write goes to a temp file in the tracking directory, is validated, and
 # is renamed over the tracking file, so a failed or interrupted write leaves the
@@ -205,6 +227,11 @@ is_text() {
 # A session id: non-empty, no whitespace or control characters.
 is_word() {
   case "$1" in ''|*[[:space:][:cntrl:]]*) return 1 ;; esac
+}
+# A full commit SHA: 40 lowercase hex (an explicit digit list, as in record).
+is_sha() {
+  case "$1" in ''|*[!0123456789abcdef]*) return 1 ;; esac
+  [ "${#1}" -eq 40 ]
 }
 
 WTMP=""
@@ -327,8 +354,9 @@ def ctl: explode | any(.[]; . < 32 or (. >= 127 and . < 160));
 def word: type == "string" and length > 0 and (explode | any(.[]; . <= 32 or (. >= 127 and . < 160)) | not);
 def text: type == "string" and length > 0 and (ctl | not);
 def optstr: . == null or type == "string";
-def badrow: (type != "object") or (.name | optstr | not) or (.sessionId | word | not)
-  or ((.id == null or (.id | word)) | not) or (.status | optstr | not);
+def badrow: (type != "object") or ((.name == null or (.name | text)) | not) or (.sessionId | word | not)
+  or ((.id == null or (.id | word)) | not) or (.status | optstr | not)
+  or ((.pid == null or (.pid | type == "number" and . >= 1 and . == floor)) | not);
 def badtip: (.key | test("^[1-9][0-9]{0,8}$") | not) or (.value | type != "object")
   or (.value.branch | text | not)
   or (.value.tip | (type == "string" and test("^[0-9a-f]{40}$")) | not)
@@ -354,20 +382,31 @@ def is_rec($p): has_id($p) and .name == $p.agent;
 def nums: map(tonumber) | sort;
 def bl: if length == 0 then "none" else map("#\(.)") | join(", ") end;
 # Rules 1-3 for piece $p ($k its key, $t its tip fact or null): {to, why},
-# {note} or {}.
+# and optionally {note} and {unverified: true}, or {}.
 def decide($k; $p; $t; $live):
   if $p.state == "merged" or $p.state == "dropped" then {}
-  elif $t != null and $t.contained and ($p.branch == null or $p.branch == $t.branch)
-    then {to: "merged", why: "branch tip contained"}
-  elif $p.session == null then {}
-  elif any($live[]; is_rec($p))
-    then (if any("pending", "running", "failed"; . == $p.state) then {to: "running", why: "session live"} else {} end)
-  elif any($live[]; has_id($p))
-    then {note: "#\($k) session \($p.session) is live under the name \([$live[] | select(has_id($p)) | .name][0]), not \($p.agent): left \($p.state)"}
-  elif $p.state == "running" or $p.state == "stuck" then {to: "failed", why: "session ended"}
-  else {} end;
+  else
+    # A branch forks at the orchestrator'"'"'s head, so a contained tip proves a
+    # merge only when it moved off the recorded base.
+    (if $t == null or ($t.contained | not) or ($p.branch != null and $p.branch != $t.branch) then "no"
+     elif $p.base == null then "unverified"
+     elif $t.tip == $p.base then "no"
+     else "merged" end) as $m
+    | if $m == "merged" then {to: "merged", why: "branch tip contained"}
+      else (if $m == "unverified" then {unverified: true} else {} end)
+        + (if $p.session == null then {}
+           elif any($live[]; is_rec($p))
+             then (if $p.state == "pending" or $p.state == "running" then {to: "running", why: "session live"}
+                   elif $p.state == "failed" then {note: "#\($k) is failed but its session \($p.session) is live: left failed"}
+                   else {} end)
+           elif any($live[]; has_id($p))
+             then {note: "#\($k) session \($p.session) is live under the name \([$live[] | select(has_id($p)) | .name][0]), not \($p.agent): left \($p.state)"}
+           elif $p.state == "running" or $p.state == "stuck" then {to: "failed", why: "session ended"}
+           else {} end)
+      end
+  end;
 
-$sf[0] as $snap | [$lf[0][] | select(.status != null)] as $live | $tf[0] as $tips
+$sf[0] as $snap | [$lf[0][] | select(.pid != null)] as $live | $tf[0] as $tips
 | ($of[0] // null) as $old
 | ($snap | reduce .pieces[] as $p ({}; .[$p.issue | tostring] = ($p | blockers | unique))) as $blk
 | (if $old == null then {version: 1, branch: $b, depth: 0, liveCap: 3, depthCap: 2, external: {}, pieces: {}}
@@ -398,17 +437,19 @@ $sf[0] as $snap | [$lf[0][] | select(.status != null)] as $live | $tf[0] as $tip
        | .out += (if $p0 != null and $p0.blockedBy != $p.blockedBy
                   then ["#\($k) blocked by \($p0.blockedBy | bl) -> \($p.blockedBy | bl)"] else [] end)
        | .out += (if $new.state != $p.state then ["#\($k) \($p.state) -> \($new.state) (\($r.why))"] else [] end)
+       | .out += (if $r.unverified then ["unverified-contained #\($k) tip=\($t.tip) branch=\($t.branch)"] else [] end)
        | .err += (if $blk | has($k) then [] else ["#\($k) is not in the snapshot; kept as \($new.state)"] end)
        | .err += (if $t != null and $p.branch != null and $p.branch != $t.branch
                      and $p.state != "merged" and $p.state != "dropped"
                   then ["#\($k) tip fact is for branch \($t.branch), recorded \($p.branch): ignored"] else [] end)
        | .err += (if $r.note != null then [$r.note] else [] end))) as $acc
   | ($acc.s | .pieces |= (to_entries | sort_by(.key | tonumber) | from_entries)) as $new
-  # Rule 4: a live session named <prefix><issue> for an issue in the set that
-  # no piece recorded is unknown: reported, never adopted.
+  # Rule 4: a live session named <prefix><issue>, for any issue number, that
+  # no piece recorded is unknown (another orchestrator, or a lost launch):
+  # reported, never adopted.
   | [$live[] | . as $row | (.name // "") as $nm
      | select($nm | startswith($pfx)) | ($nm | ltrimstr($pfx)) as $i
-     | select($new.pieces | has($i))
+     | select($i | test("^[1-9][0-9]{0,8}$"))
      | select(any($new.pieces[]; . as $p | $row | is_rec($p)) | not)
      | {i: ($i | tonumber), sid: .sessionId, nm: $nm}] | sort_by(.i, .sid) as $unk
   | {state: $new, changed: ($new != $old), err: $acc.err,
@@ -600,12 +641,13 @@ cmd_launchable() {
 }
 
 cmd_launch() {
-  [ "$#" -eq 4 ] || usage
-  issue="$1"; agent="$2"; sid="$3"; pbr="$4"
+  [ "$#" -eq 5 ] || usage
+  issue="$1"; agent="$2"; sid="$3"; pbr="$4"; base="$5"
   is_issue "$issue" || die "bad issue: $issue"
   is_text "$agent" || die "bad agent name"
   is_word "$sid" || die "bad session id"
   is_branch "$pbr" || die "bad branch: $pbr"
+  is_sha "$base" || die "bad base sha: $base"
   need_state
   reason="$(jq -r --arg i "$issue" --arg sid "$sid" --arg pb "$pbr" "$SDEFS"'
     . as $s | .pieces[$i] as $p
@@ -625,8 +667,8 @@ cmd_launch() {
       elif livecount >= .liveCap then "live cap reached (\(livecount) live, cap \(.liveCap))"
       else empty end' "$FILE")" || die "cannot read $FILE"
   [ -z "$reason" ] || refuse "$reason"
-  write_state --arg i "$issue" --arg a "$agent" --arg sid "$sid" --arg pb "$pbr" \
-    '.pieces[$i] += {state: "running", agent: $a, session: $sid, branch: $pb}' "$FILE"
+  write_state --arg i "$issue" --arg a "$agent" --arg sid "$sid" --arg pb "$pbr" --arg bs "$base" \
+    '.pieces[$i] += {state: "running", agent: $a, session: $sid, branch: $pb, base: $bs}' "$FILE"
   echo "#$issue running"
 }
 
@@ -843,6 +885,14 @@ cmd_reconcile() {
            "$SNAPDEFS$RECON")" || die "cannot reconcile $FILE"
   reason="$(printf '%s' "$res" | jq -r '.refusal // empty')" || die "cannot reconcile $FILE"
   [ -z "$reason" ] || refuse "$reason"
+  # Kept pieces keep their old blockers, so the snapshot's checks run again on
+  # the combined result: unknown blockers, an issue both a piece and external,
+  # and cycles through kept pieces.
+  reason="$(printf '%s' "$res" \
+    | jq '.state | {pieces: [.pieces | to_entries[] | {issue: (.key | tonumber), blocked_by: .value.blockedBy}],
+                    external}' \
+    | jq -r "$SNAPDEFS$CHECK")" || die "cannot check the reconciled pieces"
+  [ -z "$reason" ] || refuse "with the kept pieces: $reason"
   aside=""
   case "$why" in
     unreadable|foreign)

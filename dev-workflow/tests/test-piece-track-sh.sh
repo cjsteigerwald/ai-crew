@@ -72,8 +72,8 @@ pc() {
   if [ "$2" = "pending" ]; then
     printf '"%s":{"state":"pending","blockedBy":%s,"agent":null,"session":null,"branch":null}' "$1" "${3:-[]}"
   else
-    printf '"%s":{"state":"%s","blockedBy":%s,"agent":"a-%s","session":"s-%s","branch":"p/%s"}' \
-      "$1" "$2" "${3:-[]}" "$1" "$1" "$1"
+    printf '"%s":{"state":"%s","blockedBy":%s,"agent":"a-%s","session":"s-%s","branch":"p/%s","base":"%s"}' \
+      "$1" "$2" "${3:-[]}" "$1" "$1" "$1" "$BS"
   fi
 }
 
@@ -109,6 +109,8 @@ no_tmp() {
 }
 
 B="feat/orch"
+# BS — the base commit every test launch records.
+BS="b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
 
 # ------------------------------------------------------------------ path
 
@@ -295,7 +297,7 @@ jq -c '.branch = "other" | .pieces = {"77": {"state": "pending", "blockedBy": []
 cp "$T/stream.json" "$(tpath "other")"
 run --branch "other" launchable
 expect "a JSON stream tracking file is refused" 1 "" "unreadable tracking file"
-run --branch "other" launch 77 a s "other-77"
+run --branch "other" launch 77 a s "other-77" "$BS"
 expect "launch on a JSON stream tracking file is refused" 1 "" "unreadable tracking file"
 same "refused stream file is left as is" "$T/stream.json" "$(tpath "other")"
 rm -f "$(tpath "other")"
@@ -304,7 +306,7 @@ track "$B" 0 3 2 '{}' "$(pc 1 bogus)" "$(pc 2 pending)"
 cp "$(tpath "$B")" "$T/before.json"
 run --branch "$B" launchable
 expect "an unknown state is refused" 1 "" "unreadable tracking file"
-run --branch "$B" launch 2 a s "$B-2"
+run --branch "$B" launch 2 a s "$B-2" "$BS"
 expect "launch with an unknown state in the file is refused" 1 "" "unreadable tracking file"
 same "unknown-state file is left as is" "$T/before.json" "$(tpath "$B")"
 
@@ -312,71 +314,75 @@ same "unknown-state file is left as is" "$T/before.json" "$(tpath "$B")"
 
 track "$B" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 pending '[1]')" "$(pc 3 running)"
 F="$(tpath "$B")"
-run --branch "$B" launch 1 piece-1 sess-1 "$B-1"
+run --branch "$B" launch 1 piece-1 sess-1 "$B-1" "$BS"
 expect "launch" 0 "#1 running"
-[ "$(jqf "$F" '.pieces["1"] | [.state, .agent, .session, .branch]')" = '["running","piece-1","sess-1","feat/orch-1"]' ] \
-  && echo "ok: launch stores agent, session, branch" || fail "launch fields: $(jqf "$F" '.pieces["1"]')"
+[ "$(jqf "$F" '.pieces["1"] | [.state, .agent, .session, .branch, .base]')" = "[\"running\",\"piece-1\",\"sess-1\",\"feat/orch-1\",\"$BS\"]" ] \
+  && echo "ok: launch stores agent, session, branch, base" || fail "launch fields: $(jqf "$F" '.pieces["1"]')"
 [ "$(jqf "$F" '.pieces["2"].state')" = '"pending"' ] || fail "launch touched another piece"
 run --branch "$B" launchable
 expect "launched piece not listed again" 0 ""
 
 cp "$F" "$T/before.json"
-run --branch "$B" launch 1 piece-1 sess-1 "$B-1"
+run --branch "$B" launch 1 piece-1 sess-1 "$B-1" "$BS"
 expect "launch a running piece" 1 "" "#1 is running, not pending"
 same "re-launch writes nothing" "$T/before.json" "$F"
-run --branch "$B" launch 9 piece-9 sess-9 "$B-9"
+run --branch "$B" launch 9 piece-9 sess-9 "$B-9" "$BS"
 expect "launch unknown issue" 1 "" "unknown issue #9"
 same "unknown launch writes nothing" "$T/before.json" "$F"
-run --branch "$B" launch 2 piece-2 sess-2 "$B-2"
+run --branch "$B" launch 2 piece-2 sess-2 "$B-2" "$BS"
 expect "launch blocked piece" 1 "" "#2 is blocked by #1 (running)"
 same "blocked launch writes nothing" "$T/before.json" "$F"
 
 track "$B" 0 3 2 '{"40":"open"}' "$(pc 1 pending '[40]')"
-run --branch "$B" launch 1 a s "$B-1"
+run --branch "$B" launch 1 a s "$B-1" "$BS"
 expect "launch with open external blocker" 1 "" "#1 is blocked by #40 (open)"
 
 track "$B" 0 2 2 '{}' "$(pc 1 running)" "$(pc 2 stuck)" "$(pc 3 pending)"
 cp "$F" "$T/before.json"
-run --branch "$B" launch 3 a s "$B-3"
+run --branch "$B" launch 3 a s "$B-3" "$BS"
 expect "launch at live cap" 1 "" "live cap reached (2 live, cap 2)"
 same "over-cap launch writes nothing" "$T/before.json" "$F"
 
 track "$B" 2 3 2 '{}' "$(pc 1 pending)"
-run --branch "$B" launch 1 a s "$B-1"
+run --branch "$B" launch 1 a s "$B-1" "$BS"
 expect "launch at depth cap" 1 "" "depth cap reached (depth 2, cap 2)"
 
 track "$B" 0 3 2 '{}' "$(pc 1 pending)"
 cp "$F" "$T/before.json"
-run --branch "$B" launch 01 a s "$B-1"
+run --branch "$B" launch 01 a s "$B-1" "$BS"
 expect "launch rejects a non-canonical issue" 2 "" "bad issue"
-run --branch "$B" launch 1x a s "$B-1"
+run --branch "$B" launch 1x a s "$B-1" "$BS"
 expect "launch rejects a non-numeric issue" 2 "" "bad issue"
-run --branch "$B" launch 1 "" s "$B-1"
+run --branch "$B" launch 1 "" s "$B-1" "$BS"
 expect "launch rejects an empty agent" 2 "" "bad agent"
-run --branch "$B" launch 1 "$(printf 'a\nb')" s "$B-1"
+run --branch "$B" launch 1 "$(printf 'a\nb')" s "$B-1" "$BS"
 expect "launch rejects a newline in the agent" 2 "" "bad agent"
-run --branch "$B" launch 1 a "s 1" "$B-1"
+run --branch "$B" launch 1 a "s 1" "$B-1" "$BS"
 expect "launch rejects whitespace in the session" 2 "" "bad session"
-run --branch "$B" launch 1 a s "a..b"
+run --branch "$B" launch 1 a s "a..b" "$BS"
 expect "launch rejects a bad piece branch" 2 "" "bad branch"
-run --branch "$B" launch 1 a s
-expect "launch needs four arguments" 2 ""
+run --branch "$B" launch 1 a s "$B-1"
+expect "launch needs five arguments" 2 ""
+for bb in "" "${BS%?}" "${BS}0" "$(printf '%s' "$BS" | tr b A)" "$(printf '%s' "$BS" | tr b g)"; do
+  run --branch "$B" launch 1 a s "$B-1" "$bb"
+  expect "launch rejects base sha '$bb'" 2 "" "bad base sha"
+done
 same "rejected launches write nothing" "$T/before.json" "$F"
 
 # Session ids and piece branches are unique per orchestrator: a stop must name
 # exactly one recorded session.
 track "$B" 0 3 2 '{}' "$(pc 1 running)" "$(pc 2 pending)"
 cp "$F" "$T/before.json"
-run --branch "$B" launch 2 a s-1 "$B-2"
+run --branch "$B" launch 2 a s-1 "$B-2" "$BS"
 expect "launch refuses a recorded session id" 1 "" "session id s-1 is already recorded on #1"
 same "duplicate-session launch writes nothing" "$T/before.json" "$F"
-run --branch "$B" launch 2 a s-2 "p/1"
+run --branch "$B" launch 2 a s-2 "p/1" "$BS"
 expect "launch refuses a recorded piece branch" 1 "" "piece branch p/1 is already recorded on #1"
 same "duplicate-branch launch writes nothing" "$T/before.json" "$F"
-run --branch "$B" launch 2 a s-2 "$B"
+run --branch "$B" launch 2 a s-2 "$B" "$BS"
 expect "launch refuses the orchestrator's own branch" 1 "" "piece branch $B is the orchestrator's branch"
 same "own-branch launch writes nothing" "$T/before.json" "$F"
-run --branch "$B" launch 2 a s-2 "$B-2"
+run --branch "$B" launch 2 a s-2 "$B-2" "$BS"
 expect "launch with unique names" 0 "#2 running"
 track "$B" 0 3 2 '{}' "$(pc 1 pending)"
 
@@ -384,7 +390,7 @@ track "$B" 0 3 2 '{}' "$(pc 1 pending)"
 MA='a;b $(touch PWNED1) `touch PWNED2` | c & d "q" '"'"'r'"'"' > e'
 MS='sess$(touch${IFS}PWNED3)'
 MB='piece/$(touch${IFS}PWNED4);`id`&|x'
-run --branch "$B" launch 1 "$MA" "$MS" "$MB"
+run --branch "$B" launch 1 "$MA" "$MS" "$MB" "$BS"
 expect "launch with metacharacters" 0 "#1 running"
 [ "$(jq -r '.pieces["1"].agent' "$F")" = "$MA" ] && echo "ok: agent stored verbatim" || fail "agent: $(jq -r '.pieces["1"].agent' "$F")"
 [ "$(jq -r '.pieces["1"].session' "$F")" = "$MS" ] && echo "ok: session stored verbatim" || fail "session: $(jq -r '.pieces["1"].session' "$F")"
@@ -532,7 +538,7 @@ rec_same "STARTED with CRLF and trailing spaces" "$(printf 'STARTED #1  \r')" "#
 # DONE stores the SHA; a repeat is a no-op; a late STARTED does not regress.
 run --branch "$B" record "DONE #1 p/1 $SHA"
 expect "DONE" 0 "#1 done"
-[ "$(piece 1)" = '{"state":"done","blockedBy":[],"agent":"a-1","session":"s-1","branch":"p/1","sha":"'"$SHA"'"}' ] \
+[ "$(piece 1)" = '{"state":"done","blockedBy":[],"agent":"a-1","session":"s-1","branch":"p/1","base":"'"$BS"'","sha":"'"$SHA"'"}' ] \
   && echo "ok: DONE stores the SHA" || fail "DONE: $(piece 1)"
 rec_same "repeated DONE is idempotent" "DONE #1 p/1 $SHA" "#1 done"
 rec_same "late STARTED after DONE" "STARTED #1" "#1 done"
@@ -558,7 +564,7 @@ expect "STUCK without needs" 0 "#1 stuck"
 # DONE after STUCK: done again, the stuck note cleared.
 run --branch "$B" record "DONE #1 p/1 $SHA"
 expect "DONE after STUCK" 0 "#1 done"
-[ "$(piece 1)" = '{"state":"done","blockedBy":[],"agent":"a-1","session":"s-1","branch":"p/1","sha":"'"$SHA"'"}' ] \
+[ "$(piece 1)" = '{"state":"done","blockedBy":[],"agent":"a-1","session":"s-1","branch":"p/1","base":"'"$BS"'","sha":"'"$SHA"'"}' ] \
   && echo "ok: DONE after STUCK clears needs and reason" || fail "DONE after STUCK: $(piece 1)"
 
 # STUCK from running.
@@ -679,7 +685,7 @@ run --branch "$B" dropped 1
 expect "drop the running piece" 0 "#1 dropped"
 run --branch "$B" launchable
 expect "a dropped piece is not live; its dependant stays blocked" 0 "2"
-run --branch "$B" launch 3 a3 s3 "$B-3"
+run --branch "$B" launch 3 a3 s3 "$B-3" "$BS"
 expect "launch behind a dropped piece" 1 "" "#3 is blocked by #1 (dropped)"
 
 # ------------------------------------------------------------------ finished
@@ -732,7 +738,7 @@ $RAW"; fi
 # ------------------------------------------------------------------ two orchestrators
 
 rm -rf "$SD"
-run --branch "a/b" launch 1 a s "a/b-1"
+run --branch "a/b" launch 1 a s "a/b-1" "$BS"
 expect "launch with no state dir" 1 "" "no tracking file"
 [ ! -e "$SD" ] && echo "ok: a refused launch creates no state dir" || fail "a refused launch created $SD"
 printf '{"pieces":[{"issue":1},{"issue":2}]}' >"$T/sa.json"
@@ -745,7 +751,7 @@ FA="$(tpath "a/b")"; FB="$(tpath "a-b")"
 [ "$FA" != "$FB" ] && [ -f "$FA" ] && [ -f "$FB" ] && echo "ok: a/b and a-b have separate files" || fail "a/b and a-b share $FA"
 [ "$(find "$SD" -type f -name '*.json' ! -name '.*' | wc -l | tr -d ' ')" = "2" ] || fail "expected 2 tracking files: $(find "$SD" -type f)"
 cp "$FB" "$T/b-before.json"
-run --branch "a/b" launch 1 a s "a/b-1"
+run --branch "a/b" launch 1 a s "a/b-1" "$BS"
 expect "launch on a/b" 0 "#1 running"
 same "a/b launch leaves a-b intact" "$T/b-before.json" "$FB"
 run --branch "a/b" launchable
@@ -759,7 +765,7 @@ expect "a-b launchable" 0 "7"
 # is complete and before the rename, as a crash at that point would.
 cp "$FA" "$T/a-before.json"
 export PIECE_TRACK_TEST_ABORT_BEFORE_RENAME=1
-run --branch "a/b" launch 2 a s2 "a/b-2"
+run --branch "a/b" launch 2 a s2 "a/b-2" "$BS"
 expect "aborted launch fails" 2 "" "aborting before rename"
 same "aborted launch leaves the old file" "$T/a-before.json" "$FA"
 no_tmp "aborted launch leaves no temp file"
@@ -778,12 +784,12 @@ unset PIECE_TRACK_TEST_ABORT_BEFORE_RENAME
 
 # A real I/O failure: the temp file cannot be created in a read-only state dir.
 chmod 555 "$SD"
-run --branch "a/b" launch 2 a s2 "a/b-2"
+run --branch "a/b" launch 2 a s2 "a/b-2" "$BS"
 chmod 755 "$SD"
 expect "unwritable state dir fails the launch" 2 "" "cannot write"
 same "unwritable state dir leaves the old file" "$T/a-before.json" "$FA"
 no_tmp "unwritable state dir leaves no temp file"
-run --branch "a/b" launch 2 a s2 "a/b-2"
+run --branch "a/b" launch 2 a s2 "a/b-2" "$BS"
 expect "launch succeeds once writable" 0 "#2 running"
 
 # ------------------------------------------------------------------ locking
@@ -846,7 +852,7 @@ race() {
 track "$B" 0 2 2 '{}' "$(pc 1 running)" "$(pc 2 pending)" "$(pc 3 pending)"
 F="$(tpath "$B")"
 LK="$(dirname "$F")/.$(basename "$F").lock"
-race "last slot" --branch "$B" launch 2 a2 s2 "$B-2" -- --branch "$B" launch 3 a3 s3 "$B-3"
+race "last slot" --branch "$B" launch 2 a2 s2 "$B-2" "$BS" -- --branch "$B" launch 3 a3 s3 "$B-3" "$BS"
 [ "$RCA" -eq 0 ] && [ "$OUTA" = "#2 running" ] && echo "ok: first racing launch takes the last slot" \
   || fail "first racing launch: rc $RCA ($OUTA) ($ERRA)"
 expect "second racing launch refuses at the cap" 1 "" "live cap reached (2 live, cap 2)"
@@ -856,7 +862,7 @@ no_tmp "no lock left after a race"
 
 # Two launches under the cap: both persist (no lost update).
 track "$B" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 pending)"
-race "under cap" --branch "$B" launch 1 a1 s1 "$B-1" -- --branch "$B" launch 2 a2 s2 "$B-2"
+race "under cap" --branch "$B" launch 1 a1 s1 "$B-1" "$BS" -- --branch "$B" launch 2 a2 s2 "$B-2" "$BS"
 [ "$RCA" -eq 0 ] || fail "under cap: first launch rc $RCA ($ERRA)"
 expect "second concurrent launch under the cap" 0 "#2 running"
 [ "$(jqf "$F" '[.pieces[] | [.state, .session]]')" = '[["running","s1"],["running","s2"]]' ] \
@@ -864,7 +870,7 @@ expect "second concurrent launch under the cap" 0 "#2 running"
 
 # register waiting behind a launch sees the launch and refuses.
 track "$B" 0 3 2 '{"12":"closed"}' "$(pc 34 pending)" "$(pc 35 pending '[34]')" "$(pc 36 pending '[12,34]')"
-race "register vs launch" --branch "$B" launch 34 a34 s34 "$B-34" -- --branch "$B" register "$FIX/snapshot-chain.json"
+race "register vs launch" --branch "$B" launch 34 a34 s34 "$B-34" "$BS" -- --branch "$B" register "$FIX/snapshot-chain.json"
 [ "$RCA" -eq 0 ] || fail "register vs launch: launch rc $RCA ($ERRA)"
 expect "register behind a launch refuses" 1 "" "#34 is running"
 [ "$(jqf "$F" '.pieces["34"].state')" = '"running"' ] && echo "ok: launched piece stays running" \
@@ -886,10 +892,10 @@ hold_start() {
 # holder then finishes normally.
 track "$B" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 pending)"
 cp "$F" "$T/before.json"
-hold_start a --branch "$B" launch 1 a1 s1 "$B-1"
+hold_start a --branch "$B" launch 1 a1 s1 "$B-1" "$BS"
 pa=$LASTPID
 export PIECE_TRACK_LOCK_TIMEOUT=1
-run --branch "$B" launch 2 a2 s2 "$B-2"
+run --branch "$B" launch 2 a2 s2 "$B-2" "$BS"
 unset PIECE_TRACK_LOCK_TIMEOUT
 expect "a live lock times out" 1 "" "lock busy (held by pid $pa)"
 same "timed-out launch writes nothing" "$T/before.json" "$F"
@@ -903,7 +909,7 @@ no_tmp "only the lock file is left after a timeout"
 # each times out, writing nothing.
 track "$B" 0 3 2 '{}' "$(pc 1 running)" "$(pc 2 "done")" "$(pc 3 pending)"
 cp "$F" "$T/before.json"
-hold_start a --branch "$B" launch 3 a3 s3 "$B-3"
+hold_start a --branch "$B" launch 3 a3 s3 "$B-3" "$BS"
 pa=$LASTPID
 export PIECE_TRACK_LOCK_TIMEOUT=1
 for wcmd in "record|DONE #1 p/1 $SHA" "merged|2" "failed|1" "dropped|2"; do
@@ -927,11 +933,11 @@ expect "record behind merged refuses" 1 "" "#1 is merged"
 # A holder killed with SIGKILL inside the lock: the kernel frees the lock, and
 # the next writer gets it at once with no cleanup.
 track "$B" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 pending)"
-hold_start k --branch "$B" launch 1 a1 s1 "$B-1"
+hold_start k --branch "$B" launch 1 a1 s1 "$B-1" "$BS"
 pk=$LASTPID
 kill -9 "$pk"; wait "$pk" 2>/dev/null
 t0="$(date +%s)"
-run --branch "$B" launch 2 a2 s2 "$B-2"
+run --branch "$B" launch 2 a2 s2 "$B-2" "$BS"
 t1="$(date +%s)"
 expect "a writer after a killed holder succeeds" 0 "#2 running"
 [ $((t1 - t0)) -le 2 ] && echo "ok: the killed holder's lock was free at once" || fail "waited $((t1 - t0)) s after a killed holder"
@@ -946,7 +952,7 @@ no_tmp "no cleanup needed after a killed holder"
 track "$B" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 pending)"
 rm -f "$LT/child.pid"
 export PIECE_TRACK_TEST_LOCK_CHILD="$LT/child.pid"
-hold_start k --branch "$B" launch 2 a2 s2 "$B-2"
+hold_start k --branch "$B" launch 2 a2 s2 "$B-2" "$BS"
 unset PIECE_TRACK_TEST_LOCK_CHILD
 pk=$LASTPID
 waitf "$LT/child.pid" || fail "lock child never started"
@@ -954,14 +960,14 @@ cpid="$(cat "$LT/child.pid")"
 kill -9 "$pk"; wait "$pk" 2>/dev/null
 cp "$F" "$T/before.json"
 export PIECE_TRACK_LOCK_TIMEOUT=1
-run --branch "$B" launch 1 a1 s1 "$B-1"
+run --branch "$B" launch 1 a1 s1 "$B-1" "$BS"
 unset PIECE_TRACK_LOCK_TIMEOUT
 expect "a surviving child keeps the lock" 1 "" "lock busy"
 same "a launch blocked by the child writes nothing" "$T/before.json" "$F"
 kill "$cpid" 2>/dev/null
 i=0
 while kill -0 "$cpid" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
-run --branch "$B" launch 1 a1 s1 "$B-1"
+run --branch "$B" launch 1 a1 s1 "$B-1" "$BS"
 expect "a writer succeeds once the child is gone" 0 "#1 running"
 
 # perl with Fcntl is required for the lock.
@@ -971,7 +977,7 @@ chmod +x "$T/fakebin/perl"
 cp "$F" "$T/before.json"
 OPATH="$PATH"
 export PATH="$T/fakebin:$PATH"
-run --branch "$B" launch 2 a2 s2 "$B-2"
+run --branch "$B" launch 2 a2 s2 "$B-2" "$BS"
 export PATH="$OPATH"
 expect "no usable perl" 2 "" "perl with Fcntl is required"
 same "no usable perl writes nothing" "$T/before.json" "$F"
@@ -985,7 +991,7 @@ FL="$(tpath "$LB")"
 # tracking file directly, so no lock file exists yet for $LB.)
 cp "$FL" "$T/before.json"
 chmod 555 "$SD"
-run --branch "$LB" launch 1 a1 s1 "$LB-1"
+run --branch "$LB" launch 1 a1 s1 "$LB-1" "$BS"
 chmod 755 "$SD"
 expect "an uncreatable lock file" 2 "" "cannot write lock"
 same "an uncreatable lock file writes nothing" "$T/before.json" "$FL"
@@ -993,14 +999,14 @@ same "an uncreatable lock file writes nothing" "$T/before.json" "$FL"
 # PIECE_TRACK_LOCK_TIMEOUT=0: an uncontended write succeeds; a held lock is
 # refused at once.
 export PIECE_TRACK_LOCK_TIMEOUT=0
-run --branch "$LB" launch 1 a1 s1 "$LB-1"
+run --branch "$LB" launch 1 a1 s1 "$LB-1" "$BS"
 unset PIECE_TRACK_LOCK_TIMEOUT
 expect "timeout 0 uncontended" 0 "#1 running"
-hold_start a --branch "$LB" launch 2 a2 s2 "$LB-2"
+hold_start a --branch "$LB" launch 2 a2 s2 "$LB-2" "$BS"
 pa=$LASTPID
 t0="$(date +%s)"
 export PIECE_TRACK_LOCK_TIMEOUT=0
-run --branch "$LB" launch 3 a3 s3 "$LB-3"
+run --branch "$LB" launch 3 a3 s3 "$LB-3" "$BS"
 unset PIECE_TRACK_LOCK_TIMEOUT
 t1="$(date +%s)"
 expect "timeout 0 against a held lock" 1 "" "lock busy (held by pid $pa)"
@@ -1012,7 +1018,7 @@ expect "timeout 0 against a held lock" 1 "" "lock busy (held by pid $pa)"
 LKL="$(dirname "$FL")/.$(basename "$FL").lock"
 for mk in "1:$LKL" "$LKL"; do
   export PIECE_TRACK_LOCKED="$mk" PIECE_TRACK_LOCK_TIMEOUT=1
-  run --branch "$LB" launch 3 a3 s3 "$LB-3"
+  run --branch "$LB" launch 3 a3 s3 "$LB-3" "$BS"
   unset PIECE_TRACK_LOCKED PIECE_TRACK_LOCK_TIMEOUT
   expect "a preset lock marker ($mk) still locks" 1 "" "lock busy (held by pid $pa)"
 done
@@ -1028,28 +1034,28 @@ RAW="$(cd "$T/dashcwd" && PIECE_TRACK_DIR=-dash "$BASH" "$PT" --branch dash regi
 RC=$?; OUT="$RAW"; ERR="$(cat "$T/err")"
 expect "a state dir named -dash" 0 "registered 3 pieces for dash"
 [ -f "$T/dashcwd/-dash/dash.json" ] && echo "ok: -dash/dash.json written" || fail "no $T/dashcwd/-dash/dash.json: $(ls -la "$T/dashcwd")"
-RAW="$(cd "$T/dashcwd" && PIECE_TRACK_DIR=-dash "$BASH" "$PT" --branch dash launch 34 a s "dash-34" 2>"$T/err")"
+RAW="$(cd "$T/dashcwd" && PIECE_TRACK_DIR=-dash "$BASH" "$PT" --branch dash launch 34 a s "dash-34" "$BS" 2>"$T/err")"
 RC=$?; OUT="$RAW"; ERR="$(cat "$T/err")"
 expect "launch under a state dir named -dash" 0 "#34 running"
 
 
 export PIECE_TRACK_LOCK_TIMEOUT=x
-run --branch "$B" launch 2 a2 s2 "$B-2"
+run --branch "$B" launch 2 a2 s2 "$B-2" "$BS"
 unset PIECE_TRACK_LOCK_TIMEOUT
 expect "bad lock timeout" 2 "" "PIECE_TRACK_LOCK_TIMEOUT"
 
 export PIECE_TRACK_TEST_ABORT_BEFORE_RENAME=1
-run --branch "$B" launch 2 a2 s2 "$B-2"
+run --branch "$B" launch 2 a2 s2 "$B-2" "$BS"
 unset PIECE_TRACK_TEST_ABORT_BEFORE_RENAME
 expect "abort with the lock held" 2 "" "aborting before rename"
 no_tmp "no lock left after the abort path"
-run --branch "$B" launch 2 a2 s2 "$B-2"
+run --branch "$B" launch 2 a2 s2 "$B-2" "$BS"
 expect "launch after the lock tests" 0 "#2 running"
 no_tmp "no lock left after a success"
-run --branch "$B" launch 2 a2 s2 "$B-2"
+run --branch "$B" launch 2 a2 s2 "$B-2" "$BS"
 expect "refusal after the lock tests" 1 "" "not pending"
 no_tmp "no lock left after a refusal"
-run --branch "$B" launch 2 "" s2 "$B-2"
+run --branch "$B" launch 2 "" s2 "$B-2" "$BS"
 expect "usage error with the lock held" 2 "" "bad agent"
 no_tmp "no lock left after a usage error"
 
@@ -1107,23 +1113,35 @@ want="external #13 added (open)
 #39 running -> failed (session ended)
 #41 stuck -> failed (session ended)
 #42 added (pending)
-#43 failed -> running (session live)
 unknown-session #39 session=sess-39 name=a-39
 unknown-session #42 session=sess-42 name=a-42
-reconciled feat/orch: pending 2, running 3, done 2, merged 3, stuck 1, failed 3, dropped 1; unknown sessions 2"
+unknown-session #99 session=sess-99 name=a-99
+reconciled feat/orch: pending 2, running 2, done 2, merged 3, stuck 1, failed 4, dropped 1; unknown sessions 3"
 [ "$RC" -eq 0 ] && [ "$RAW" = "$want" ] && echo "ok: reconcile a stale file" \
   || fail "reconcile a stale file: rc $RC, stdout:
 $RAW
 stderr: $ERR"
-[ "$(states "$F")" = "32=pending 33=merged 34=merged 35=running 36=failed 37=done 38=done 39=failed 40=stuck 41=failed 42=pending 43=running 44=dropped 45=merged 46=running" ] \
+[ "$(states "$F")" = "32=pending 33=merged 34=merged 35=running 36=failed 37=done 38=done 39=failed 40=stuck 41=failed 42=pending 43=failed 44=dropped 45=merged 46=running" ] \
   && echo "ok: reconciled states" || fail "reconciled states: $(states "$F")"
+# A fresh branch's tip equals its base and is contained before any commit:
+# with a live session (#35) it stays running, with an ended one (#36) it
+# fails; neither is merged.
+[ "$(jqf "$F" '[.pieces["35","36"] | [.state, .sha]]')" = '[["running",null],["failed",null]]' ] \
+  && echo "ok: a contained tip equal to the base is not a merge" || fail "tip == base: $(jqf "$F" '.pieces["35","36"]')"
+# Failing is the orchestrator's decision: a failed piece whose recorded
+# session is live stays failed, with a note.
+case "$ERR" in *"#43 is failed but its session s-43 is live: left failed"*) echo "ok: a live session does not resurrect a failed piece" ;;
+  *) fail "no note for the live failed #43: $ERR" ;; esac
+case "$RAW" in *unverified-contained*) fail "unverified tip with recorded bases: $RAW" ;;
+  *) echo "ok: recorded bases leave nothing unverified" ;; esac
 case "$ERR" in *"#32 is not in the snapshot; kept as pending"*) echo "ok: a piece missing from the snapshot is reported and kept" ;;
   *) fail "no report for #32: $ERR" ;; esac
 case "$ERR" in *"#46 tip fact is for branch other/46, recorded p/46: ignored"*) echo "ok: a tip for another branch is reported and ignored" ;;
   *) fail "no tip mismatch report for #46: $ERR" ;; esac
-# AC1: a contained tip is merged even with a live session; the tip becomes the sha.
+# AC1: a contained tip past the recorded base is merged even with a live
+# session; the tip becomes the sha.
 [ "$(jqf "$F" '.pieces["33"] | [.state, .branch, .sha]')" = '["merged","p/33","3333333333333333333333333333333333333333"]' ] \
-  && echo "ok: AC1 a contained tip overrides running" || fail "AC1 #33: $(jqf "$F" '.pieces["33"]')"
+  && echo "ok: AC1 a contained tip past the base overrides running" || fail "AC1 #33: $(jqf "$F" '.pieces["33"]')"
 # AC2: a live recorded session keeps running (matched on sessionId for #35, on id
 # for the others); a done piece stays done whether its session is live (#37) or
 # ended (#38); a stuck piece with a live session stays stuck with its reason.
@@ -1150,7 +1168,8 @@ cp "$F" "$T/before.json"
 rec "$B" "$RS" "$RN" "$RT"
 want="unknown-session #39 session=sess-39 name=a-39
 unknown-session #42 session=sess-42 name=a-42
-reconciled feat/orch: pending 2, running 3, done 2, merged 3, stuck 1, failed 3, dropped 1; unknown sessions 2"
+unknown-session #99 session=sess-99 name=a-99
+reconciled feat/orch: pending 2, running 2, done 2, merged 3, stuck 1, failed 4, dropped 1; unknown sessions 3"
 [ "$RC" -eq 0 ] && [ "$RAW" = "$want" ] && echo "ok: a re-run reports only unknowns and the summary" \
   || fail "re-run: rc $RC: $RAW ($ERR)"
 same "a re-run writes nothing" "$T/before.json" "$F"
@@ -1163,7 +1182,7 @@ case "$RAW" in "liveCap 3 -> 5"*) echo "ok: a new live cap is reported" ;; *) fa
 
 # A recorded session live under another name is neither adopted nor failed.
 cp "$FIX/restart-track.json" "$F"
-printf '[{"kind":"background","id":"0a0b0c35","name":"renamed","sessionId":"s-35","status":"busy"}]' >"$T/sess.json"
+printf '[{"kind":"background","id":"0a0b0c35","name":"renamed","sessionId":"s-35","pid":4135,"status":"busy"}]' >"$T/sess.json"
 rec "$B" "$T/sess.json" "$RN" "$RT"
 [ "$RC" -eq 0 ] && [ "$(jqf "$F" '.pieces["35"].state')" = '"running"' ] \
   && echo "ok: a recorded session under another name leaves the piece" || fail "renamed: rc $RC $(jqf "$F" '.pieces["35"]') ($ERR)"
@@ -1175,12 +1194,39 @@ case "$ERR" in *"#35 session s-35 is live under the name renamed, not a-35: left
 # running together and nothing returns a piece to pending, so only a
 # hand-edited file has one; the record proves the launch, so it runs.
 jq '.pieces["32"] += {agent: "a-32", session: "s-32", branch: "p/32"}' "$FIX/restart-track.json" >"$F"
-printf '[{"kind":"background","id":"s-32","name":"a-32","sessionId":"u-32","status":"idle"}]' >"$T/sess.json"
+printf '[{"kind":"background","id":"s-32","name":"a-32","sessionId":"u-32","pid":4132,"status":"idle"}]' >"$T/sess.json"
 printf '{"pieces":[{"issue":32}],"external":{"12":"closed"}}' >"$T/snap.json"
 printf '{}' >"$T/tips.json"
 rec "$B" "$T/sess.json" "$T/snap.json" "$T/tips.json"
 case "$RAW" in "#32 pending -> running (session live)"*) echo "ok: a recorded live session runs a pending piece" ;;
   *) fail "pending with a record: rc $RC: $RAW ($ERR)" ;; esac
+
+# Liveness is the pid: a row with a status but no pid has ended, and a row
+# with a pid but no status is live.
+cp "$FIX/restart-track.json" "$F"
+printf '[{"name":"a-35","sessionId":"s-35","status":"idle"},{"name":"a-46","id":"s-46","sessionId":"u-46","pid":46}]' >"$T/sess.json"
+rec "$B" "$T/sess.json" "$RN" "$T/tips.json"
+[ "$(jqf "$F" '[.pieces["35","46"] | .state]')" = '["failed","running"]' ] \
+  && echo "ok: liveness follows the pid, not the status" || fail "pid liveness: $(jqf "$F" '[.pieces["35","46"]]')"
+
+# A legacy record with no base: a contained tip is reported, not merged, and
+# the live session keeps the piece running.
+jq '.pieces["33"] |= del(.base)' "$FIX/restart-track.json" >"$F"
+rec "$B" "$RS" "$RN" "$RT"
+[ "$(jqf "$F" '.pieces["33"].state')" = '"running"' ] && echo "ok: a contained tip with no recorded base is not merged" \
+  || fail "legacy #33: $(jqf "$F" '.pieces["33"]')"
+case "$RAW" in *"unverified-contained #33 tip=3333333333333333333333333333333333333333 branch=p/33"*)
+  echo "ok: the legacy contained tip is reported unverified" ;; *) fail "legacy unverified: $RAW" ;; esac
+
+# The kept pieces join the graph: retained #1 is blocked by #2, and the
+# snapshot has #2 blocked by #1 as a closed external issue. Refused, nothing
+# written.
+track "$B" 0 3 2 '{}' "$(pc 1 pending '[2]')" "$(pc 2 pending)"
+cp "$F" "$T/before.json"
+printf '{"pieces":[{"issue":2,"blocked_by":[1]}],"external":{"1":"closed"}}' >"$T/snap.json"
+rec "$B" "$T/sess.json" "$T/snap.json" "$T/tips.json"
+expect "a kept piece also external is refused" 1 "" "with the kept pieces: issue in both pieces and external: #1"
+same "a refused combined graph writes nothing" "$T/before.json" "$F"
 
 # The listing's completed rows (no status) are ended sessions; a recorded
 # session absent from the listing has ended too.
@@ -1191,18 +1237,26 @@ rec "$B" "$T/sess.json" "$RN" "$T/tips.json"
   && echo "ok: an empty listing fails every running and stuck piece, done stays done" || fail "empty listing: $(states "$F")"
 
 # Missing file: rebuilt from the snapshot with the given caps. With no records
-# every live session matching the scheme is unknown; a tip with no recorded
-# branch is taken as is.
+# every live session matching the scheme is unknown, and with no recorded
+# base a contained tip proves nothing: reported, not merged.
 rec "rebuilt" "$RS" "$RN" "$RT" --depth 1 --live-cap 4 --depth-cap 3
 FR="$(tpath "rebuilt")"
 [ "$RC" -eq 0 ] && echo "ok: reconcile rebuilds a missing file" || fail "rebuild: rc $RC ($ERR)"
 case "$ERR" in *"no tracking file for rebuilt: rebuilt from the snapshot"*) echo "ok: the rebuild is reported" ;;
   *) fail "no rebuild report: $ERR" ;; esac
-[ "$(states "$FR")" = "33=merged 34=merged 35=pending 36=pending 37=pending 38=pending 39=pending 40=pending 41=pending 42=pending 43=pending 44=merged 45=pending 46=merged" ] \
-  && echo "ok: rebuilt states" || fail "rebuilt states: $(states "$FR")"
-[ "$(jqf "$FR" '[.depth, .liveCap, .depthCap, .pieces["46"].branch, .pieces["46"].agent]')" = '[1,4,3,"other/46",null]' ] \
-  && echo "ok: rebuilt caps and tip branch" || fail "rebuilt: $(jqf "$FR" '[.depth, .liveCap, .depthCap, .pieces["46"]]')"
-[ "$(unknowns)" = "#33 a-33 #35 a-35 #37 a-37 #39 a-39 #40 a-40 #42 a-42 #43 a-43 #46 a-46" ] \
+[ "$(states "$FR")" = "33=pending 34=pending 35=pending 36=pending 37=pending 38=pending 39=pending 40=pending 41=pending 42=pending 43=pending 44=pending 45=pending 46=pending" ] \
+  && echo "ok: rebuilt states: a contained tip without a base is not merged" || fail "rebuilt states: $(states "$FR")"
+[ "$(jqf "$FR" '[.depth, .liveCap, .depthCap, .pieces["46"].branch, .pieces["46"].agent]')" = '[1,4,3,null,null]' ] \
+  && echo "ok: rebuilt caps" || fail "rebuilt: $(jqf "$FR" '[.depth, .liveCap, .depthCap, .pieces["46"]]')"
+[ "$(printf '%s\n' "$RAW" | grep '^unverified-contained' | tr '\n' '|')" = \
+"unverified-contained #33 tip=3333333333333333333333333333333333333333 branch=p/33|\
+unverified-contained #34 tip=3434343434343434343434343434343434343434 branch=p/34|\
+unverified-contained #35 tip=$BS branch=p/35|\
+unverified-contained #36 tip=$BS branch=p/36|\
+unverified-contained #44 tip=4444444444444444444444444444444444444444 branch=p/44|\
+unverified-contained #46 tip=4646464646464646464646464646464646464646 branch=other/46|" ] \
+  && echo "ok: contained tips without a base are reported unverified" || fail "unverified: $RAW"
+[ "$(unknowns)" = "#33 a-33 #35 a-35 #37 a-37 #39 a-39 #40 a-40 #42 a-42 #43 a-43 #46 a-46 #99 a-99" ] \
   && echo "ok: every live scheme session is unknown after a rebuild" || fail "rebuilt unknowns: $(unknowns)"
 cp "$FR" "$T/before.json"
 rec "rebuilt" "$RS" "$RN" "$RT" --depth 1 --live-cap 4 --depth-cap 3
@@ -1261,6 +1315,10 @@ rec_bad "session row without sessionId" sessions '[{"name":"a-35","status":"busy
 rec_bad "sessionId with a space" sessions '[{"name":"a-35","sessionId":"s 35"}]' "bad session entry"
 rec_bad "numeric id" sessions '[{"name":"a-35","sessionId":"s-35","id":35}]' "bad session entry"
 rec_bad "numeric name" sessions '[{"name":35,"sessionId":"s-35"}]' "bad session entry"
+rec_bad "control character in a name" sessions '[{"name":"a-35\u001b[2Jx","sessionId":"s-35","pid":7}]' "bad session entry"
+rec_bad "empty name" sessions '[{"name":"","sessionId":"s-35","pid":7}]' "bad session entry"
+rec_bad "string pid" sessions '[{"name":"a-35","sessionId":"s-35","pid":"7"}]' "bad session entry"
+rec_bad "zero pid" sessions '[{"name":"a-35","sessionId":"s-35","pid":0}]' "bad session entry"
 rec_bad "boolean status" sessions '[{"name":"a-35","sessionId":"s-35","status":true}]' "bad session entry"
 rec_bad "snapshot not JSON" snapshot '{"pieces":[' "snapshot is not valid JSON"
 rec_bad "snapshot blocked by a dropped-out piece" snapshot '{"pieces":[{"issue":33,"blocked_by":[32]}]}' "unknown blocker"
@@ -1278,7 +1336,7 @@ rec_bad "tip not an object" tips '{"35":"353535353535353535353535353535353535353
 rec_bad "tip for an issue outside the set" tips '{"99":{"branch":"p/99","tip":"9999999999999999999999999999999999999999","contained":true}}' "tips for issues not in the set: #99"
 
 # Strings are data: a name with shell metacharacters is matched, never run.
-printf '[{"name":"a-$(touch pwned)","sessionId":"s;$(id)|x","status":"busy"}]' >"$T/sess.json"
+printf '[{"name":"a-$(touch pwned)","sessionId":"s;$(id)|x","pid":4999,"status":"busy"}]' >"$T/sess.json"
 run --branch "$B" reconcile --sessions "$T/sess.json" --snapshot "$RN" --tips "$T/tips.json" --name-prefix 'a-$(touch pwned)'
 [ "$RC" -eq 0 ] && [ ! -e "$W/pwned" ] && echo "ok: session strings are data" || fail "metacharacters: rc $RC ($ERR)"
 
@@ -1302,7 +1360,7 @@ same "reconcile usage errors write nothing" "$T/before.json" "$F"
 track "lkr" 0 3 2 '{}' "$(pc 1 pending)"
 FK="$(tpath "lkr")"
 printf '{"pieces":[{"issue":1}]}' >"$T/snap1.json"
-hold_start a --branch "lkr" launch 1 a-1 s-1 "p/1"
+hold_start a --branch "lkr" launch 1 a-1 s-1 "p/1" "$BS"
 pa=$LASTPID
 cp "$FK" "$T/before.json"
 export PIECE_TRACK_LOCK_TIMEOUT=1

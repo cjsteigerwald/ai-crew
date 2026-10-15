@@ -7,18 +7,18 @@
   "external": {"12": "closed"},
   "pieces": {
     "32": {"state": "pending", "blockedBy": [], "agent": null, "session": null, "branch": null},
-    "33": {"state": "running", "blockedBy": [], "agent": "a-33", "session": "s-33", "branch": "p/33"},
-    "34": {"state": "done", "blockedBy": [], "agent": "a-34", "session": "s-34", "branch": "p/34", "sha": "3434343434343434343434343434343434343434"},
-    "35": {"state": "running", "blockedBy": [34], "agent": "a-35", "session": "s-35", "branch": "p/35"},
-    "36": {"state": "running", "blockedBy": [12], "agent": "a-36", "session": "s-36", "branch": "p/36"},
-    "37": {"state": "done", "blockedBy": [], "agent": "a-37", "session": "s-37", "branch": "p/37", "sha": "3737373737373737373737373737373737373737"},
-    "38": {"state": "done", "blockedBy": [], "agent": "a-38", "session": "s-38", "branch": "p/38", "sha": "3838383838383838383838383838383838383838"},
-    "39": {"state": "running", "blockedBy": [], "agent": "a-39", "session": "s-39", "branch": "p/39"},
-    "40": {"state": "stuck", "blockedBy": [35], "agent": "a-40", "session": "s-40", "branch": "p/40", "needs": null, "reason": "cannot reach the test db"},
-    "41": {"state": "stuck", "blockedBy": [], "agent": "a-41", "session": "s-41", "branch": "p/41", "needs": null, "reason": "waits on the user"},
-    "43": {"state": "failed", "blockedBy": [], "agent": "a-43", "session": "s-43", "branch": "p/43"},
-    "44": {"state": "dropped", "blockedBy": [], "agent": "a-44", "session": "s-44", "branch": "p/44"},
-    "45": {"state": "merged", "blockedBy": [], "agent": "a-45", "session": "s-45", "branch": "p/45", "sha": "4545454545454545454545454545454545454545"},
-    "46": {"state": "running", "blockedBy": [], "agent": "a-46", "session": "s-46", "branch": "p/46"}
+    "33": {"state": "running", "blockedBy": [], "agent": "a-33", "session": "s-33", "branch": "p/33", "base": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"},
+    "34": {"state": "done", "blockedBy": [], "agent": "a-34", "session": "s-34", "branch": "p/34", "base": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0", "sha": "3434343434343434343434343434343434343434"},
+    "35": {"state": "running", "blockedBy": [34], "agent": "a-35", "session": "s-35", "branch": "p/35", "base": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"},
+    "36": {"state": "running", "blockedBy": [12], "agent": "a-36", "session": "s-36", "branch": "p/36", "base": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"},
+    "37": {"state": "done", "blockedBy": [], "agent": "a-37", "session": "s-37", "branch": "p/37", "base": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0", "sha": "3737373737373737373737373737373737373737"},
+    "38": {"state": "done", "blockedBy": [], "agent": "a-38", "session": "s-38", "branch": "p/38", "base": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0", "sha": "3838383838383838383838383838383838383838"},
+    "39": {"state": "running", "blockedBy": [], "agent": "a-39", "session": "s-39", "branch": "p/39", "base": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"},
+    "40": {"state": "stuck", "blockedBy": [35], "agent": "a-40", "session": "s-40", "branch": "p/40", "base": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0", "needs": null, "reason": "cannot reach the test db"},
+    "41": {"state": "stuck", "blockedBy": [], "agent": "a-41", "session": "s-41", "branch": "p/41", "base": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0", "needs": null, "reason": "waits on the user"},
+    "43": {"state": "failed", "blockedBy": [], "agent": "a-43", "session": "s-43", "branch": "p/43", "base": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"},
+    "44": {"state": "dropped", "blockedBy": [], "agent": "a-44", "session": "s-44", "branch": "p/44", "base": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"},
+    "45": {"state": "merged", "blockedBy": [], "agent": "a-45", "session": "s-45", "branch": "p/45", "base": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0", "sha": "4545454545454545454545454545454545454545"},
+    "46": {"state": "running", "blockedBy": [], "agent": "a-46", "session": "s-46", "branch": "p/46", "base": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"}
   }
 }
