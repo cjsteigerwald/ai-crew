@@ -9,6 +9,7 @@
 #   piece-track.sh [--branch <b>] merged <issue>             done -> merged (after the fast-forward)
 #   piece-track.sh [--branch <b>] failed <issue>             running, done or stuck -> failed
 #   piece-track.sh [--branch <b>] dropped <issue>            any state but merged -> dropped (the user's call)
+#   piece-track.sh [--branch <b>] accept <issue>             unverified pending -> merged (only on the user's confirmation)
 #   piece-track.sh [--branch <b>] finished                   true or false: every piece merged or dropped
 #   piece-track.sh [--branch <b>] summary                    Markdown table for the PR body
 #   piece-track.sh [--branch <b>] reconcile --sessions <f> --snapshot <f> --tips <f> --name-prefix <p> [--depth <n>] [--live-cap <n>] [--depth-cap <n>]
@@ -69,6 +70,9 @@
 #   failed    running, done, stuck   -> failed (the session ended unmerged);
 #             failed                 -> unchanged
 #   dropped   any state but merged   -> dropped;  dropped -> unchanged
+#   accept    pending with an unverified fact -> merged (branch and sha from
+#             the fact, the fact removed); merged -> unchanged. Run it only
+#             after the user confirms the contained tip is the piece's work.
 # (Repeated marks are no-ops so an orchestrator can retry after a crash.)
 # A report is also refused for an unknown issue, a pending piece (never
 # launched), a DONE whose branch is not the one recorded at launch, and a
@@ -113,26 +117,36 @@
 #               >= 1 or null/absent; other fields are ignored.
 #   --tips      per piece, the facts about its branch, absent when the branch
 #               does not exist: {"35": {"branch": "feat/orch-35", "tip":
-#               "<40 lowercase hex>", "contained": true}}. contained is true
-#               when the tip is an ancestor of, or equal to, the orchestrator's
-#               branch head (git merge-base --is-ancestor <tip> <head>). Keys
-#               must be issues in the file or the snapshot.
+#               "<40 lowercase hex>", "contained": true, "advanced": true}}.
+#               contained is true when the tip is an ancestor of, or equal to,
+#               the orchestrator's branch head (git merge-base --is-ancestor
+#               <tip> <head>); advanced is true when the piece's recorded base
+#               is an ancestor of, or equal to, the tip (git merge-base
+#               --is-ancestor <base> <tip>; false when no base is recorded).
+#               Both required booleans. Keys must be issues in the file or the
+#               snapshot.
 #   --name-prefix <p>  the session-name scheme: a piece's agent is named
 #               <p><issue> (e.g. PROJ-12-#35 for --name-prefix PROJ-12-#).
 #   --depth/--live-cap/--depth-cap  as for register; given, they replace the
 #               stored values, else the file's (or register's defaults) stand.
 # Every piece of the snapshot is kept or added (pending); its blockedBy and the
 # external states are replaced by the snapshot's. A piece in the file but not
-# in the snapshot is kept, with its blockers, and reported on stderr. Then,
-# per piece, in order:
+# in the snapshot is kept, with its blockers, and reported on stderr; an old
+# external entry that only kept pieces still reference is kept too, reported
+# as "external #<x> kept for #<n>". Then, per piece, in order:
 #   1. merged and dropped stay as they are. A new piece branch forks at the
 #      orchestrator's head, so its tip is contained before any commit: a
 #      contained tip makes a piece merged only when the piece has a recorded
-#      base and the tip differs from it (sha = the tip). Tip equal to the base:
-#      no evidence, the rules below decide. No recorded base (a rebuilt file):
-#      not merged; reported as "unverified-contained #<n> tip=<sha>
-#      branch=<branch>" for the user to decide. A tip for another branch than
-#      the recorded one is reported on stderr and ignored.
+#      base, the tip differs from it and the tip is advanced (sha = the tip).
+#      Tip equal to the base: no evidence, the rules below decide. A tip not
+#      advanced (an older ancestor): not merged, reported on stderr. No
+#      recorded base (a rebuilt file): not merged; the piece gets
+#      "unverified": {"branch", "tip"} and is reported as
+#      "unverified-contained #<n> tip=<sha> branch=<branch>" for the user to
+#      decide (accept or dropped). launchable skips such a piece and launch
+#      refuses it. A later reconcile that no longer finds the tip contained
+#      removes the fact ("#<n> unverified-contained cleared"). A tip for
+#      another branch than the recorded one is reported on stderr and ignored.
 #   2. The recorded session live (a live row whose name is the recorded agent
 #      and whose sessionId or id is the recorded session): pending and running
 #      become running; done and stuck stay; failed stays failed (failing is
@@ -169,7 +183,7 @@
 # only) stops a write after the temp file is complete and before the rename.
 #
 # Lock: every writing command (register, launch, record, merged, failed,
-# dropped, reconcile) holds one lock per tracking
+# dropped, reconcile, accept) holds one lock per tracking
 # file from before it reads the file until it exits, so read, checks, compute
 # and rename are one transaction. The lock is flock(2) on the persistent file
 # .<enc>.json.lock beside the tracking file (never deleted), taken by a perl
@@ -272,7 +286,7 @@ def holds($s): [.blockedBy[] | select(cleared($s) | not)];
 def slots: if .depth >= .depthCap then 0 else ([.liveCap - livecount, 0] | max) end;
 def launchable: . as $s
   | [.pieces | to_entries[]
-     | select(.value.state == "pending" and (.value | holds($s) | length) == 0)
+     | select(.value.state == "pending" and .value.unverified == null and (.value | holds($s) | length) == 0)
      | .key | tonumber]
   | sort | .[0:($s | slots)];
 '
@@ -360,7 +374,7 @@ def badrow: (type != "object") or ((.name == null or (.name | text)) | not) or (
 def badtip: (.key | test("^[1-9][0-9]{0,8}$") | not) or (.value | type != "object")
   or (.value.branch | text | not)
   or (.value.tip | (type == "string" and test("^[0-9a-f]{40}$")) | not)
-  or (.value.contained | type != "boolean");
+  or (.value.contained | type != "boolean") or (.value.advanced | type != "boolean");
 '
 SESSCHECK='if type != "array" then "session listing is not a JSON array"
 elif any(.[]; badrow) then "bad session entry: " + ([.[] | select(badrow)][0] | tojson)
@@ -382,7 +396,7 @@ def is_rec($p): has_id($p) and .name == $p.agent;
 def nums: map(tonumber) | sort;
 def bl: if length == 0 then "none" else map("#\(.)") | join(", ") end;
 # Rules 1-3 for piece $p ($k its key, $t its tip fact or null): {to, why},
-# and optionally {note} and {unverified: true}, or {}.
+# and optionally {note}, {tipnote} and {unverified: true}, or {}.
 def decide($k; $p; $t; $live):
   if $p.state == "merged" or $p.state == "dropped" then {}
   else
@@ -391,9 +405,13 @@ def decide($k; $p; $t; $live):
     (if $t == null or ($t.contained | not) or ($p.branch != null and $p.branch != $t.branch) then "no"
      elif $p.base == null then "unverified"
      elif $t.tip == $p.base then "no"
+     elif $t.advanced | not then "behind"
      else "merged" end) as $m
     | if $m == "merged" then {to: "merged", why: "branch tip contained"}
-      else (if $m == "unverified" then {unverified: true} else {} end)
+      else (if $m == "unverified" then {unverified: true}
+            elif $m == "behind"
+              then {tipnote: "#\($k) tip \($t.tip) is contained but not ahead of base \($p.base): not merged"}
+            else {} end)
         + (if $p.session == null then {}
            elif any($live[]; is_rec($p))
              then (if $p.state == "pending" or $p.state == "running" then {to: "running", why: "session live"}
@@ -415,8 +433,14 @@ $sf[0] as $snap | [$lf[0][] | select(.pid != null)] as $live | $tf[0] as $tips
 | if ($stray | length) > 0
   then {refusal: ("tips for issues not in the set: " + ($stray | nums | map("#\(.)") | join(", ")))}
   else
-  ($o | .depth = ($d // .depth) | .liveCap = ($lc // .liveCap) | .depthCap = ($dc // .depthCap)
-      | .external = ($snap | ext)) as $base
+  # An old external entry that only kept pieces still reference stays.
+  [$o.pieces | to_entries[] | .key as $k | select($blk | has($k) | not)
+   | .value.blockedBy[] | tostring
+   | select(. as $x | ($snap | ext | has($x) | not) and ($blk | has($x) | not)
+                     and ($o.pieces | has($x) | not) and ($o.external | has($x)))
+   | {x: ., k: $k}] as $keepx
+  | ($o | .depth = ($d // .depth) | .liveCap = ($lc // .liveCap) | .depthCap = ($dc // .depthCap)
+      | .external = (($snap | ext) + ($keepx | map({key: .x, value: $o.external[.x]}) | from_entries))) as $base
   | (if $old == null then []
      else [("depth", "liveCap", "depthCap") as $c | select($o[$c] != $base[$c]) | "\($c) \($o[$c]) -> \($base[$c])"] end
      + [($o.external + $base.external) | keys | nums[] | tostring as $x
@@ -431,18 +455,21 @@ $sf[0] as $snap | [$lf[0][] | select(.pid != null)] as $live | $tf[0] as $tips
           | if $blk | has($k) then .blockedBy = $blk[$k] else . end) as $p
        | decide($k; $p; $t; $live) as $r
        | ($p | if $r.to == "merged" then .state = "merged" | .branch = (.branch // $t.branch) | .sha = $t.tip
-               elif $r.to != null then .state = $r.to else . end) as $new
+               elif $r.to != null then .state = $r.to else . end
+               # The unverified fact holds only while this reconcile finds it.
+               | if $r.unverified then .unverified = {branch: $t.branch, tip: $t.tip} else del(.unverified) end) as $new
        | .s.pieces[$k] = $new
        | .out += (if $p0 == null then ["#\($k) added (pending)"] else [] end)
        | .out += (if $p0 != null and $p0.blockedBy != $p.blockedBy
                   then ["#\($k) blocked by \($p0.blockedBy | bl) -> \($p.blockedBy | bl)"] else [] end)
        | .out += (if $new.state != $p.state then ["#\($k) \($p.state) -> \($new.state) (\($r.why))"] else [] end)
-       | .out += (if $r.unverified then ["unverified-contained #\($k) tip=\($t.tip) branch=\($t.branch)"] else [] end)
+       | .out += (if $r.unverified then ["unverified-contained #\($k) tip=\($t.tip) branch=\($t.branch)"]
+                  elif $p.unverified != null then ["#\($k) unverified-contained cleared"] else [] end)
        | .err += (if $blk | has($k) then [] else ["#\($k) is not in the snapshot; kept as \($new.state)"] end)
        | .err += (if $t != null and $p.branch != null and $p.branch != $t.branch
                      and $p.state != "merged" and $p.state != "dropped"
                   then ["#\($k) tip fact is for branch \($t.branch), recorded \($p.branch): ignored"] else [] end)
-       | .err += (if $r.note != null then [$r.note] else [] end))) as $acc
+       | .err += [$r.tipnote // empty, $r.note // empty])) as $acc
   | ($acc.s | .pieces |= (to_entries | sort_by(.key | tonumber) | from_entries)) as $new
   # Rule 4: a live session named <prefix><issue>, for any issue number, that
   # no piece recorded is unknown (another orchestrator, or a lost launch):
@@ -452,7 +479,9 @@ $sf[0] as $snap | [$lf[0][] | select(.pid != null)] as $live | $tf[0] as $tips
      | select($i | test("^[1-9][0-9]{0,8}$"))
      | select(any($new.pieces[]; . as $p | $row | is_rec($p)) | not)
      | {i: ($i | tonumber), sid: .sessionId, nm: $nm}] | sort_by(.i, .sid) as $unk
-  | {state: $new, changed: ($new != $old), err: $acc.err,
+  | {state: $new, changed: ($new != $old),
+     err: ($acc.err + [$keepx | group_by(.x | tonumber)[]
+                       | "external #\(.[0].x) kept for \(map(.k) | nums | map("#\(.)") | join(", "))"]),
      out: ($head + $acc.out
            + [$unk[] | "unknown-session #\(.i) session=\(.sid) name=\(.nm)"]
            + ["reconciled \($b): "
@@ -658,6 +687,8 @@ cmd_launch() {
         | select(.key != $i and .value.branch == $pb) | .key][0]) as $dpb
     | if $p == null then "unknown issue #\($i)"
       elif $p.state != "pending" then "#\($i) is \($p.state), not pending"
+      elif $p.unverified != null
+        then "#\($i) has an unverified contained tip \($p.unverified.tip) on \($p.unverified.branch): accept or drop it"
       elif $pb == .branch then "piece branch \($pb) is the orchestrator'"'"'s branch"
       elif $dsid != null then "session id \($sid) is already recorded on #\($dsid)"
       elif $dpb != null then "piece branch \($pb) is already recorded on #\($dpb)"
@@ -788,6 +819,27 @@ cmd_mark() {
   echo "#$issue $to"
 }
 
+# cmd_accept <issue> — the user's call on an unverified contained tip: the
+# pending piece becomes merged with the branch and tip reconcile recorded.
+cmd_accept() {
+  [ "$#" -eq 1 ] || usage
+  issue="$1"
+  is_issue "$issue" || die "bad issue: $issue"
+  need_state
+  why="$(jq -r --arg i "$issue" '.pieces[$i] as $p
+    | if $p == null then "unknown issue #\($i)"
+      elif $p.state == "merged" then empty
+      elif $p.state != "pending" then "#\($i) is \($p.state), not pending"
+      elif $p.unverified == null then "#\($i) has no unverified contained tip to accept"
+      else empty end' "$FILE")" || die "cannot read $FILE"
+  [ -z "$why" ] || refuse "$why"
+  if ! jq -e --arg i "$issue" '.pieces[$i].state == "merged"' "$FILE" >/dev/null 2>&1; then
+    write_state --arg i "$issue" \
+      '.pieces[$i] |= (.state = "merged" | .branch = .unverified.branch | .sha = .unverified.tip | del(.unverified))' "$FILE"
+  fi
+  echo "#$issue merged"
+}
+
 cmd_finished() {
   [ "$#" -eq 0 ] || usage
   need_state
@@ -888,10 +940,12 @@ cmd_reconcile() {
   # Kept pieces keep their old blockers, so the snapshot's checks run again on
   # the combined result: unknown blockers, an issue both a piece and external,
   # and cycles through kept pieces.
-  reason="$(printf '%s' "$res" \
-    | jq '.state | {pieces: [.pieces | to_entries[] | {issue: (.key | tonumber), blocked_by: .value.blockedBy}],
-                    external}' \
-    | jq -r "$SNAPDEFS$CHECK")" || die "cannot check the reconciled pieces"
+  # Two guarded steps, not a pipe: a failed first jq must not pass as "no reason".
+  graph="$(printf '%s' "$res" \
+    | jq -c '.state | {pieces: [.pieces | to_entries[] | {issue: (.key | tonumber), blocked_by: .value.blockedBy}],
+                       external}')" || die "cannot check the reconciled pieces"
+  [ -n "$graph" ] || die "cannot check the reconciled pieces"
+  reason="$(printf '%s' "$graph" | jq -r "$SNAPDEFS$CHECK")" || die "cannot check the reconciled pieces"
   [ -z "$reason" ] || refuse "with the kept pieces: $reason"
   aside=""
   case "$why" in
@@ -927,14 +981,14 @@ done
 [ "$#" -ge 1 ] || usage
 CMD="$1"; shift
 case "$CMD" in
-  path|register|launchable|launch|record|merged|failed|dropped|finished|summary|reconcile) ;;
+  path|register|launchable|launch|record|merged|failed|dropped|finished|summary|reconcile|accept) ;;
   *) usage ;;
 esac
 set_paths
 # Every command that writes takes the lock here and keeps it until it exits.
 case "$CMD" in
   register|reconcile) with_lock --create ;;
-  launch|record|merged|failed|dropped) with_lock ;;
+  launch|record|merged|failed|dropped|accept) with_lock ;;
 esac
 case "$CMD" in
   path) cmd_path "$@" ;;
@@ -943,6 +997,7 @@ case "$CMD" in
   launch) cmd_launch "$@" ;;
   record) cmd_record "$@" ;;
   merged|failed|dropped) cmd_mark "$CMD" "$@" ;;
+  accept) cmd_accept "$@" ;;
   finished) cmd_finished "$@" ;;
   summary) cmd_summary "$@" ;;
   reconcile) cmd_reconcile "$@" ;;

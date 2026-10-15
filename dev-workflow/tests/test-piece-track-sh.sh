@@ -1228,6 +1228,103 @@ rec "$B" "$T/sess.json" "$T/snap.json" "$T/tips.json"
 expect "a kept piece also external is refused" 1 "" "with the kept pieces: issue in both pieces and external: #1"
 same "a refused combined graph writes nothing" "$T/before.json" "$F"
 
+# A cycle only through a kept piece: kept #1 is blocked by #2, the snapshot
+# has #2 blocked by #1. The snapshot alone already names #1 unknown, so the
+# combined cycle is never reached; either way nothing is written.
+printf '{"pieces":[{"issue":2,"blocked_by":[1]}]}' >"$T/snap.json"
+rec "$B" "$T/sess.json" "$T/snap.json" "$T/tips.json"
+expect "a cycle through a kept piece is refused" 1 "" "#2 is blocked by unknown #1"
+same "a refused cycle through a kept piece writes nothing" "$T/before.json" "$F"
+
+# An unknown blocker reached only through a kept piece.
+track "$B" 0 3 2 '{}' "$(pc 1 pending '[3]')" "$(pc 2 pending)"
+cp "$F" "$T/before.json"
+printf '{"pieces":[{"issue":2}]}' >"$T/snap.json"
+rec "$B" "$T/sess.json" "$T/snap.json" "$T/tips.json"
+expect "an unknown blocker of a kept piece is refused" 1 "" "with the kept pieces: unknown blocker: #1 is blocked by unknown #3"
+same "a refused kept unknown blocker writes nothing" "$T/before.json" "$F"
+
+# A kept piece's external blocker missing from the new snapshot stays, reported.
+track "$B" 0 3 2 '{"12":"closed","13":"open"}' "$(pc 1 pending '[12]')" "$(pc 2 pending '[13]')"
+printf '{"pieces":[{"issue":2,"blocked_by":[13]}],"external":{"13":"open"}}' >"$T/snap.json"
+rec "$B" "$T/sess.json" "$T/snap.json" "$T/tips.json"
+[ "$RC" -eq 0 ] && [ "$(jqf "$F" '[.external["12"], .external["13"]]')" = '["closed","open"]' ] \
+  && echo "ok: a kept piece's external blocker stays" || fail "kept external: rc $RC $(jqf "$F" '.external') ($ERR)"
+case "$ERR" in *"external #12 kept for #1"*) echo "ok: the kept external entry is reported" ;;
+  *) fail "no kept external report: $ERR" ;; esac
+cp "$F" "$T/before.json"
+rec "$B" "$T/sess.json" "$T/snap.json" "$T/tips.json"
+[ "$RC" -eq 0 ] && same "a kept external entry is stable on a re-run" "$T/before.json" "$F" || fail "kept external re-run rc $RC"
+
+# A contained tip past the base but not advanced (an older ancestor) is not a
+# merge: the piece stays running, reported.
+cp "$FIX/restart-track.json" "$F"
+printf '{"33":{"branch":"p/33","tip":"3333333333333333333333333333333333333333","contained":true,"advanced":false}}' >"$T/tips2.json"
+rec "$B" "$RS" "$RN" "$T/tips2.json"
+[ "$RC" -eq 0 ] && [ "$(jqf "$F" '.pieces["33"].state')" = '"running"' ] \
+  && echo "ok: a tip behind the base is not merged" || fail "behind: rc $RC $(jqf "$F" '.pieces["33"]') ($ERR)"
+case "$ERR" in *"#33 tip 3333333333333333333333333333333333333333 is contained but not ahead of base $BS: not merged"*)
+  echo "ok: a tip behind the base is reported" ;; *) fail "no behind report: $ERR" ;; esac
+
+# An unverified contained tip: recorded on the pending piece, never offered
+# for launch, resolved only by the user's accept (or dropped).
+printf '[]' >"$T/s0.json"
+printf '{"pieces":[{"issue":1},{"issue":2,"blocked_by":[1]}]}' >"$T/snap.json"
+printf '{"1":{"branch":"p/1","tip":"1111111111111111111111111111111111111111","contained":true,"advanced":false}}' >"$T/tips2.json"
+rec "acc" "$T/s0.json" "$T/snap.json" "$T/tips2.json"
+FA2="$(tpath "acc")"
+[ "$RC" -eq 0 ] && [ "$(jqf "$FA2" '.pieces["1"] | [.state, .unverified]')" \
+  = '["pending",{"branch":"p/1","tip":"1111111111111111111111111111111111111111"}]' ] \
+  && echo "ok: an unverified tip is recorded on the pending piece" || fail "unverified fact: rc $RC $(jqf "$FA2" '.pieces')"
+run --branch "acc" launchable
+expect "launchable skips an unverified piece" 0 ""
+run --branch "acc" launch 1 a-1 s-1 p/1 "$BS"
+expect "launch refuses an unverified piece" 1 "" "#1 has an unverified contained tip 1111111111111111111111111111111111111111 on p/1: accept or drop it"
+run --branch "acc" merged 1
+expect "merged refuses an unverified pending piece" 1 "" "#1 is pending, not done"
+run --branch "acc" accept 2
+expect "accept refuses a piece with no unverified tip" 1 "" "#2 has no unverified contained tip to accept"
+run --branch "acc" accept 9
+expect "accept refuses an unknown issue" 1 "" "unknown issue #9"
+run --branch "acc" accept 01
+expect "accept rejects a bad issue" 2 "" "bad issue"
+run --branch "acc" accept 1
+expect "accept an unverified tip" 0 "#1 merged"
+[ "$(jqf "$FA2" '.pieces["1"]')" \
+  = '{"state":"merged","blockedBy":[],"agent":null,"session":null,"branch":"p/1","sha":"1111111111111111111111111111111111111111"}' ] \
+  && echo "ok: accept takes the branch and sha from the fact" || fail "accepted: $(jqf "$FA2" '.pieces["1"]')"
+cp "$FA2" "$T/before.json"
+run --branch "acc" accept 1
+expect "accept again is a no-op" 0 "#1 merged"
+same "a repeated accept writes nothing" "$T/before.json" "$FA2"
+rec "acc" "$T/s0.json" "$T/snap.json" "$T/tips2.json"
+[ "$RC" -eq 0 ] && same "reconcile after accept changes nothing" "$T/before.json" "$FA2" || fail "reconcile after accept rc $RC"
+run --branch "acc" launchable
+expect "the dependant of an accepted piece is launchable" 0 "2"
+run --branch "acc" finished
+expect "not finished with a pending dependant" 0 "false"
+run --branch "acc" launch 2 a-2 s-2 p/2 "$BS"
+run --branch "acc" record "DONE #2 p/2 2222222222222222222222222222222222222222"
+run --branch "acc" merged 2
+expect "the dependant merges" 0 "#2 merged"
+run --branch "acc" finished
+expect "finished once every piece is resolved" 0 "true"
+
+# dropped also resolves an unverified piece; a later reconcile that no longer
+# finds the tip contained clears the fact.
+rec "clr" "$T/s0.json" "$T/snap.json" "$T/tips2.json"
+FCL="$(tpath "clr")"
+printf '{}' >"$T/tips3.json"
+rec "clr" "$T/s0.json" "$T/snap.json" "$T/tips3.json"
+case "$RAW" in "#1 unverified-contained cleared"*) echo "ok: the cleared fact is reported" ;; *) fail "cleared: $RAW" ;; esac
+[ "$(jqf "$FCL" '.pieces["1"] | has("unverified")')" = false ] && echo "ok: a tip no longer contained clears the fact" \
+  || fail "not cleared: $(jqf "$FCL" '.pieces["1"]')"
+run --branch "clr" launchable
+expect "a cleared piece is launchable again" 0 "1"
+rec "clr" "$T/s0.json" "$T/snap.json" "$T/tips2.json"
+run --branch "clr" dropped 1
+expect "dropped resolves an unverified piece" 0 "#1 dropped"
+
 # The listing's completed rows (no status) are ended sessions; a recorded
 # session absent from the listing has ended too.
 cp "$FIX/restart-track.json" "$F"
@@ -1324,16 +1421,18 @@ rec_bad "snapshot not JSON" snapshot '{"pieces":[' "snapshot is not valid JSON"
 rec_bad "snapshot blocked by a dropped-out piece" snapshot '{"pieces":[{"issue":33,"blocked_by":[32]}]}' "unknown blocker"
 rec_bad "tips not JSON" tips '{"35":' "tips are not valid JSON"
 rec_bad "tips not an object" tips '[]' "tips are not a JSON object"
-rec_bad "tips key not an issue" tips '{"x35":{"branch":"p/35","tip":"3535353535353535353535353535353535353535","contained":true}}' "bad tip entry"
-rec_bad "tips key with a leading zero" tips '{"035":{"branch":"p/35","tip":"3535353535353535353535353535353535353535","contained":true}}' "bad tip entry"
-rec_bad "tip short" tips '{"35":{"branch":"p/35","tip":"353535","contained":true}}' "bad tip entry"
-rec_bad "tip uppercase" tips '{"35":{"branch":"p/35","tip":"ABABABABABABABABABABABABABABABABABABABAB","contained":true}}' "bad tip entry"
+rec_bad "tips key not an issue" tips '{"x35":{"branch":"p/35","tip":"3535353535353535353535353535353535353535","contained":true,"advanced":true}}' "bad tip entry"
+rec_bad "tips key with a leading zero" tips '{"035":{"branch":"p/35","tip":"3535353535353535353535353535353535353535","contained":true,"advanced":true}}' "bad tip entry"
+rec_bad "tip short" tips '{"35":{"branch":"p/35","tip":"353535","contained":true,"advanced":true}}' "bad tip entry"
+rec_bad "tip uppercase" tips '{"35":{"branch":"p/35","tip":"ABABABABABABABABABABABABABABABABABABABAB","contained":true,"advanced":true}}' "bad tip entry"
 rec_bad "contained a string" tips '{"35":{"branch":"p/35","tip":"3535353535353535353535353535353535353535","contained":"true"}}' "bad tip entry"
+rec_bad "advanced missing" tips '{"35":{"branch":"p/35","tip":"3535353535353535353535353535353535353535","contained":true}}' "bad tip entry"
+rec_bad "advanced a string" tips '{"35":{"branch":"p/35","tip":"3535353535353535353535353535353535353535","contained":true,"advanced":"yes"}}' "bad tip entry"
 rec_bad "contained missing" tips '{"35":{"branch":"p/35","tip":"3535353535353535353535353535353535353535"}}' "bad tip entry"
-rec_bad "tip branch empty" tips '{"35":{"branch":"","tip":"3535353535353535353535353535353535353535","contained":true}}' "bad tip entry"
-rec_bad "tip branch with a newline" tips '{"35":{"branch":"p/35\n","tip":"3535353535353535353535353535353535353535","contained":true}}' "bad tip entry"
+rec_bad "tip branch empty" tips '{"35":{"branch":"","tip":"3535353535353535353535353535353535353535","contained":true,"advanced":true}}' "bad tip entry"
+rec_bad "tip branch with a newline" tips '{"35":{"branch":"p/35\n","tip":"3535353535353535353535353535353535353535","contained":true,"advanced":true}}' "bad tip entry"
 rec_bad "tip not an object" tips '{"35":"3535353535353535353535353535353535353535"}' "bad tip entry"
-rec_bad "tip for an issue outside the set" tips '{"99":{"branch":"p/99","tip":"9999999999999999999999999999999999999999","contained":true}}' "tips for issues not in the set: #99"
+rec_bad "tip for an issue outside the set" tips '{"99":{"branch":"p/99","tip":"9999999999999999999999999999999999999999","contained":true,"advanced":true}}' "tips for issues not in the set: #99"
 
 # Strings are data: a name with shell metacharacters is matched, never run.
 printf '[{"name":"a-$(touch pwned)","sessionId":"s;$(id)|x","pid":4999,"status":"busy"}]' >"$T/sess.json"
@@ -1409,7 +1508,7 @@ expect "--branch overrides HEAD" 0 "$GCD/piece-tracking/x%2Fy.json"
 
 run
 expect "no subcommand" 2 ""
-for sub in path register launchable launch record merged failed dropped finished summary reconcile; do
+for sub in path register launchable launch record merged failed dropped finished summary reconcile accept; do
   case "$ERR" in *"piece-track.sh [--branch <b>] $sub"*) echo "ok: usage lists $sub" ;;
     *) fail "usage lacks $sub: $ERR" ;; esac
 done
