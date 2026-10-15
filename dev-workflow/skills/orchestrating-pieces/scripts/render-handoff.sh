@@ -3,8 +3,9 @@
 #
 #   render-handoff.sh <template.md> <values.json>
 #
-# values.json is one JSON object: placeholder name -> string (an integer is
-# accepted and written as its digits). Every {{NAME}} in the template (NAME is
+# values.json is exactly one top-level JSON object: placeholder name -> string
+# (a non-negative integer literal such as 37 is accepted and written as its
+# digits; 37.0 and 1e2 are not). Every {{NAME}} in the template (NAME is
 # A-Z, 0-9 and _, starting with a letter) must have a non-blank value, except
 # the names in OPTIONAL below, which may be empty. Stdout carries the rendered
 # text only when the render is complete.
@@ -30,7 +31,7 @@ tpl="$1"
 vals="$2"
 [ -f "$tpl" ] && [ -r "$tpl" ] || { echo "render-handoff: cannot read template: $tpl" >&2; exit 2; }
 [ -f "$vals" ] && [ -r "$vals" ] || { echo "render-handoff: cannot read values: $vals" >&2; exit 2; }
-jq -e 'type == "object"' "$vals" >/dev/null 2>&1 || { echo "render-handoff: values must be a JSON object: $vals" >&2; exit 2; }
+jq -s -e 'length == 1 and (.[0] | type == "object")' "$vals" >/dev/null 2>&1 || { echo "render-handoff: values must be exactly one JSON object: $vals" >&2; exit 2; }
 
 tmp="$(mktemp)" || exit 2
 trap 'rm -f "$tmp"' EXIT
@@ -42,7 +43,7 @@ jq -n --rawfile t "$tpl" --slurpfile vs "$vals" --argjson opt "$OPTIONAL" '
   | [$t | match($re; "g") | .captures[0].string] | unique as $need
   | ($t | gsub($re; "")) as $rest
   | ($v | keys) as $have
-  | def scalar: type == "string" or (type == "number" and . == floor);
+  | def scalar: type == "string" or (type == "number" and (tostring | test("\\A[0-9]+\\z")));
     def blank: type == "string" and test("\\A\\s*\\z");
   (
       [ $need[] | . as $k | select($have | index([$k]) == null) | "unfilled placeholder: {{" + $k + "}}" ]

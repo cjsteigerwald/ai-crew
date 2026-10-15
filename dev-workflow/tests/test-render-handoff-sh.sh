@@ -89,6 +89,23 @@ run "$TEMPLATE" "$T/v5.json"
 [ "$RC" -eq 1 ] || fail "array value: exit $RC, want 1"
 [ -z "$OUT" ] || fail "array value: wrote output"
 
+# 5b: only integer literals count as numbers (37.0 and 1e2 would render as 37.0 and 1E+2).
+for num in '37.0' '1e2' '-1' '1.5'; do
+  jq --argjson n "$num" '.ISSUE_NUMBER = $n' "$T/v.json" >"$T/v5b.json"
+  run "$TEMPLATE" "$T/v5b.json"
+  [ "$RC" -eq 1 ] || fail "number $num: exit $RC, want 1"
+  [ -z "$OUT" ] || fail "number $num: wrote output"
+done
+
+# 5c: a values file holding more than one top-level value is refused, not read as its first object.
+{ cat "$T/v.json"; cat "$T/v.json"; } >"$T/v5c.json"
+run "$TEMPLATE" "$T/v5c.json"
+[ "$RC" -eq 2 ] || fail "two objects in the values file: exit $RC, want 2"
+[ -z "$OUT" ] || fail "two objects in the values file: wrote output"
+{ cat "$T/v.json"; echo '"trailing"'; } >"$T/v5d.json"
+run "$TEMPLATE" "$T/v5d.json"
+[ "$RC" -eq 2 ] || fail "object plus a trailing value: exit $RC, want 2"
+
 # --- 6. a leftover placeholder blocks --------------------------------------
 
 # 6a: the template names a placeholder the values lack.

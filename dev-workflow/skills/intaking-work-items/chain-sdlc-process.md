@@ -3,6 +3,9 @@
 Read only after the sdlc-process chain is chosen in SKILL.md step 6; it ends by returning to SKILL.md
 step 7 (Verify).
 
+**Piece mode.** In piece mode ([piece-mode.md](piece-mode.md)) that file wins wherever it differs
+from this one: no push or PR, no new work branch, the piece branch from the handoff prompt.
+
 ## Attended only
 
 Every gate is answered live: sdlc-process's readiness, policy-review and publication gates, and
