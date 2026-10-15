@@ -502,6 +502,99 @@ for t in parse-msg frontier ff-merge ledger coordinator-contract piece-track; do
   fi
 done
 
+echo "== orchestrating-pieces handoff prompt and intake piece mode =="
+OP_DIR="$ROOT/skills/orchestrating-pieces"
+OP_TEMPLATE="$OP_DIR/references/handoff-prompt.md"
+OP_RENDER="$OP_DIR/scripts/render-handoff.sh"
+PIECE_MODE="$ROOT/skills/intaking-work-items/piece-mode.md"
+PIECE_FAILS=0
+piecefail() {
+  PIECE_FAILS=$((PIECE_FAILS + 1))
+  fail "$1"
+}
+# pin_file <file> <label> <fixed string>... — each string must appear in the file.
+pin_file() {
+  pf="$1"; pl="$2"; shift 2
+  for ps in "$@"; do
+    grep -qF -- "$ps" "$pf" || piecefail "$pl: missing '$ps'"
+  done
+}
+# first_line <file> <fixed string> — line number of the first match, or 0.
+first_line() {
+  grep -nF -m1 -- "$2" "$1" | cut -d: -f1
+}
+# pin_order <file> <label> <s1> <s2> <s3> — the strings first appear in this order.
+pin_order() {
+  po_f="$1"; po_l="$2"
+  po_a="$(first_line "$po_f" "$3")"; po_b="$(first_line "$po_f" "$4")"; po_c="$(first_line "$po_f" "$5")"
+  if [ -z "$po_a" ] || [ -z "$po_b" ] || [ -z "$po_c" ] || [ "$po_a" -lt 1 ] || [ "$po_a" -gt "$po_b" ] || [ "$po_b" -gt "$po_c" ]; then
+    piecefail "$po_l: '$3', '$4', '$5' not found in that order"
+  fi
+}
+
+if [ ! -f "$OP_TEMPLATE" ]; then
+  piecefail "orchestrating-pieces/references/handoff-prompt.md not found"
+elif [ ! -f "$PIECE_MODE" ]; then
+  piecefail "intaking-work-items/piece-mode.md not found"
+else
+  TL="orchestrating-pieces/references/handoff-prompt.md"
+  PL="intaking-work-items/piece-mode.md"
+  # The template carries every required placeholder.
+  for ph in TICKET_KEY ISSUE_NUMBER ISSUE_URL ACCEPTANCE_CRITERIA TEST_COMMAND PIECE_BRANCH WORKTREE \
+            BASE_BRANCH ORCHESTRATOR_SESSION CHILD_DEPTH DEPTH_CAP LIVE_CAP BLOCKER_EVIDENCE; do
+    pin_file "$OP_TEMPLATE" "$TL" "{{$ph}}"
+  done
+  # Piece mode is set by the handoff prompt's first line, and intake reads it.
+  [ "$(head -n 1 "$OP_TEMPLATE")" = "Piece mode: on" ] || piecefail "$TL: first line is not 'Piece mode: on'"
+  pin_file "$ROOT/skills/intaking-work-items/SKILL.md" "intaking-work-items/SKILL.md" 'Piece mode: on' '](piece-mode.md)'
+  # Run intake when questions remain; otherwise straight to the normal path.
+  pin_file "$OP_TEMPLATE" "$TL" 'When questions remain, run intake' 'dev-workflow:intaking-work-items' "straight to intake's normal sdlc-process path"
+  # Talk to the user directly.
+  pin_file "$OP_TEMPLATE" "$TL" 'Talk to the user directly'
+  pin_file "$PIECE_MODE" "$PL" 'goes to the user directly'
+  # Never push or open PRs; never close or edit issues; never move the base branch.
+  pin_file "$OP_TEMPLATE" "$TL" 'never push' 'never open a PR'
+  pin_file "$PIECE_MODE" "$PL" 'Never push' 'never open a PR'
+  pin_file "$OP_TEMPLATE" "$TL" 'never close or edit GitHub issues'
+  pin_file "$PIECE_MODE" "$PL" 'never close or edit issues'
+  # Publishing writebacks only on the user's confirmation.
+  pin_file "$OP_TEMPLATE" "$TL" 'only when the user confirms them in your session'
+  pin_file "$ROOT/skills/intaking-work-items/SKILL.md" "intaking-work-items/SKILL.md" 'unless the user confirms them in that session'
+  pin_file "$PIECE_MODE" "$PL" 'Offer one only when the user asks for it in this session'
+  # DONE in place of Ship.
+  pin_file "$ROOT/skills/intaking-work-items/SKILL.md" "intaking-work-items/SKILL.md" 'in place of step 8 (Ship)' 'In piece mode, skip steps 8 and 9'
+  pin_file "$PIECE_MODE" "$PL" '## Hand back instead of Ship' 'Never run.'
+  pin_file "$OP_TEMPLATE" "$TL" 'Hand back instead of shipping'
+  # Merge the orchestrator head and re-test before DONE.
+  pin_order "$OP_TEMPLATE" "$TL" "merge the orchestrator's current" 're-run `{{TEST_COMMAND}}`' 'send `DONE` with your branch'
+  pin_order "$PIECE_MODE" "$PL" 'Merge the current head of the base branch' "Re-run the prompt's test command" 'Send `DONE #N'
+  # The exact report-line formats, and none of the dropped frame.
+  for line in 'STARTED #N' 'DONE #N <piece-branch> <sha>' 'STUCK #N [needs=#M] <reason>'; do
+    grep -qFx -- "$line" "$OP_TEMPLATE" || piecefail "$TL: report line '$line' is not on a line of its own"
+  done
+  ! grep -qE 'gen=|synced=|^(SCOPE|FAILED) ' "$OP_TEMPLATE" || piecefail "$TL: carries a dropped report field (gen=, synced=, SCOPE, FAILED)"
+  # Nesting: the piece branch is the ticket branch, hand-back is a single DONE.
+  pin_file "$OP_TEMPLATE" "$TL" 'as the ticket branch' 'one `DONE`'
+  pin_file "$PIECE_MODE" "$PL" 'as the ticket branch' 'single `DONE`'
+  # The caps, with their numbers.
+  pin_file "$OP_TEMPLATE" "$TL" 'depth cap 2' 'live-child cap 3'
+  # No superpowers mention and no unattended mode in anything new.
+  for f in "$OP_DIR" "$PIECE_MODE"; do
+    ! grep -rqi 'superpowers' "$f" || piecefail "${f#"$ROOT"/}: mentions superpowers"
+    ! grep -rqi 'unattended' "$f" || piecefail "${f#"$ROOT"/}: mentions an unattended mode"
+  done
+fi
+[ -x "$OP_RENDER" ] || piecefail "orchestrating-pieces/scripts/render-handoff.sh is missing or not executable"
+# Run with the interpreter running this file, so `/bin/bash run.sh` exercises bash 3.2.
+if "$BASH" "$HERE/test-render-handoff-sh.sh"; then
+  :
+else
+  fail "test-render-handoff-sh.sh reported a failure (see above)"
+fi
+if [ "$PIECE_FAILS" -eq 0 ]; then
+  echo "ok: handoff-prompt template and intake piece mode present and pinned"
+fi
+
 echo "== Result =="
 if [ "$FAIL" -ne 0 ]; then
   echo "FAILED"

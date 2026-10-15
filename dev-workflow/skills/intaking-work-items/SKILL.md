@@ -119,6 +119,14 @@ yes.
   a seam is not in the AC→test table. Commits stay on the branch; nothing is pushed until the user
   says so.
 
+## Piece mode
+
+When the first prompt starts with the line `Piece mode: on`, an orchestrator has handed you one
+issue of a larger ticket. Read [piece-mode.md](piece-mode.md) before step 0: steps 0 to 7 run
+against that issue, then the piece hands back by a `DONE` report in place of step 8 (Ship). It
+never pushes, never opens a PR, never closes or edits issues, and skips step 5's publishing
+writebacks unless the user confirms them in that session. Without that line, ignore this section.
+
 ## 0. Repo procedure first
 
 - Read the **target** repo's `CLAUDE.md` / `AGENTS.md` before anything else. If it defines a start
@@ -233,7 +241,8 @@ If the user asked only "is this ticket ready?", stop here with the table and the
 
 ## 5. Writeback offer — confirm each action
 
-The ticket is outward-facing; every write is the user's call, every time.
+The ticket is outward-facing; every write is the user's call, every time. In piece mode, offer
+none unless the user asks for one in this session.
 
 - Offer, don't apply. For each proposed write, show the **exact** payload: the comment body or the
   field and its new value, and the target (`PROJ-571` or `owner/repo#12`).
@@ -332,6 +341,8 @@ to the doc's Verification evidence table. Nothing ships until every active AC is
 unverified with reason, or a stop applies (see **Run log and stops**).
 
 ## 8. Ship
+
+In piece mode, skip steps 8 and 9 and hand back as [piece-mode.md](piece-mode.md) says.
 
 Ship through `[[opening-pull-requests]]`; its push and PR gates each need the user's live yes. The ticket question for its gate 7 is
 already answered here. The PR body's first line is the ticket link: Jira → `**Ticket:** [PROJ-571](<jira-url>)`;
