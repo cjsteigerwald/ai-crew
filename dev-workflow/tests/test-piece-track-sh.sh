@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Behavioral test for coordinating-partner-sessions/scripts/piece-track.sh:
-# register, launchable, launch, summary and path, driven by JSON fixtures with
+# register, launchable, launch, record, merged, failed, dropped, finished,
+# summary and path, driven by JSON fixtures with
 # the CLI called as a subprocess. Runnable standalone.
 #
 # Bash 3.2 compatible: no associative arrays, no `mapfile`, no `${var,,}`.
@@ -391,7 +392,7 @@ expect "launch with metacharacters" 0 "#1 running"
 pw="$(find "$T" "$ROOT" -name 'PWNED*' 2>/dev/null)"
 [ -z "$pw" ] && echo "ok: nothing executed" || fail "metacharacters executed: $pw"
 run --branch "$B" summary
-ROW='| #1 | running | piece/$(touch${IFS}PWNED4);`id`&\|x | a;b $(touch PWNED1) `touch PWNED2` \| c & d "q" '"'"'r'"'"' > e |  |'
+ROW='| #1 | running | piece/$(touch${IFS}PWNED4);`id`&\|x | a;b $(touch PWNED1) `touch PWNED2` \| c & d "q" '"'"'r'"'"' > e |  |  |'
 if printf '%s\n' "$RAW" | grep -qxF -- "$ROW"; then echo "ok: summary escapes pipes in data"
 else fail "summary with metacharacters: $RAW"; fi
 
@@ -415,14 +416,14 @@ same "refused re-register writes nothing" "$T/before.json" "$F"
 
 cp "$FIX/all-states.json" "$(tpath "feat/orch")"
 run --branch "feat/orch" summary
-EXP='| Issue | State | Branch | Agent | Blocked by |
-|---|---|---|---|---|
-| #34 | merged | feat/orch-34 | piece-34 |  |
-| #35 | done | feat/orch-35 | piece-35 | #34 |
-| #36 | running | feat/orch-36 | piece-36 | #12, #34 |
-| #37 | stuck | feat/orch-37 | piece-37 | #35 |
-| #38 | failed | feat/orch-38 | piece-38 |  |
-| #39 | pending |  |  | #37, #38 |'
+EXP='| Issue | State | Branch | Agent | Blocked by | Notes |
+|---|---|---|---|---|---|
+| #34 | merged | feat/orch-34 | piece-34 |  |  |
+| #35 | done | feat/orch-35 | piece-35 | #34 |  |
+| #36 | running | feat/orch-36 | piece-36 | #12, #34 |  |
+| #37 | stuck | feat/orch-37 | piece-37 | #35 |  |
+| #38 | failed | feat/orch-38 | piece-38 |  |  |
+| #39 | pending |  |  | #37, #38 |  |'
 if [ "$RC" -eq 0 ] && [ "$RAW" = "$EXP" ]; then echo "ok: summary renders every state"
 else fail "summary all states: rc $RC, got:
 $RAW"; fi
@@ -431,9 +432,281 @@ run --branch "feat/orch" launchable
 expect "all-states fixture: live at cap" 0 ""
 
 run --branch "empty" summary
-EXP='| Issue | State | Branch | Agent | Blocked by |
-|---|---|---|---|---|'
+EXP='| Issue | State | Branch | Agent | Blocked by | Notes |
+|---|---|---|---|---|---|'
 [ "$RC" -eq 0 ] && [ "$RAW" = "$EXP" ] && echo "ok: summary of zero pieces" || fail "summary zero pieces: $RAW"
+
+# ------------------------------------------------------------------ record
+
+SHA="0123456789abcdef0123456789abcdef01234567"
+SHA2="89abcdef0123456789abcdef0123456789abcdef"
+track "$B" 0 3 2 '{}' "$(pc 1 running)" "$(pc 2 pending '[1]')" "$(pc 3 running)"
+F="$(tpath "$B")"
+
+# piece <n> — one piece of $F, compact.
+piece() { jqf "$F" ".pieces[\"$1\"]"; }
+
+# rec_bad <name> <line> <stderr substring> — record refuses <line> (rc 1) and
+# leaves the tracking file byte-identical.
+rec_bad() {
+  cp "$F" "$T/before.json"
+  run --branch "$B" record "$2"
+  expect "$1" 1 "" "$3"
+  same "$1: nothing written" "$T/before.json" "$F"
+}
+# rec_same <name> <line> <stdout> — record accepts <line> (rc 0) as a no-op:
+# the tracking file stays byte-identical and is not even rewritten (a rename
+# would give it a new inode).
+rec_same() {
+  cp "$F" "$T/before.json"
+  ino="$(ls -i "$F" | awk '{print $1}')"
+  run --branch "$B" record "$2"
+  expect "$1" 0 "$3"
+  same "$1: file unchanged" "$T/before.json" "$F"
+  [ "$(ls -i "$F" | awk '{print $1}')" = "$ino" ] || fail "$1: file rewritten"
+}
+
+# Malformed lines: rc 1, nothing written.
+rec_bad "empty line" "" "missing fields"
+rec_bad "keyword only" "STARTED" "missing fields"
+rec_bad "lowercase keyword" "started #1" "unknown report"
+rec_bad "unknown keyword" "MERGED #1" "unknown report"
+rec_bad "SCOPE is dropped" "SCOPE #1 too big for one PR" "unknown report"
+rec_bad "FAILED is dropped" "FAILED #1 user cancelled" "unknown report"
+rec_bad "issue without #" "STARTED 1" "bad issue"
+rec_bad "non-integer issue" "STARTED #x" "bad issue"
+rec_bad "fractional issue" "STARTED #1.5" "bad issue"
+rec_bad "leading-zero issue" "STARTED #01" "bad issue"
+rec_bad "zero issue" "STARTED #0" "bad issue"
+rec_bad "STARTED extra token" "STARTED #1 extra" "unexpected trailing text"
+rec_bad "old gen field" "STARTED #1 gen=1" "unexpected trailing text"
+rec_bad "DONE missing branch and sha" "DONE #1" "missing DONE fields"
+rec_bad "DONE missing sha" "DONE #1 p/1" "missing DONE fields"
+rec_bad "DONE short sha" "DONE #1 p/1 ${SHA:0:39}" "bad sha"
+rec_bad "DONE long sha" "DONE #1 p/1 ${SHA}0" "bad sha"
+rec_bad "DONE uppercase sha" "DONE #1 p/1 0123456789ABCDEF0123456789ABCDEF01234567" "bad sha"
+rec_bad "DONE extra token" "DONE #1 p/1 $SHA extra" "unexpected trailing text"
+rec_bad "DONE old frame (gen, synced)" "DONE #1 gen=2 p/1 $SHA synced=$SHA" "unexpected trailing text"
+rec_bad "DONE bad branch .." "DONE #1 a..b $SHA" "bad branch"
+rec_bad "DONE bad branch leading dash" "DONE #1 -x $SHA" "bad branch"
+rec_bad "STUCK without reason" "STUCK #1" "missing reason"
+rec_bad "STUCK needs without reason" "STUCK #1 needs=#3" "missing reason"
+rec_bad "STUCK blank reason" "STUCK #1    " "missing reason"
+rec_bad "STUCK needs without #" "STUCK #1 needs=3 waits on schema" "bad needs"
+rec_bad "STUCK empty needs" "STUCK #1 needs= waits on schema" "bad needs"
+rec_bad "embedded newline" "$(printf 'STARTED #1\nDONE #1 p/1 %s' "$SHA")" "control character"
+rec_bad "embedded carriage return" "$(printf 'STARTED\r #1')" "control character"
+rec_bad "embedded tab" "$(printf 'STUCK #1 a\tb')" "control character"
+run --branch "$B" record
+expect "record needs a line" 2 ""
+run --branch "$B" record "STARTED #1" "DONE #1 p/1 $SHA"
+expect "record takes one line" 2 ""
+
+# Unknown issue, never-launched piece, branch mismatch.
+rec_bad "unknown issue" "STARTED #9" "unknown issue #9"
+rec_bad "pending piece STARTED" "STARTED #2" "#2 is pending (never launched)"
+rec_bad "pending piece DONE" "DONE #2 p/2 $SHA" "#2 is pending (never launched)"
+rec_bad "pending piece STUCK" "STUCK #2 cannot start" "#2 is pending (never launched)"
+rec_bad "DONE on another branch" "DONE #1 p/3 $SHA" "#1 reported branch p/3, launched on p/1"
+rec_bad "STUCK needs an unknown issue" "STUCK #1 needs=#9 waits" "needs unknown issue #9"
+rec_bad "STUCK needs itself" "STUCK #1 needs=#1 waits" "#1 cannot need itself"
+
+# STARTED on a running piece is accepted and changes nothing.
+rec_same "STARTED" "STARTED #1" "#1 running"
+rec_same "STARTED with CRLF and trailing spaces" "$(printf 'STARTED #1  \r')" "#1 running"
+
+# DONE stores the SHA; a repeat is a no-op; a late STARTED does not regress.
+run --branch "$B" record "DONE #1 p/1 $SHA"
+expect "DONE" 0 "#1 done"
+[ "$(piece 1)" = '{"state":"done","blockedBy":[],"agent":"a-1","session":"s-1","branch":"p/1","sha":"'"$SHA"'"}' ] \
+  && echo "ok: DONE stores the SHA" || fail "DONE: $(piece 1)"
+rec_same "repeated DONE is idempotent" "DONE #1 p/1 $SHA" "#1 done"
+rec_same "late STARTED after DONE" "STARTED #1" "#1 done"
+
+# DONE with a new SHA (the resync re-report) replaces the SHA.
+run --branch "$B" record "DONE #1 p/1 $SHA2"
+expect "DONE with a new SHA" 0 "#1 done"
+[ "$(jqf "$F" '.pieces["1"] | [.state, .sha]')" = '["done","'"$SHA2"'"]' ] \
+  && echo "ok: the new SHA replaces the old" || fail "resync DONE: $(piece 1)"
+
+# STUCK after DONE: stuck, SHA kept, needs and reason stored.
+run --branch "$B" record "STUCK #1 needs=#3 waits on #3's schema"
+expect "STUCK with needs (after DONE)" 0 "#1 stuck"
+[ "$(jqf "$F" '.pieces["1"] | [.state, .sha, .needs, .reason]')" = '["stuck","'"$SHA2"'",3,"waits on #3'"'"'s schema"]' ] \
+  && echo "ok: STUCK stores needs and reason and keeps the SHA" || fail "STUCK with needs: $(piece 1)"
+rec_same "repeated STUCK is idempotent" "STUCK #1 needs=#3 waits on #3's schema" "#1 stuck"
+rec_same "STARTED after STUCK leaves it stuck" "STARTED #1" "#1 stuck"
+run --branch "$B" record "STUCK #1 cannot   reach the test db"
+expect "STUCK without needs" 0 "#1 stuck"
+[ "$(jqf "$F" '.pieces["1"] | [.state, .needs, .reason]')" = '["stuck",null,"cannot   reach the test db"]' ] \
+  && echo "ok: STUCK without needs clears needs, keeps inner spacing" || fail "STUCK without needs: $(piece 1)"
+
+# DONE after STUCK: done again, the stuck note cleared.
+run --branch "$B" record "DONE #1 p/1 $SHA"
+expect "DONE after STUCK" 0 "#1 done"
+[ "$(piece 1)" = '{"state":"done","blockedBy":[],"agent":"a-1","session":"s-1","branch":"p/1","sha":"'"$SHA"'"}' ] \
+  && echo "ok: DONE after STUCK clears needs and reason" || fail "DONE after STUCK: $(piece 1)"
+
+# STUCK from running.
+run --branch "$B" record "STUCK #3 flaky CI"
+expect "STUCK from running" 0 "#3 stuck"
+[ "$(jqf "$F" '.pieces["3"] | [.state, .needs, .reason, .sha]')" = '["stuck",null,"flaky CI",null]' ] \
+  || fail "STUCK from running: $(piece 3)"
+
+# Report text is data: shell metacharacters are stored and rendered verbatim.
+MR='$(touch PWNED6); `touch PWNED7` | a & b "q" '"'"'r'"'"' > e \n ${IFS} *'
+run --branch "$B" record "STUCK #3 needs=#1 $MR"
+expect "STUCK with metacharacters" 0 "#3 stuck"
+[ "$(jq -r '.pieces["3"].reason' "$F")" = "$MR" ] && echo "ok: reason stored verbatim" \
+  || fail "reason: $(jq -r '.pieces["3"].reason' "$F")"
+pw="$(find "$T" "$ROOT" -name 'PWNED*' 2>/dev/null)"
+[ -z "$pw" ] && echo "ok: report text not executed" || fail "report text executed: $pw"
+run --branch "$B" summary
+ROW='| #3 | stuck | p/3 | a-3 |  | needs #1: $(touch PWNED6); `touch PWNED7` \| a & b "q" '"'"'r'"'"' > e \n ${IFS} * |'
+if printf '%s\n' "$RAW" | grep -qxF -- "$ROW"; then echo "ok: summary shows stuck needs and reason, pipes escaped"
+else fail "summary stuck row: $RAW"; fi
+pw="$(find "$T" "$ROOT" -name 'PWNED*' 2>/dev/null)"
+[ -z "$pw" ] || fail "summary executed report text: $pw"
+
+# Reports on merged, failed and dropped pieces are refused; an identical
+# repeat of the DONE that preceded merged is a no-op.
+run --branch "$B" merged 1
+expect "merged after DONE" 0 "#1 merged"
+rec_same "repeated DONE after merged" "DONE #1 p/1 $SHA" "#1 merged"
+rec_bad "DONE with another SHA after merged" "DONE #1 p/1 $SHA2" "#1 is merged"
+rec_bad "STARTED after merged" "STARTED #1" "#1 is merged"
+rec_bad "STUCK after merged" "STUCK #1 oops" "#1 is merged"
+track "$B" 0 3 2 '{}' "$(pc 1 failed)" "$(pc 2 dropped)"
+for st in failed dropped; do
+  n=1; [ "$st" = "dropped" ] && n=2
+  rec_bad "STARTED on $st" "STARTED #$n" "#$n is $st"
+  rec_bad "DONE on $st" "DONE #$n p/$n $SHA" "#$n is $st"
+  rec_bad "STUCK on $st" "STUCK #$n x" "#$n is $st"
+done
+
+# ------------------------------------------------------------------ merged, failed, dropped
+
+# mark_bad <name> <cmd> <issue> <rc> <stderr substring> — refused, nothing written.
+mark_bad() {
+  cp "$F" "$T/before.json"
+  run --branch "$B" "$2" "$3"
+  expect "$1" "$4" "" "$5"
+  same "$1: nothing written" "$T/before.json" "$F"
+}
+# mark_ok <name> <cmd> <issue> <state> — accepted; the piece is now <state>
+# and its other fields are kept.
+mark_ok() {
+  pre="$(jqf "$F" ".pieces[\"$3\"] | del(.state)")"
+  run --branch "$B" "$2" "$3"
+  expect "$1" 0 "#$3 $4"
+  [ "$(jqf "$F" ".pieces[\"$3\"].state")" = "\"$4\"" ] && [ "$(jqf "$F" ".pieces[\"$3\"] | del(.state)")" = "$pre" ] \
+    || fail "$1: $(jqf "$F" ".pieces[\"$3\"]")"
+}
+
+track "$B" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 running)" "$(pc 3 stuck)" "$(pc 4 failed)" \
+  "$(pc 5 dropped)" "$(pc 6 merged)" "$(pc 7 "done")"
+for n in 1 2 3 4 5 6; do
+  st="$(jq -r ".pieces[\"$n\"].state" "$F")"
+  mark_bad "merged from $st" merged "$n" 1 "#$n is $st, not done"
+done
+mark_bad "merged unknown issue" merged 9 1 "unknown issue #9"
+mark_bad "merged bad issue" merged x 2 "bad issue"
+mark_bad "merged needs one issue" merged "" 2 ""
+mark_ok "merged from done" merged 7 merged
+
+track "$B" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 running)" "$(pc 3 stuck)" "$(pc 4 failed)" \
+  "$(pc 5 dropped)" "$(pc 6 merged)" "$(pc 7 "done")"
+for n in 1 4 5 6; do
+  st="$(jq -r ".pieces[\"$n\"].state" "$F")"
+  mark_bad "failed from $st" failed "$n" 1 "#$n is $st"
+done
+mark_bad "failed unknown issue" failed 9 1 "unknown issue #9"
+mark_bad "failed bad issue" failed 01 2 "bad issue"
+mark_ok "failed from running" failed 2 failed
+mark_ok "failed from stuck" failed 3 failed
+mark_ok "failed from done" failed 7 failed
+
+track "$B" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 running)" "$(pc 3 stuck)" "$(pc 4 failed)" \
+  "$(pc 5 dropped)" "$(pc 6 merged)" "$(pc 7 "done")"
+mark_bad "dropped from merged" dropped 6 1 "#6 is merged"
+mark_bad "dropped unknown issue" dropped 9 1 "unknown issue #9"
+mark_bad "dropped bad issue" dropped "1 2" 2 "bad issue"
+for n in 1 2 3 4 7; do
+  st="$(jq -r ".pieces[\"$n\"].state" "$F")"
+  mark_ok "dropped from $st" dropped "$n" dropped
+done
+cp "$F" "$T/before.json"
+ino="$(ls -i "$F" | awk '{print $1}')"
+run --branch "$B" dropped 5
+expect "dropped again is a no-op" 0 "#5 dropped"
+same "dropped again writes nothing" "$T/before.json" "$F"
+[ "$(ls -i "$F" | awk '{print $1}')" = "$ino" ] || fail "dropped again rewrote the file"
+
+# merged releases dependants; dropped frees a live slot but not its dependants.
+track "$B" 0 3 2 '{}' "$(pc 1 "done")" "$(pc 2 pending '[1]')"
+run --branch "$B" launchable
+expect "done blocker holds the dependant" 0 ""
+run --branch "$B" merged 1
+expect "merged" 0 "#1 merged"
+run --branch "$B" launchable
+expect "merged releases the dependant" 0 "2"
+
+track "$B" 0 1 2 '{}' "$(pc 1 running)" "$(pc 2 pending)" "$(pc 3 pending '[1]')"
+run --branch "$B" launchable
+expect "live cap 1 taken" 0 ""
+run --branch "$B" dropped 1
+expect "drop the running piece" 0 "#1 dropped"
+run --branch "$B" launchable
+expect "a dropped piece is not live; its dependant stays blocked" 0 "2"
+run --branch "$B" launch 3 a3 s3 "$B-3"
+expect "launch behind a dropped piece" 1 "" "#3 is blocked by #1 (dropped)"
+
+# ------------------------------------------------------------------ finished
+
+# fin <name> <want> <piece>... — finished on a fresh tracking file.
+fin() {
+  fname="$1"; want="$2"; shift 2
+  track fin 0 3 2 '{}' "$@"
+  run --branch fin finished
+  expect "finished: $fname" 0 "$want"
+}
+fin "all merged" true "$(pc 1 merged)" "$(pc 2 merged)"
+fin "one stuck" false "$(pc 1 merged)" "$(pc 2 stuck)"
+fin "one failed" false "$(pc 1 merged)" "$(pc 2 failed)"
+fin "one dropped, the rest merged" true "$(pc 1 merged)" "$(pc 2 dropped)" "$(pc 3 merged)"
+fin "one running" false "$(pc 1 merged)" "$(pc 2 running)"
+fin "one done" false "$(pc 1 merged)" "$(pc 2 "done")"
+fin "one pending" false "$(pc 1 merged)" "$(pc 2 pending)"
+fin "zero pieces" true
+FN="$(tpath fin)"
+[ ! -e "$(dirname "$FN")/.$(basename "$FN").lock" ] && echo "ok: finished takes no lock" \
+  || fail "finished created a lock file"
+run --branch fin finished extra
+expect "finished takes no arguments" 2 ""
+run --branch nobody finished
+expect "finished with no tracking file" 1 "" "no tracking file"
+
+# ------------------------------------------------------------------ summary: not delivered
+
+# #2 dropped; #3 behind it; #4 behind #3 (transitive); #5 behind merged #1
+# only; #6 behind #4 and a dropped #7; #8 stuck with needs and a reason.
+track "$B" 0 3 2 '{}' "$(pc 1 merged)" "$(pc 2 dropped '[1]')" "$(pc 3 pending '[2]')" \
+  "$(pc 4 pending '[1,3]')" "$(pc 5 pending '[1]')" "$(pc 6 pending '[4,7]')" "$(pc 7 dropped)" \
+  '"8":{"state":"stuck","blockedBy":[1],"agent":"a-8","session":"s-8","branch":"p/8","needs":5,"reason":"a|b\nc"}'
+run --branch "$B" summary
+EXP='| Issue | State | Branch | Agent | Blocked by | Notes |
+|---|---|---|---|---|---|
+| #1 | merged | p/1 | a-1 |  |  |
+| #2 | dropped | p/2 | a-2 | #1 | not delivered (dropped) |
+| #3 | pending |  |  | #2 | not delivered (blocked by dropped #2) |
+| #4 | pending |  |  | #1, #3 | not delivered (blocked by dropped #2) |
+| #5 | pending |  |  | #1 |  |
+| #6 | pending |  |  | #4, #7 | not delivered (blocked by dropped #2, #7) |
+| #7 | dropped | p/7 | a-7 |  | not delivered (dropped) |
+| #8 | stuck | p/8 | a-8 | #1 | needs #5: a\|b c |'
+if [ "$RC" -eq 0 ] && [ "$RAW" = "$EXP" ]; then echo "ok: summary lists dropped and blocked-by-dropped as not delivered"
+else fail "summary not delivered: rc $RC, got:
+$RAW"; fi
 
 # ------------------------------------------------------------------ two orchestrators
 
@@ -605,6 +878,31 @@ expect "the holder finishes after another writer timed out" 0 "#1 running"
 [ -f "$LK" ] && [ ! -L "$LK" ] && echo "ok: the lock is a persistent regular file" || fail "lock file: $(ls -la "$SD")"
 no_tmp "only the lock file is left after a timeout"
 
+# record, merged, failed and dropped take the same lock: against a live holder
+# each times out, writing nothing.
+track "$B" 0 3 2 '{}' "$(pc 1 running)" "$(pc 2 "done")" "$(pc 3 pending)"
+cp "$F" "$T/before.json"
+hold_start a --branch "$B" launch 3 a3 s3 "$B-3"
+pa=$LASTPID
+export PIECE_TRACK_LOCK_TIMEOUT=1
+for wcmd in "record|DONE #1 p/1 $SHA" "merged|2" "failed|1" "dropped|2"; do
+  run --branch "$B" "${wcmd%%|*}" "${wcmd#*|}"
+  expect "${wcmd%%|*} waits for the lock and times out" 1 "" "lock busy (held by pid $pa)"
+done
+unset PIECE_TRACK_LOCK_TIMEOUT
+same "timed-out record, merged, failed, dropped write nothing" "$T/before.json" "$F"
+: >"$LT/go"
+finish "$pa" a
+expect "the holder finishes after the new writers timed out" 0 "#3 running"
+
+# A record waiting behind merged sees the merge: its DONE with a new SHA is
+# refused, and the merge is not lost.
+track "$B" 0 3 2 '{}' "$(pc 1 "done")"
+race "merged vs record" --branch "$B" merged 1 -- --branch "$B" record "DONE #1 p/1 $SHA2"
+[ "$RCA" -eq 0 ] && [ "$OUTA" = "#1 merged" ] || fail "merged vs record: merged rc $RCA ($OUTA) ($ERRA)"
+expect "record behind merged refuses" 1 "" "#1 is merged"
+[ "$(jqf "$F" '.pieces["1"].state')" = '"merged"' ] && echo "ok: merge kept" || fail "merge lost: $(jqf "$F" '.pieces')"
+
 # A holder killed with SIGKILL inside the lock: the kernel frees the lock, and
 # the next writer gets it at once with no cleanup.
 track "$B" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 pending)"
@@ -767,7 +1065,7 @@ expect "--branch overrides HEAD" 0 "$GCD/piece-tracking/x%2Fy.json"
 
 run
 expect "no subcommand" 2 ""
-for sub in path register launchable launch summary; do
+for sub in path register launchable launch record merged failed dropped finished summary; do
   case "$ERR" in *"piece-track.sh [--branch <b>] $sub"*) echo "ok: usage lists $sub" ;;
     *) fail "usage lacks $sub: $ERR" ;; esac
 done

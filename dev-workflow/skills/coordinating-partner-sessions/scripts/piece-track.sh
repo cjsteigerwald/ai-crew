@@ -5,6 +5,11 @@
 #   piece-track.sh [--branch <b>] register <snapshot.json> [--depth <n>] [--live-cap <n>] [--depth-cap <n>]
 #   piece-track.sh [--branch <b>] launchable                 issues to launch now, one per line, ascending
 #   piece-track.sh [--branch <b>] launch <issue> <agent> <session-id> <piece-branch>
+#   piece-track.sh [--branch <b>] record <report-line>       record one piece agent's report
+#   piece-track.sh [--branch <b>] merged <issue>             done -> merged (after the fast-forward)
+#   piece-track.sh [--branch <b>] failed <issue>             running, done or stuck -> failed
+#   piece-track.sh [--branch <b>] dropped <issue>            any state but merged -> dropped (the user's call)
+#   piece-track.sh [--branch <b>] finished                   true or false: every piece merged or dropped
 #   piece-track.sh [--branch <b>] summary                    Markdown table for the PR body
 #
 # --branch names the orchestrator's own branch (default: the current branch;
@@ -29,10 +34,49 @@
 #    "depthCap": 2, "external": {"12": "closed"},
 #    "pieces": {"35": {"state": "pending", "blockedBy": [12, 34],
 #                      "agent": null, "session": null, "branch": null}}}
-# state is one of pending, running, done, merged, stuck, failed. register sets
-# depth (default 0), liveCap (default 3, >= 1) and depthCap (default 2).
-# Re-registering replaces the file only while every piece is still pending;
-# after any launch it is refused.
+# state is one of pending, running, done, merged, stuck, failed, dropped.
+# record adds sha (from DONE) and needs (an issue number or null) and reason
+# (from STUCK) to a piece. register sets depth (default 0), liveCap (default 3,
+# >= 1) and depthCap (default 2). Re-registering replaces the file only while
+# every piece is still pending; after any launch it is refused.
+#
+# Report lines (record's one argument; one line, fields separated by spaces;
+# one trailing CR and trailing spaces are ignored; any other control character,
+# tab and newline included, is malformed):
+#   STARTED #<issue>                                STARTED #35
+#   DONE #<issue> <piece-branch> <sha>              DONE #35 feat/orch-35 <40 lowercase hex>
+#   STUCK #<issue> [needs=#<sibling>] <reason>      STUCK #35 needs=#34 waits on #34's schema
+#                                                   STUCK #35 cannot reach the test db
+# <issue> and <sibling> are integers >= 1 without leading zeros; <sha> is the
+# full 40-hex commit SHA; <reason> is the rest of the line, non-empty, stored
+# verbatim. Anything else (another keyword, a missing or extra field, the old
+# gen=/synced= fields, SCOPE or FAILED) is malformed: exit 1, nothing written.
+# The line is data: split by `read`, passed to jq with --arg, never evaluated.
+#
+# Transitions (anything not listed is refused with exit 1, nothing written;
+# a report or mark that changes nothing exits 0 and leaves the file
+# byte-identical):
+#   launch    pending                -> running
+#   STARTED   running, done, stuck   -> unchanged (a late STARTED never regresses)
+#   DONE      running, done, stuck   -> done, sha set (a new sha replaces the old:
+#                                       the resync re-report); needs, reason cleared
+#             merged                 -> unchanged, only for the same branch and sha
+#   STUCK     running, done, stuck   -> stuck, needs and reason set, sha kept
+#   merged    done                   -> merged
+#   failed    running, done, stuck   -> failed (the session ended unmerged)
+#   dropped   any state but merged   -> dropped
+# A report is also refused for an unknown issue, a pending piece (never
+# launched), a DONE whose branch is not the one recorded at launch, and a
+# STUCK needing itself or an issue outside the set. pending cannot fail: a
+# piece with no session has nothing to fail. A dropped piece is not live and
+# does not clear its dependants: they stay blocked.
+#
+# finished prints true when every piece is merged or dropped (so with zero
+# pieces it is true: nothing is left to do) and false otherwise; it is
+# read-only. summary adds a Notes column: "needs #N: <reason>" for a stuck
+# piece, "not delivered (dropped)" for a dropped one, and "not delivered
+# (blocked by dropped #a, #b)" for an unmerged piece behind a dropped one,
+# directly or through other unmerged pieces.
 #
 # Launchable: a pending piece whose in-set blockers are all merged and whose
 # external blockers are all closed. Live pieces are running, done or stuck (a
@@ -48,7 +92,8 @@
 # previous file byte-identical. PIECE_TRACK_TEST_ABORT_BEFORE_RENAME=1 (tests
 # only) stops a write after the temp file is complete and before the rename.
 #
-# Lock: every writing command (register, launch) holds one lock per tracking
+# Lock: every writing command (register, launch, record, merged, failed,
+# dropped) holds one lock per tracking
 # file from before it reads the file until it exits, so read, checks, compute
 # and rename are one transaction. The lock is flock(2) on the persistent file
 # .<enc>.json.lock beside the tracking file (never deleted), taken by a perl
@@ -60,7 +105,7 @@
 # "lock busy (held by pid N)", writing nothing; a lock file that cannot be
 # opened is exit 2. PIECE_TRACK_LOCKED is internal: "<pid>:<lock file>" marks
 # the re-executed run and counts only when <pid> is that run's own pid. Read-only
-# commands (path, launchable, summary) take no lock: the rename means they
+# commands (path, launchable, finished, summary) take no lock: the rename means they
 # always read a whole file. Only register creates the state directory; a launch
 # with no tracking file is refused without creating it, but when the state
 # directory exists, that refused launch can leave a persistent lock file for
@@ -70,8 +115,9 @@
 # <f>.held and wait until <f> exists; create <f> when first finding the lock
 # busy; start a background `sleep 30` inside the lock and write its pid to <f>.
 #
-# Exit: 0 done, 1 refused (reason on stderr), 2 usage or I/O error. Issue,
-# branch, agent and session strings are data: validated, passed to jq with
+# Exit: 0 done, 1 refused (reason on stderr; a malformed report line is a
+# refusal), 2 usage or I/O error (a bad <issue> argument is usage). Issue,
+# branch, agent, session and report strings are data: validated, passed to jq with
 # --arg/--argjson, never evaluated. Never calls claude or gh. Bash 3.2 compatible.
 set -u
 
@@ -120,7 +166,7 @@ trap 'exit 143' TERM
 # The shape every tracking file must have before it is read or written: exactly
 # one JSON value (jq -e alone would judge only the last value of a stream),
 # an object, every piece in a known state. STATES is the one list of states.
-STATES='"pending", "running", "done", "merged", "stuck", "failed"'
+STATES='"pending", "running", "done", "merged", "stuck", "failed", "dropped"'
 VALID='length == 1 and (.[0]
   | type == "object" and .version == 1 and (.branch | type) == "string"
   and (.depth | type) == "number" and (.liveCap | type) == "number"
@@ -430,16 +476,141 @@ cmd_launch() {
   echo "#$issue running"
 }
 
+# jq definitions for record, over a tracking file, with $k (STARTED, DONE or
+# STUCK), $i (issue), $pb (DONE's branch), $sha, $n (STUCK's needs, "" for
+# none) and $r (STUCK's reason).
+RDEFS='
+def terminal: .state == "merged" or .state == "failed" or .state == "dropped";
+# The refusal for this report, or empty.
+def rec_refusal: .pieces[$i] as $p
+  | if $p == null then "unknown issue #\($i)"
+    elif $p.state == "pending" then "#\($i) is pending (never launched)"
+    elif $p.state == "merged" and $k == "DONE" and $pb == $p.branch and $sha == $p.sha then empty
+    elif ($p | terminal) then "#\($i) is \($p.state)"
+    elif $k == "DONE" and $pb != $p.branch then "#\($i) reported branch \($pb), launched on \($p.branch)"
+    elif $k == "STUCK" and $n == $i then "#\($i) cannot need itself"
+    elif $k == "STUCK" and $n != "" and (.pieces | has($n) | not) then "#\($i) needs unknown issue #\($n)"
+    else empty end;
+# The tracking file with this (accepted) report applied.
+def rec_update: .pieces[$i] |=
+  if .state == "merged" or $k == "STARTED" then .
+  elif $k == "DONE" then .state = "done" | .sha = $sha | del(.needs, .reason)
+  else .state = "stuck" | .needs = (if $n == "" then null else ($n | tonumber) end) | .reason = $r end;
+'
+
+# bad_report <why> — refuses a malformed report line.
+bad_report() { refuse "bad report: $*"; }
+
+cmd_record() {
+  [ "$#" -eq 1 ] || usage
+  line="$1"
+  # One trailing CR (a CRLF line end) and trailing spaces are not part of it.
+  case "$line" in *$'\r') line="${line%$'\r'}" ;; esac
+  case "$line" in *[[:cntrl:]]*) bad_report "control character in the line" ;; esac
+  while [[ "$line" == *" " ]]; do line="${line% }"; done
+  kind=""; itok=""; rest=""
+  read -r kind itok rest <<<"$line"
+  [ -n "$itok" ] || bad_report "missing fields"
+  case "$kind" in STARTED|DONE|STUCK) ;; *) bad_report "unknown report keyword" ;; esac
+  case "$itok" in '#'*) issue="${itok#\#}" ;; *) issue="" ;; esac
+  is_issue "$issue" || bad_report "bad issue"
+  pb=""; sha=""; needs=""; reason=""
+  case "$kind" in
+    STARTED)
+      [ -z "$rest" ] || bad_report "unexpected trailing text"
+      ;;
+    DONE)
+      extra=""
+      read -r pb sha extra <<<"$rest"
+      [ -n "$sha" ] || bad_report "missing DONE fields"
+      [ -z "$extra" ] || bad_report "unexpected trailing text"
+      is_branch "$pb" || bad_report "bad branch"
+      # An explicit digit list: a range like a-f can match capitals in some locales.
+      case "$sha" in *[!0123456789abcdef]*) bad_report "bad sha" ;; esac
+      [ "${#sha}" -eq 40 ] || bad_report "bad sha"
+      ;;
+    STUCK)
+      first="${rest%% *}"
+      case "$first" in
+        needs=*)
+          needs="${first#needs=}"
+          case "$needs" in '#'*) needs="${needs#\#}" ;; *) needs="" ;; esac
+          is_issue "$needs" || bad_report "bad needs"
+          case "$rest" in *" "*) rest="${rest#* }" ;; *) rest="" ;; esac
+          rest="${rest#"${rest%%[! ]*}"}"
+          ;;
+      esac
+      [ -n "$rest" ] || bad_report "missing reason"
+      reason="$rest"
+      ;;
+  esac
+  need_state
+  set -- --arg k "$kind" --arg i "$issue" --arg pb "$pb" --arg sha "$sha" --arg n "$needs" --arg r "$reason"
+  why="$(jq -r "$@" "$RDEFS"'rec_refusal' "$FILE")" || die "cannot read $FILE"
+  [ -z "$why" ] || refuse "$why"
+  # A report that changes nothing writes nothing, so the file stays byte-identical.
+  if ! jq -e "$@" "$RDEFS"'rec_update == .' "$FILE" >/dev/null 2>&1; then
+    write_state "$@" "$RDEFS"'rec_update' "$FILE"
+  fi
+  echo "#$issue $(jq -r --arg i "$issue" '.pieces[$i].state' "$FILE")"
+}
+
+# cmd_mark <to> <issue> — the orchestrator's own transitions: merged, failed
+# and dropped.
+cmd_mark() {
+  to="$1"; shift
+  [ "$#" -eq 1 ] || usage
+  issue="$1"
+  is_issue "$issue" || die "bad issue: $issue"
+  need_state
+  why="$(jq -r --arg i "$issue" --arg to "$to" '.pieces[$i] as $p
+    | if $p == null then "unknown issue #\($i)"
+      elif $to == "merged" and $p.state != "done" then "#\($i) is \($p.state), not done"
+      elif $to == "failed" and (any("running", "done", "stuck"; . == $p.state) | not)
+        then "#\($i) is \($p.state), not running, done or stuck"
+      elif $to == "dropped" and $p.state == "merged" then "#\($i) is merged"
+      else empty end' "$FILE")" || die "cannot read $FILE"
+  [ -z "$why" ] || refuse "$why"
+  if ! jq -e --arg i "$issue" --arg to "$to" '.pieces[$i].state == $to' "$FILE" >/dev/null 2>&1; then
+    write_state --arg i "$issue" --arg to "$to" '.pieces[$i].state = $to' "$FILE"
+  fi
+  echo "#$issue $to"
+}
+
+cmd_finished() {
+  [ "$#" -eq 0 ] || usage
+  need_state
+  jq -r '[.pieces[] | .state == "merged" or .state == "dropped"] | all' "$FILE" || die "cannot read $FILE"
+}
+
 cmd_summary() {
   [ "$#" -eq 0 ] || usage
   need_state
-  echo "| Issue | State | Branch | Agent | Blocked by |"
-  echo "|---|---|---|---|---|"
+  echo "| Issue | State | Branch | Agent | Blocked by | Notes |"
+  echo "|---|---|---|---|---|---|"
   jq -r '
     def cell: tostring | gsub("[\t\r\n]+"; " ") | gsub("\\|"; "\\|");
-    .pieces | to_entries | sort_by(.key | tonumber)[]
+    # Per piece, the dropped issues it waits behind: a dropped in-set blocker,
+    # or one reached through unmerged blockers. One round per piece reaches
+    # the end of any chain.
+    def dropped_roots: . as $s
+      | reduce range(0; .pieces | length) as $_ (.pieces | map_values([]);
+          . as $d
+          | with_entries(.key as $k | .value = ([$s.pieces[$k].blockedBy[] | tostring
+              | select(. as $b | $s.pieces | has($b))
+              | if $s.pieces[.].state == "dropped" then [tonumber]
+                elif $s.pieces[.].state == "merged" then []
+                else $d[.] end] | add // [] | unique)));
+    dropped_roots as $dr
+    | .pieces | to_entries | sort_by(.key | tonumber)[]
     | .value as $v
-    | "| #\(.key) | \($v.state | cell) | \($v.branch // "" | cell) | \($v.agent // "" | cell) | \([$v.blockedBy[] | "#\(.)"] | join(", ") | cell) |"' "$FILE" \
+    | (if $v.state == "dropped" then "not delivered (dropped)"
+       elif $v.state != "merged" and ($dr[.key] | length) > 0
+         then "not delivered (blocked by dropped \($dr[.key] | map("#\(.)") | join(", ")))"
+       elif $v.state == "stuck"
+         then (if $v.needs == null then "" else "needs #\($v.needs): " end) + ($v.reason // "")
+       else "" end) as $note
+    | "| #\(.key) | \($v.state | cell) | \($v.branch // "" | cell) | \($v.agent // "" | cell) | \([$v.blockedBy[] | "#\(.)"] | join(", ") | cell) | \($note | cell) |"' "$FILE" \
     || die "cannot read $FILE"
 }
 
@@ -456,19 +627,22 @@ done
 [ "$#" -ge 1 ] || usage
 CMD="$1"; shift
 case "$CMD" in
-  path|register|launchable|launch|summary) ;;
+  path|register|launchable|launch|record|merged|failed|dropped|finished|summary) ;;
   *) usage ;;
 esac
 set_paths
 # Every command that writes takes the lock here and keeps it until it exits.
 case "$CMD" in
   register) with_lock --create ;;
-  launch) with_lock ;;
+  launch|record|merged|failed|dropped) with_lock ;;
 esac
 case "$CMD" in
   path) cmd_path "$@" ;;
   register) cmd_register "$@" ;;
   launchable) cmd_launchable "$@" ;;
   launch) cmd_launch "$@" ;;
+  record) cmd_record "$@" ;;
+  merged|failed|dropped) cmd_mark "$CMD" "$@" ;;
+  finished) cmd_finished "$@" ;;
   summary) cmd_summary "$@" ;;
 esac
