@@ -657,6 +657,62 @@ export PATH="$OPATH"
 expect "no usable perl" 2 "" "perl with Fcntl is required"
 same "no usable perl writes nothing" "$T/before.json" "$F"
 
+# The following use their own branch so the $B pieces are untouched.
+LB="lk"
+track "$LB" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 pending)" "$(pc 3 pending)"
+FL="$(tpath "$LB")"
+
+# A lock file that cannot be created: exit 2, nothing written. (track wrote the
+# tracking file directly, so no lock file exists yet for $LB.)
+cp "$FL" "$T/before.json"
+chmod 555 "$SD"
+run --branch "$LB" launch 1 a1 s1 "$LB-1"
+chmod 755 "$SD"
+expect "an uncreatable lock file" 2 "" "cannot write lock"
+same "an uncreatable lock file writes nothing" "$T/before.json" "$FL"
+
+# PIECE_TRACK_LOCK_TIMEOUT=0: an uncontended write succeeds; a held lock is
+# refused at once.
+export PIECE_TRACK_LOCK_TIMEOUT=0
+run --branch "$LB" launch 1 a1 s1 "$LB-1"
+unset PIECE_TRACK_LOCK_TIMEOUT
+expect "timeout 0 uncontended" 0 "#1 running"
+hold_start a --branch "$LB" launch 2 a2 s2 "$LB-2"
+pa=$LASTPID
+t0="$(date +%s)"
+export PIECE_TRACK_LOCK_TIMEOUT=0
+run --branch "$LB" launch 3 a3 s3 "$LB-3"
+unset PIECE_TRACK_LOCK_TIMEOUT
+t1="$(date +%s)"
+expect "timeout 0 against a held lock" 1 "" "lock busy (held by pid $pa)"
+[ $((t1 - t0)) -le 1 ] && echo "ok: timeout 0 refuses at once" || fail "timeout 0 took $((t1 - t0)) s"
+
+# A preset PIECE_TRACK_LOCKED does not skip the lock unless it names this very
+# process: with the right path but a foreign pid (or no pid) the run still
+# locks, so the held lock makes it time out.
+LKL="$(dirname "$FL")/.$(basename "$FL").lock"
+for mk in "1:$LKL" "$LKL"; do
+  export PIECE_TRACK_LOCKED="$mk" PIECE_TRACK_LOCK_TIMEOUT=1
+  run --branch "$LB" launch 3 a3 s3 "$LB-3"
+  unset PIECE_TRACK_LOCKED PIECE_TRACK_LOCK_TIMEOUT
+  expect "a preset lock marker ($mk) still locks" 1 "" "lock busy (held by pid $pa)"
+done
+: >"$LT/go"
+finish "$pa" a
+expect "the holder finishes" 0 "#2 running"
+[ "$(jqf "$FL" '[.pieces[] | .state]')" = '["running","running","pending"]' ] \
+  && echo "ok: refused lock attempts wrote nothing" || fail "lk pieces: $(jqf "$FL" '.pieces')"
+
+# A relative state dir whose name starts with '-' is a path, not an option.
+mkdir -p "$T/dashcwd"
+RAW="$(cd "$T/dashcwd" && PIECE_TRACK_DIR=-dash "$BASH" "$PT" --branch dash register "$FIX/snapshot-chain.json" 2>"$T/err")"
+RC=$?; OUT="$RAW"; ERR="$(cat "$T/err")"
+expect "a state dir named -dash" 0 "registered 3 pieces for dash"
+[ -f "$T/dashcwd/-dash/dash.json" ] && echo "ok: -dash/dash.json written" || fail "no $T/dashcwd/-dash/dash.json: $(ls -la "$T/dashcwd")"
+RAW="$(cd "$T/dashcwd" && PIECE_TRACK_DIR=-dash "$BASH" "$PT" --branch dash launch 34 a s "dash-34" 2>"$T/err")"
+RC=$?; OUT="$RAW"; ERR="$(cat "$T/err")"
+expect "launch under a state dir named -dash" 0 "#34 running"
+
 
 export PIECE_TRACK_LOCK_TIMEOUT=x
 run --branch "$B" launch 2 a2 s2 "$B-2"

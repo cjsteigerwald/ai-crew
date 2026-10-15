@@ -52,16 +52,19 @@
 # file from before it reads the file until it exits, so read, checks, compute
 # and rename are one transaction. The lock is flock(2) on the persistent file
 # .<enc>.json.lock beside the tracking file (never deleted), taken by a perl
-# wrapper (perl with Fcntl is required; exit 2 without it) that re-execs this
+# wrapper (a `perl -MFcntl` preflight runs first; exit 2 without it) that re-execs this
 # script with the locked fd open. The kernel keeps it held while this run or
 # any child it started lives and frees it on any death, SIGKILL included. A
 # busy lock is retried every 0.1 s for PIECE_TRACK_LOCK_TIMEOUT seconds
 # (default 10, an integer >= 0), then the command is refused (exit 1) with
 # "lock busy (held by pid N)", writing nothing; a lock file that cannot be
-# opened is exit 2. PIECE_TRACK_LOCKED is internal: it marks the re-executed
-# run. Read-only commands (path, launchable, summary) take no lock: the rename
-# means they always read a whole file. Only register creates the state
-# directory; a launch with no tracking file is refused without creating it.
+# opened is exit 2. PIECE_TRACK_LOCKED is internal: "<pid>:<lock file>" marks
+# the re-executed run and counts only when <pid> is that run's own pid. Read-only
+# commands (path, launchable, summary) take no lock: the rename means they
+# always read a whole file. Only register creates the state directory; a launch
+# with no tracking file is refused without creating it, but when the state
+# directory exists, that refused launch can leave a persistent lock file for
+# the unregistered branch. A relative PIECE_TRACK_DIR is used as ./<dir>.
 # PIECE_TRACK_TEST_HOLD_LOCK=<f>, PIECE_TRACK_TEST_LOCK_WAITING=<f> and
 # PIECE_TRACK_TEST_LOCK_CHILD=<f> (tests only): once holding the lock, create
 # <f>.held and wait until <f> exists; create <f> when first finding the lock
@@ -233,6 +236,8 @@ set_paths() {
   is_branch "$BR" || die "bad branch: $BR"
   if [ -n "${PIECE_TRACK_DIR:-}" ]; then
     SDIR="$PIECE_TRACK_DIR"
+    # A relative dir gets ./ so no tool reads a leading - as an option.
+    case "$SDIR" in /*) ;; *) SDIR="./$SDIR" ;; esac
   else
     gd="$(git rev-parse --git-common-dir 2>/dev/null)" || die "not in a git repository: set PIECE_TRACK_DIR"
     gd="$(cd "$gd" && pwd -P)" || die "cannot resolve $gd"
@@ -308,7 +313,7 @@ fcntl($fh, F_SETFD, $flags & ~FD_CLOEXEC) or do {
   print STDERR "piece-track.sh: cannot keep the lock open across exec: $!\n";
   exit 2;
 };
-$ENV{PIECE_TRACK_LOCKED} = $lock;
+$ENV{PIECE_TRACK_LOCKED} = $$ . ":" . $lock;
 exec { $cmd[0] } @cmd;
 print STDERR "piece-track.sh: cannot exec $cmd[0]: $!\n";
 exit 2;
@@ -316,13 +321,14 @@ exit 2;
 
 # with_lock [--create] — makes this run hold the tracking file's lock. The
 # first call re-execs this script under the perl wrapper (and does not
-# return); in the re-executed run it checks the lock is the one this run needs
-# and returns. Without --create a missing state directory is refused as a
+# return); the re-executed run finds PIECE_TRACK_LOCKED = "<its own pid>:<the
+# lock this run needs>" (exec keeps the pid) and returns. Any other value (a
+# preset or inherited marker, or a different lock) is ignored and the lock is
+# taken normally. Without --create a missing state directory is refused as a
 # missing tracking file, so a refused command creates nothing.
 with_lock() {
   lockf="$SDIR/.$ENC.json.lock"
-  if [ -n "${PIECE_TRACK_LOCKED:-}" ]; then
-    [ "$PIECE_TRACK_LOCKED" = "$lockf" ] || die "holding lock $PIECE_TRACK_LOCKED, but this run needs $lockf"
+  if [ "${PIECE_TRACK_LOCKED:-}" = "$$:$lockf" ]; then
     unset PIECE_TRACK_LOCKED
     if [ -n "${PIECE_TRACK_TEST_LOCK_CHILD:-}" ]; then
       sleep 30 &
@@ -342,7 +348,7 @@ with_lock() {
     mkdir -p "$SDIR" 2>/dev/null || die "cannot create $SDIR"
   fi
   perl -MFcntl -e 1 >/dev/null 2>&1 || die "perl with Fcntl is required to lock $lockf"
-  exec perl -MFcntl=:flock,F_GETFD,F_SETFD,FD_CLOEXEC -e "$LOCKPL" \
+  exec perl -MFcntl=:flock,F_GETFD,F_SETFD,FD_CLOEXEC -e "$LOCKPL" -- \
     "$lockf" "$lt" "$BASH" "$0" "${ARGS[@]}"
 }
 
