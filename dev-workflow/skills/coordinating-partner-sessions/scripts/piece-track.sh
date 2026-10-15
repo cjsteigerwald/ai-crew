@@ -140,11 +140,14 @@
 #      base, the tip differs from it and the tip is advanced (sha = the tip).
 #      Tip equal to the base: no evidence, the rules below decide. A tip not
 #      advanced (an older ancestor): not merged, reported on stderr. No
-#      recorded base (a rebuilt file): not merged; the piece gets
-#      "unverified": {"branch", "tip"} and is reported as
-#      "unverified-contained #<n> tip=<sha> branch=<branch>" for the user to
-#      decide (accept or dropped). launchable skips such a piece and launch
-#      refuses it. A later reconcile that no longer finds the tip contained
+#      recorded base: not merged, reported as "unverified-contained #<n>
+#      tip=<sha> branch=<branch>". That happens after a rebuild, for a
+#      never-launched pending piece in an existing file whose branch already
+#      exists at the fork point, and for a legacy launch record without a
+#      base. A pending piece also gets "unverified": {"branch", "tip"} for the
+#      user to decide (accept or dropped); launchable skips it and launch
+#      refuses it. A launched piece stores no fact: it resolves through DONE
+#      and merged. A later reconcile that no longer finds the tip contained
 #      removes the fact ("#<n> unverified-contained cleared"). A tip for
 #      another branch than the recorded one is reported on stderr and ignored.
 #   2. The recorded session live (a live row whose name is the recorded agent
@@ -457,7 +460,10 @@ $sf[0] as $snap | [$lf[0][] | select(.pid != null)] as $live | $tf[0] as $tips
        | ($p | if $r.to == "merged" then .state = "merged" | .branch = (.branch // $t.branch) | .sha = $t.tip
                elif $r.to != null then .state = $r.to else . end
                # The unverified fact holds only while this reconcile finds it.
-               | if $r.unverified then .unverified = {branch: $t.branch, tip: $t.tip} else del(.unverified) end) as $new
+               # Only a pending piece holds it: accept takes nothing else, and a
+               # launched piece resolves through DONE and merged.
+               | if $r.unverified and .state == "pending" then .unverified = {branch: $t.branch, tip: $t.tip}
+                 else del(.unverified) end) as $new
        | .s.pieces[$k] = $new
        | .out += (if $p0 == null then ["#\($k) added (pending)"] else [] end)
        | .out += (if $p0 != null and $p0.blockedBy != $p.blockedBy

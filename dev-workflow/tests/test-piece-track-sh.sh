@@ -1217,6 +1217,10 @@ rec "$B" "$RS" "$RN" "$RT"
   || fail "legacy #33: $(jqf "$F" '.pieces["33"]')"
 case "$RAW" in *"unverified-contained #33 tip=3333333333333333333333333333333333333333 branch=p/33"*)
   echo "ok: the legacy contained tip is reported unverified" ;; *) fail "legacy unverified: $RAW" ;; esac
+# Only a pending piece holds the fact (accept takes only pending pieces); a
+# launched one resolves through DONE and merged.
+[ "$(jqf "$F" '.pieces["33"] | has("unverified")')" = false ] && echo "ok: a launched piece stores no unverified fact" \
+  || fail "legacy #33 holds a fact: $(jqf "$F" '.pieces["33"]')"
 
 # The kept pieces join the graph: retained #1 is blocked by #2, and the
 # snapshot has #2 blocked by #1 as a closed external issue. Refused, nothing
@@ -1470,6 +1474,26 @@ same "a timed-out reconcile writes nothing" "$T/before.json" "$FK"
 : >"$LT/go"
 finish "$pa" a
 expect "the holder finishes after reconcile timed out" 0 "#1 running"
+
+# accept takes the lock too: against a live holder it times out, writing
+# nothing, and succeeds once the holder is gone.
+track "lka" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 pending)"
+FK="$(tpath "lka")"
+jq '.pieces["2"].unverified = {branch: "p/2", tip: "2222222222222222222222222222222222222222"}' "$FK" >"$T/lka.json"
+cp "$T/lka.json" "$FK"
+hold_start a --branch "lka" launch 1 a-1 s-1 "p/1" "$BS"
+pa=$LASTPID
+cp "$FK" "$T/before.json"
+export PIECE_TRACK_LOCK_TIMEOUT=1
+run --branch "lka" accept 2
+unset PIECE_TRACK_LOCK_TIMEOUT
+expect "accept waits for the lock and times out" 1 "" "lock busy (held by pid $pa)"
+same "a timed-out accept writes nothing" "$T/before.json" "$FK"
+: >"$LT/go"
+finish "$pa" a
+expect "the holder finishes after accept timed out" 0 "#1 running"
+run --branch "lka" accept 2
+expect "accept succeeds once the lock is free" 0 "#2 merged"
 
 [ ! -s "$STUBLOG" ] && echo "ok: reconcile made no live claude, gh or git call" \
   || fail "live calls during reconcile tests: $(cat "$STUBLOG")"
