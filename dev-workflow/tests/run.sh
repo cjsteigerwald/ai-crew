@@ -478,7 +478,7 @@ if [ -f "$PS_SKILL" ]; then
 else
   pfail "coordinating-partner-sessions/SKILL.md not found"
 fi
-for s in parse-msg.sh frontier.sh ff-merge.sh ledger.sh; do
+for s in parse-msg.sh frontier.sh ff-merge.sh ledger.sh piece-track.sh; do
   [ -f "$PS_DIR/scripts/$s" ] || pfail "coordinating-partner-sessions/scripts/$s not found"
   [ -x "$PS_DIR/scripts/$s" ] || pfail "coordinating-partner-sessions/scripts/$s is not executable"
 done
@@ -494,7 +494,7 @@ fi
 echo "== coordinating-partner-sessions scripts =="
 # Run with the interpreter running this file, so `/bin/bash run.sh` on macOS
 # exercises bash 3.2 end to end.
-for t in parse-msg frontier ff-merge ledger coordinator-contract; do
+for t in parse-msg frontier ff-merge ledger coordinator-contract piece-track; do
   if "$BASH" "$HERE/test-$t-sh.sh"; then
     :
   else

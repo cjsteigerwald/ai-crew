@@ -1,0 +1,9 @@
+{
+  "pieces": [
+    {"issue": 34, "blocked_by": [35]},
+    {"issue": 35, "blocked_by": [36]},
+    {"issue": 36, "blocked_by": [34]},
+    {"issue": 37, "blocked_by": [36]},
+    {"issue": 38, "blocked_by": []}
+  ]
+}

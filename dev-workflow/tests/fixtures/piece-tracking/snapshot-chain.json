@@ -1,0 +1,8 @@
+{
+  "pieces": [
+    {"issue": 36, "blocked_by": [34, 12]},
+    {"issue": 34, "blocked_by": []},
+    {"issue": 35, "blocked_by": [34]}
+  ],
+  "external": {"12": "closed"}
+}
