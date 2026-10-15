@@ -2,7 +2,11 @@
 
 Command recipes for [SKILL.md](../SKILL.md). Variables: `PT` is `piece-track.sh`, `FF` is
 `ff-merge.sh`, `OS` is this skill's directory, `W` is a scratch directory from `mktemp -d`
-(made once), `REPO` is `owner/repo`, `ORCH` is the orchestrator's branch. Set them at the top of
+(made once), `REPO` is `owner/repo`, `ORCH` is the orchestrator's branch, `KEY` is the ticket
+key, `OWN_SESSION` is this session's name, `DEPTH` is this orchestrator's depth (0 at top level),
+`DEPTH_CAP` and `LIVE_CAP` are 2 and 3 unless the handoff names others, `TEST_CMD` is the
+ticket's test command, `ISSUES` is the piece set (space-separated issue numbers) and `PREFIX` is
+the name prefix (Launch). Set them at the top of
 every Bash call; each call is a fresh shell. Every value that came from GitHub or a message is
 passed as an argument or a file, never pasted into a command line.
 
@@ -11,18 +15,26 @@ passed as an argument or a file, never pasted into a command line.
 `ISSUES` is the piece set (space-separated issue numbers). Write the result to `$W/snapshot.json`.
 
 ```bash
+rm -f "$W/snapshot.json"; : >"$W/deps.jsonl"
 for n in $ISSUES; do
-  gh api "repos/$REPO/issues/$n/dependencies/blocked_by" --paginate \
-    | jq -sc --argjson n "$n" '{issue: $n, deps: (add // [] | map({number, state}))}'
-done | jq -s '[.[].issue] as $set
+  raw="$(gh api "repos/$REPO/issues/$n/dependencies/blocked_by" --paginate)" \
+    || { echo "snapshot: gh failed for #$n" >&2; exit 1; }
+  printf '%s' "$raw" | jq -sc --argjson n "$n" \
+    'if length >= 1 and all(.[]; type == "array")
+     then {issue: $n, deps: (add // [] | map({number, state}))} else error("not an array") end' \
+    >>"$W/deps.jsonl" || { echo "snapshot: bad response for #$n" >&2; exit 1; }
+done
+jq -s '[.[].issue] as $set
   | {pieces: [.[] | {issue, blocked_by: [.deps[].number]}],
      external: ([.[].deps[] | select(.number as $x | $set | index($x) | not)
                  | {key: (.number | tostring), value: .state}] | unique_by(.key) | from_entries)}' \
-  >"$W/snapshot.json"
+  "$W/deps.jsonl" >"$W/snapshot.json" || { rm -f "$W/snapshot.json"; echo "snapshot: build failed" >&2; exit 1; }
 ```
 
-A blocker outside the set lands in `external` with its GitHub state, `open` or `closed`.
-Then `bash "$PT" register "$W/snapshot.json" --depth 0` (nested: `--depth <CHILD_DEPTH from your handoff>`).
+Any failure aborts the whole snapshot (no `snapshot.json` is left): run neither `register` nor
+`reconcile`; tell the user which issue failed. A blocker outside the set lands in `external`
+with its GitHub state, `open` or `closed`.
+Then `bash "$PT" register "$W/snapshot.json" --depth "$DEPTH"` (nested: the CHILD_DEPTH from your handoff).
 
 ## Launch
 
@@ -58,17 +70,34 @@ name>.` (nested); `AGENT="$PREFIX$N"`; `PB="$ORCH-$N"`;
    "$(cat "$W/handoff-$N.md")"`. A failed command: tell the user; record nothing.
 4. **Record.** Find the new session, take its `sessionId`, then `launch`:
    ```bash
-   claude agents --json | jq -r --arg n "$AGENT" \
-     '[.[] | select(.name == $n and .pid != null)] | sort_by(.startedAt) | last | .sessionId // empty'
+   SESSION_ID="$(claude agents --json | jq -r --arg n "$AGENT" \
+     '[.[] | select(.name == $n and .pid != null)] | sort_by(.startedAt) | last | .sessionId // empty')"
+   [ -n "$SESSION_ID" ] || { echo "no live session named $AGENT" >&2; exit 1; }
    bash "$PT" launch "$N" "$AGENT" "$SESSION_ID" "$PB" "$BASE"
    ```
-   No row after a second read: tell the user (a later `reconcile` lists it as `unknown-session`).
+   An empty `SESSION_ID` after a second read: tell the user and record nothing (a later
+   `reconcile` lists the session as `unknown-session`).
    Then `SendMessage` to `$AGENT` with `notify_when_idle: true` and no message, for the idle notice.
 
-**Relaunch** (a `failed` piece): reuse its branch and worktree (`git worktree add "$WT" "$PB"` if
-the worktree is gone), take `BASE` from `.pieces["N"].base` in the tracking file, render a new
-handoff as above, start the session, and run `PT launch` again with the new session id. `launch`
-accepts a failed piece and is refused at either cap.
+**Relaunch** (a `failed` piece): first read `claude agents --json` again. If the old recorded
+session (by its sessionId) still has a `pid`, tell the user and do not relaunch. Otherwise reuse
+its branch and worktree (`git worktree add "$WT" "$PB"` if the worktree is gone), take `BASE`
+from `.pieces["N"].base` in the tracking file, render a new handoff as above, start the
+session, and run `PT launch` again with the new session id. `launch` accepts a failed piece and
+is refused at either cap. A failed piece with no `base` (a legacy record) cannot be relaunched
+from the file: drop it, or ask the user for the fork-point sha.
+
+## Idle check
+
+An idle notice is not an ending: a live piece agent idles while it waits on the user. Read the
+recorded session's row (`SESSION_ID` is `.pieces["N"].session` in the tracking file):
+
+```bash
+claude agents --json | jq -r --arg s "$SESSION_ID" '[.[] | select(.sessionId == $s)] | first | .pid // "gone"'
+```
+
+A pid prints: the piece stays running or stuck; take no action (at most `STATUS? #N`). `gone`
+(no pid, or no row): `bash "$PT" failed "$N"`.
 
 ## Record
 
@@ -88,7 +117,7 @@ The `done` pieces: `jq -r '.pieces | to_entries[] | select(.value.state == "done
 For one of them (`N`, `PB`, `SHA`), from the orchestrator worktree:
 
 ```bash
-bash "$FF" --check "$ORCH" "$SHA"          # 0: head is an ancestor of SHA; 10: head=<h>, stale
+bash "$FF" --check "$ORCH" "$SHA"          # 0: head is an ancestor of SHA; 10: SHA does not descend from the current head=<h>
 PIN="$(git rev-parse "$ORCH")"
 bash "$FF" "$ORCH" "$SHA" "$PIN"           # 0: merged; 10: head moved, prints head=<h>; 3: wrong cwd or dirty
 ```
@@ -100,11 +129,16 @@ second: `bash "$PT" merged "$N"`.
 
 ```bash
 claude agents --json --all >"$W/sessions.json"
-# $W/snapshot.json: the Snapshot recipe. Tips: one entry per piece whose branch exists.
-for n in $ISSUES; do
-  pb="$ORCH-$n"                              # or .pieces[n].branch from the file
+# $W/snapshot.json: the Snapshot recipe (it must have succeeded). Tips: one entry per piece
+# in the snapshot or in the file whose branch exists.
+TF="$(bash "$PT" path)"
+KEPT=""; [ -f "$TF" ] && KEPT="$(jq -r '.pieces | keys[]' "$TF")"
+ALL="$(printf '%s\n' $ISSUES $KEPT | sort -un)"
+for n in $ALL; do
+  pb="$(jq -r --arg n "$n" '.pieces[$n].branch // empty' "$TF" 2>/dev/null)"
+  [ -n "$pb" ] || pb="$ORCH-$n"
   tip="$(git rev-parse --verify -q "refs/heads/$pb")" || continue
-  base="$(jq -r --arg n "$n" '.pieces[$n].base // empty' "$(bash "$PT" path)")"
+  base="$(jq -r --arg n "$n" '.pieces[$n].base // empty' "$TF" 2>/dev/null)"
   git merge-base --is-ancestor "$tip" "$ORCH" && c=true || c=false
   if [ -n "$base" ] && git merge-base --is-ancestor "$base" "$tip"; then a=true; else a=false; fi
   jq -n --arg n "$n" --arg b "$pb" --arg t "$tip" --argjson c "$c" --argjson a "$a" \
@@ -115,6 +149,6 @@ bash "$PT" reconcile --sessions "$W/sessions.json" --snapshot "$W/snapshot.json"
 ```
 
 `contained` is `git merge-base --is-ancestor <tip> <orchestrator head>`; `advanced` is
-`git merge-base --is-ancestor <base> <tip>`. A piece whose branch is not `$ORCH-$n` has its
-recorded branch in the file; use that. A live row has a `pid`; the rows `--all` adds for ended
+`git merge-base --is-ancestor <base> <tip>`. The loop uses a piece's recorded branch from the
+file, else `$ORCH-$n`; a missing file adds no noise. A live row has a `pid`; the rows `--all` adds for ended
 sessions have none.

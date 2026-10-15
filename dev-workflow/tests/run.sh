@@ -676,12 +676,30 @@ else
   pin_file "$OP_RECIPES" "$ORL" 'bash "$FF" "$ORCH" "$SHA" "$PIN"' 'bash "$PT" merged "$N"'
   # Hand back: top level to Verify and Ship with one draft PR after the go; nested sends DONE.
   pin_file "$OP_SKILL" "$OSL" "intake's Verify" '(step 7) and Ship (step 8)' 'Ship opens one draft PR and pushes only after the user'"'"'s go' \
-    '`PT summary` table' 'Send your own `DONE #N <your piece branch> <full sha>`' 'ORCHESTRATOR_SESSION' \
+    '`PT summary` table' 'send your own `DONE #N <your piece branch>' 'ORCHESTRATOR_SESSION' \
     'Nothing launchable, nothing live, `finished` false' 'ask the user to drop or resolve them'
   # Failed: offer relaunch or drop.
-  pin_file "$OP_SKILL" "$OSL" 'ended without DONE: `PT failed <issue>`' 'offer **relaunch** from the piece'"'"'s branch' \
-    '**drop** (`PT dropped <issue>`, the user'"'"'s call)'
-  pin_file "$OP_RECIPES" "$ORL" "accepts a failed piece" 'refused at either cap'
+  pin_file "$OP_SKILL" "$OSL" 'An idle notice is not an ending' 'With a `pid` the piece stays running or stuck: take no action' \
+    'Only a row with no `pid`, or no row' '`PT failed <issue>`' 'offer **relaunch** from the piece'"'"'s branch' \
+    '**drop** (`PT dropped <issue>`, the user'"'"'s call)' 'Before a relaunch, read the old session'"'"'s row' \
+    'tell the user and do not relaunch' 'A' 'piece with no recorded base cannot relaunch'
+  pin_order "$OP_SKILL" "$OSL" 'An idle notice is not an ending' '`PT failed <issue>`' 'Before a relaunch'
+  pin_file "$OP_RECIPES" "$ORL" "accepts a failed piece" 'refused at either cap' '## Idle check' \
+    '.pid // "gone"' 'bash "$PT" failed "$N"' 'still has a `pid`, tell the user and do not relaunch' \
+    'cannot be relaunched'
+  # Snapshot: any gh failure aborts everything; register and reconcile never run on a partial snapshot.
+  pin_file "$OP_SKILL" "$OSL" 'Any' 'failed or malformed fetch aborts the whole snapshot: run neither `register` nor `reconcile`'
+  pin_file "$OP_RECIPES" "$ORL" 'echo "snapshot: gh failed for #$n" >&2; exit 1' 'all(.[]; type == "array")' \
+    'echo "snapshot: bad response for #$n" >&2; exit 1' 'run neither `register` nor' 'no `snapshot.json` is left'
+  # Launch records a non-empty session id.
+  pin_file "$OP_RECIPES" "$ORL" 'SESSION_ID="$(claude agents --json' '[ -n "$SESSION_ID" ] ||' 'tell the user and record nothing'
+  # Nested hand-back merges the parent head and re-tests before DONE.
+  pin_order "$OP_SKILL" "$OSL" 'First merge your parent'"'"'s current head' 're-run the handoff'"'"'s test command' 'Then send your own `DONE #N'
+  # Check exit 10 means the sha does not descend from the head.
+  pin_file "$OP_SKILL" "$OSL" "the piece's sha does not descend from the current"
+  pin_file "$OP_RECIPES" "$ORL" 'SHA does not descend from the current head' '`KEY` is the ticket' '`OWN_SESSION`' \
+    '`DEPTH` is this orchestrator' '`TEST_CMD`' '`ISSUES` is the piece set' '`PREFIX` is' \
+    'KEPT=""; [ -f "$TF" ]' 'ALL="$(printf '"'"'%s\n'"'"' $ISSUES $KEPT | sort -un)"'
   # Cancel: one stop, only own sessions, tell the user if still alive.
   pin_file "$OP_SKILL" "$OSL" 'send `CANCEL #N`, then run `claude stop <id>` ONCE' \
     'only for a' 'session whose name and id this orchestrator recorded at launch' \

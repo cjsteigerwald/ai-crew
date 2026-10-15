@@ -51,8 +51,9 @@ both resolved from this skill's directory. Run every call from the orchestrator'
 
 ## 2. Register
 
-Build the dependency snapshot from GitHub's native blocked-by links (recipe: Snapshot), then
-`PT register <snapshot.json> --depth <d>`. The CLI rejects a cycle or an unknown blocker.
+Build the dependency snapshot from GitHub's native blocked-by links (recipe: Snapshot). Any
+failed or malformed fetch aborts the whole snapshot: run neither `register` nor `reconcile`, and
+tell the user. Then `PT register <snapshot.json> --depth <d>`. The CLI rejects a cycle or an unknown blocker.
 `<d>` is 0 at the top level; a nested orchestrator uses the CHILD_DEPTH of its own handoff.
 Caps are depth 2 and 3 live children per orchestrator (the CLI defaults, passed through
 `--depth-cap` and `--live-cap` when the handoff names others). `launchable` and `launch` refuse
@@ -93,8 +94,8 @@ tell the user.
 
 One `done` piece at a time (recipe: Merge):
 
-1. `FF --check <branch> <sha>`. Exit 10 means the head moved: send `RESYNC #N <head>` and
-   take the next piece.
+1. `FF --check <branch> <sha>`. Exit 10 means the piece's sha does not descend from the current
+   head: send `RESYNC #N <head>` and take the next piece.
 2. Pin `PIN` = the current head, then `FF <branch> <sha> "$PIN"`.
 3. Exit 0: `PT merged <issue>`, then `PT launchable` again.
    Exit 10: the head moved; send `RESYNC #N <current-head>` and wait for a fresh DONE.
@@ -106,17 +107,24 @@ One `done` piece at a time (recipe: Merge):
 
 - **Top level.** Return the orchestrator branch and the `PT summary` table to intake's Verify
   (step 7) and Ship (step 8). Ship opens one draft PR and pushes only after the user's go.
-- **Nested.** Send your own `DONE #N <your piece branch> <full sha>` to the orchestrator that
-  launched you (its name is the handoff's ORCHESTRATOR_SESSION).
+- **Nested.** First merge your parent's current head (the handoff's BASE_BRANCH) into your piece
+  branch and re-run the handoff's test command. Then send your own `DONE #N <your piece branch>
+  <full sha>` to the orchestrator that launched you (its name is the handoff's ORCHESTRATOR_SESSION).
 
 Nothing launchable, nothing live, `finished` false: pieces wait behind a dropped or failed piece.
 Show `PT summary` and ask the user to drop or resolve them.
 
 ## 7. Failed
 
-An idle notice for a session, or `reconcile`, shows it ended without DONE: `PT failed <issue>`,
-tell the user, and offer **relaunch** from the piece's branch (Launch recipe, relaunch) or
-**drop** (`PT dropped <issue>`, the user's call). A dropped piece is listed as not delivered.
+An idle notice is not an ending: a live piece agent idles while it waits on the user, for example
+after STUCK. On one, read the recorded session's row in `claude agents --json` (recipe: Idle
+check). With a `pid` the piece stays running or stuck: take no action, at most `STATUS? #N`.
+Only a row with no `pid`, or no row (or `reconcile` saying so), means it ended without DONE:
+`PT failed <issue>`, tell the user, and offer **relaunch** from the piece's branch or
+**drop** (`PT dropped <issue>`, the user's call). Before a relaunch, read the old session's row
+again: if it has a `pid`, tell the user and do not relaunch (two writers in one worktree). A
+piece with no recorded base cannot relaunch: drop it or ask the user. A dropped piece is listed
+as not delivered.
 
 ## 8. Cancel
 
