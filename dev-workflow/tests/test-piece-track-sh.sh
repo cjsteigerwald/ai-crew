@@ -173,6 +173,15 @@ snap_reject "unknown blocker" '{"pieces":[{"issue":3,"blocked_by":[9]}]}' "#3 is
 snap_reject "bad external state" '{"pieces":[{"issue":3,"blocked_by":[9]}],"external":{"9":"merged"}}' "bad external"
 snap_reject "bad external key" '{"pieces":[{"issue":3}],"external":{"x9":"open"}}' "bad external"
 snap_reject "issue both in set and external" '{"pieces":[{"issue":3}],"external":{"3":"open"}}' "both"
+snap_reject "float-literal issue 35.0" '{"pieces":[{"issue":35.0}]}' "bad piece"
+snap_reject "exponent issue 1e2" '{"pieces":[{"issue":1e2}]}' "bad piece"
+snap_reject "float-literal blocker" '{"pieces":[{"issue":3},{"issue":4,"blocked_by":[3.0]}]}' "bad piece"
+snap_reject "blocked_by false" '{"pieces":[{"issue":3,"blocked_by":false}]}' "bad piece"
+snap_reject "blocked_by object" '{"pieces":[{"issue":3,"blocked_by":{}}]}' "bad piece"
+snap_reject "external false" '{"pieces":[{"issue":3}],"external":false}' "external is not an object"
+printf '{"pieces":[{"issue":3,"blocked_by":null}],"external":null}' >"$T/nulls.json"
+run --branch "nulls" register "$T/nulls.json"
+expect "null blocked_by and external mean none" 0 "registered 1 pieces for nulls"
 
 run --branch "fresh" register "$T/missing.json"
 expect "missing snapshot file" 2 "" "cannot read"
@@ -275,6 +284,27 @@ run --branch "broken" launchable
 expect "unreadable tracking file" 1 "" "unreadable tracking file"
 rm -f "$(tpath "broken")"
 
+# A stream of two objects (foreign branch first, this branch last) is refused:
+# jq -e alone would judge only the last value.
+cp "$FIX/all-states.json" "$T/stream.json"
+jq -c '.branch = "other" | .pieces = {"77": {"state": "pending", "blockedBy": [], "agent": null, "session": null, "branch": null}}' \
+  "$FIX/all-states.json" >>"$T/stream.json"
+cp "$T/stream.json" "$(tpath "other")"
+run --branch "other" launchable
+expect "a JSON stream tracking file is refused" 1 "" "unreadable tracking file"
+run --branch "other" launch 77 a s "other-77"
+expect "launch on a JSON stream tracking file is refused" 1 "" "unreadable tracking file"
+same "refused stream file is left as is" "$T/stream.json" "$(tpath "other")"
+rm -f "$(tpath "other")"
+
+track "$B" 0 3 2 '{}' "$(pc 1 bogus)" "$(pc 2 pending)"
+cp "$(tpath "$B")" "$T/before.json"
+run --branch "$B" launchable
+expect "an unknown state is refused" 1 "" "unreadable tracking file"
+run --branch "$B" launch 2 a s "$B-2"
+expect "launch with an unknown state in the file is refused" 1 "" "unreadable tracking file"
+same "unknown-state file is left as is" "$T/before.json" "$(tpath "$B")"
+
 # ------------------------------------------------------------------ launch
 
 track "$B" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 pending '[1]')" "$(pc 3 running)"
@@ -329,6 +359,23 @@ expect "launch rejects a bad piece branch" 2 "" "bad branch"
 run --branch "$B" launch 1 a s
 expect "launch needs four arguments" 2 ""
 same "rejected launches write nothing" "$T/before.json" "$F"
+
+# Session ids and piece branches are unique per orchestrator: a stop must name
+# exactly one recorded session.
+track "$B" 0 3 2 '{}' "$(pc 1 running)" "$(pc 2 pending)"
+cp "$F" "$T/before.json"
+run --branch "$B" launch 2 a s-1 "$B-2"
+expect "launch refuses a recorded session id" 1 "" "session id s-1 is already recorded on #1"
+same "duplicate-session launch writes nothing" "$T/before.json" "$F"
+run --branch "$B" launch 2 a s-2 "p/1"
+expect "launch refuses a recorded piece branch" 1 "" "piece branch p/1 is already recorded on #1"
+same "duplicate-branch launch writes nothing" "$T/before.json" "$F"
+run --branch "$B" launch 2 a s-2 "$B"
+expect "launch refuses the orchestrator's own branch" 1 "" "piece branch $B is the orchestrator's branch"
+same "own-branch launch writes nothing" "$T/before.json" "$F"
+run --branch "$B" launch 2 a s-2 "$B-2"
+expect "launch with unique names" 0 "#2 running"
+track "$B" 0 3 2 '{}' "$(pc 1 pending)"
 
 # Shell metacharacters are stored as data, never run.
 MA='a;b $(touch PWNED1) `touch PWNED2` | c & d "q" '"'"'r'"'"' > e'
@@ -413,7 +460,7 @@ expect "a-b launchable" 0 "7"
 # is complete and before the rename, as a crash at that point would.
 cp "$FA" "$T/a-before.json"
 export PIECE_TRACK_TEST_ABORT_BEFORE_RENAME=1
-run --branch "a/b" launch 2 a s "a/b-2"
+run --branch "a/b" launch 2 a s2 "a/b-2"
 expect "aborted launch fails" 2 "" "aborting before rename"
 same "aborted launch leaves the old file" "$T/a-before.json" "$FA"
 no_tmp "aborted launch leaves no temp file"
@@ -432,12 +479,12 @@ unset PIECE_TRACK_TEST_ABORT_BEFORE_RENAME
 
 # A real I/O failure: the temp file cannot be created in a read-only state dir.
 chmod 555 "$SD"
-run --branch "a/b" launch 2 a s "a/b-2"
+run --branch "a/b" launch 2 a s2 "a/b-2"
 chmod 755 "$SD"
 expect "unwritable state dir fails the launch" 2 "" "cannot write"
 same "unwritable state dir leaves the old file" "$T/a-before.json" "$FA"
 no_tmp "unwritable state dir leaves no temp file"
-run --branch "a/b" launch 2 a s "a/b-2"
+run --branch "a/b" launch 2 a s2 "a/b-2"
 expect "launch succeeds once writable" 0 "#2 running"
 
 # ------------------------------------------------------------------ git default location
@@ -473,6 +520,10 @@ expect "--branch overrides HEAD" 0 "$GCD/piece-tracking/x%2Fy.json"
 
 run
 expect "no subcommand" 2 ""
+for sub in path register launchable launch summary; do
+  case "$ERR" in *"piece-track.sh [--branch <b>] $sub"*) echo "ok: usage lists $sub" ;;
+    *) fail "usage lacks $sub: $ERR" ;; esac
+done
 run --branch "$B" frobnicate
 expect "unknown subcommand" 2 ""
 run --branch

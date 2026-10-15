@@ -17,7 +17,8 @@
 # Dependency snapshot (register's input), as read from GitHub:
 #   {"pieces": [{"issue": 35, "blocked_by": [34, 12]}, {"issue": 34}],
 #    "external": {"12": "closed"}}
-# issue and blocked_by entries are positive integers; blocked_by defaults to [].
+# issue and blocked_by entries are integer literals >= 1 (35, not 35.0 or 1e2);
+# blocked_by absent or null means [], external absent or null means {}.
 # Every blocker is either a piece in the set or a key of external, whose value
 # is that issue's GitHub state, "open" or "closed". Rejected, writing nothing:
 # invalid JSON, a bad entry, a duplicate issue, an issue both in pieces and in
@@ -37,13 +38,17 @@
 # external blockers are all closed. Live pieces are running, done or stuck (a
 # session not yet ended). At most liveCap - live are listed, lowest issue first,
 # and none when depth >= depthCap. launch refuses (writing nothing) an unknown
-# issue, a piece not pending, a blocked piece, and a launch at either cap; it
-# does not insist on launchable's lowest-first order.
+# issue, a piece not pending, a piece branch equal to the orchestrator's branch,
+# a session id or piece branch already recorded on another piece, a blocked
+# piece, and a launch at either cap; it does not insist on launchable's
+# lowest-first order.
 #
 # Every write goes to a temp file in the tracking directory, is validated, and
 # is renamed over the tracking file, so a failed or interrupted write leaves the
 # previous file byte-identical. PIECE_TRACK_TEST_ABORT_BEFORE_RENAME=1 (tests
 # only) stops a write after the temp file is complete and before the rename.
+# There is no lock: only the owning orchestrator writes its file, one call at a
+# time; concurrent writers on one branch are not guarded against.
 #
 # Exit: 0 done, 1 refused (reason on stderr), 2 usage or I/O error. Issue,
 # branch, agent and session strings are data: validated, passed to jq with
@@ -51,7 +56,7 @@
 set -u
 
 usage() {
-  sed -n '3,7p' "$0" | sed 's/^# \{0,1\}//' >&2
+  grep '^#   piece-track\.sh ' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 die() { echo "piece-track.sh: $*" >&2; exit 2; }
@@ -88,12 +93,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The shape every tracking file must have before it is read or written.
-VALID='type == "object" and .version == 1 and (.branch | type) == "string"
+# The shape every tracking file must have before it is read or written: exactly
+# one JSON value (jq -e alone would judge only the last value of a stream),
+# an object, every piece in a known state. STATES is the one list of states.
+STATES='"pending", "running", "done", "merged", "stuck", "failed"'
+VALID='length == 1 and (.[0]
+  | type == "object" and .version == 1 and (.branch | type) == "string"
   and (.depth | type) == "number" and (.liveCap | type) == "number"
   and (.depthCap | type) == "number" and (.external | type) == "object"
   and (.pieces | type) == "object"
-  and all(.pieces[]; (.state | type) == "string" and (.blockedBy | type) == "array")'
+  and all(.pieces[]; . as $p | any('"$STATES"'; . == $p.state) and (.blockedBy | type) == "array"))'
+
+# valid_file <file> — the file holds exactly one well-formed tracking object.
+valid_file() { jq -se "$VALID" "$1" >/dev/null 2>&1; }
 
 # jq definitions over a tracking file.
 SDEFS='
@@ -113,11 +125,18 @@ def launchable: . as $s
   | sort | .[0:($s | slots)];
 '
 
+# Absent or null blocked_by / external mean none; any other non-array or
+# non-object value is rejected by CHECK, not defaulted.
+SNAPDEFS='
+def blockers: if .blocked_by == null then [] else .blocked_by end;
+def ext: if .external == null then {} else .external end;
+'
+
 # jq definitions over a snapshot: validation and the cycle check.
 CHECK='
-def posint: type == "number" and . == floor and . > 0 and . < 1000000000;
+def posint: type == "number" and (tostring | test("^[1-9][0-9]{0,8}$"));
 def badpiece: (type != "object") or ((.issue | posint) | not)
-  or ((.blocked_by // []) | (type == "array" and all(.[]; posint)) | not);
+  or (blockers | (type == "array" and all(.[]; posint)) | not);
 def badext: (.key | test("^[1-9][0-9]{0,8}$") | not) or (.value != "open" and .value != "closed");
 
 # Kahn: repeatedly drop nodes with no remaining blocker; the rest are cyclic.
@@ -143,16 +162,16 @@ def cycle_of($g; $rem):
 
 if type != "object" then "snapshot is not a JSON object"
 elif (.pieces | type) != "array" then "snapshot has no pieces array"
-elif ((.external // {}) | type) != "object" then "snapshot external is not an object"
+elif (ext | type) != "object" then "snapshot external is not an object"
 elif any(.pieces[]; badpiece) then "bad piece entry: " + ([.pieces[] | select(badpiece)][0] | tojson)
-elif any((.external // {}) | to_entries[]; badext)
-  then "bad external entry: " + ([(.external // {}) | to_entries[] | select(badext)][0] | "\(.key | tojson): \(.value | tojson)")
+elif any(ext | to_entries[]; badext)
+  then "bad external entry: " + ([ext | to_entries[] | select(badext)][0] | "\(.key | tojson): \(.value | tojson)")
 else
-  (.external // {}) as $ext
+  ext as $ext
   | [.pieces[].issue | tostring] as $ids
   | [$ids | group_by(.)[] | select(length > 1) | .[0] | tonumber] as $dup
   | [$ids[] | select(. as $i | $ext | has($i)) | tonumber] as $both
-  | [.pieces[] | (.issue | tostring) as $i | (.blocked_by // [])[] | tostring
+  | [.pieces[] | (.issue | tostring) as $i | blockers[] | tostring
      | select(. as $b | (any($ids[]; . == $b) or ($ext | has($b))) | not)
      | "#\($i) is blocked by unknown #\(.)"] as $unk
   | if ($dup | length) > 0 then "duplicate issue: " + ($dup | sort | map("#\(.)") | join(", "))
@@ -160,7 +179,7 @@ else
     elif ($unk | length) > 0 then "unknown blocker: " + ($unk | join("; "))
     else
       (reduce .pieces[] as $p ({};
-         .[$p.issue | tostring] = ([($p.blocked_by // [])[] | tostring
+         .[$p.issue | tostring] = ([($p | blockers)[] | tostring
                                      | select(. as $b | any($ids[]; . == $b))] | unique))) as $g
       | leftover($g) as $rem
       | if ($rem | length) == 0 then empty else "cycle: " + cycle_of($g; $rem) end
@@ -171,9 +190,9 @@ end
 # The tracking file built from a (checked) snapshot.
 BUILD='
 {version: 1, branch: $b, depth: $d, liveCap: $lc, depthCap: $dc,
- external: (.external // {}),
+ external: ext,
  pieces: (reduce (.pieces | sort_by(.issue))[] as $p ({};
-   .[$p.issue | tostring] = {state: "pending", blockedBy: (($p.blocked_by // []) | unique),
+   .[$p.issue | tostring] = {state: "pending", blockedBy: (($p | blockers) | unique),
                              agent: null, session: null, branch: null}))}
 '
 
@@ -209,7 +228,7 @@ set_paths() {
 # need_state — the tracking file exists, is well formed, and is this branch's.
 need_state() {
   [ -f "$FILE" ] || refuse "no tracking file for $BR (run register first): $FILE"
-  jq -e "$VALID" "$FILE" >/dev/null 2>&1 || refuse "unreadable tracking file: $FILE"
+  valid_file "$FILE" || refuse "unreadable tracking file: $FILE"
   jq -e --arg b "$BR" '.branch == $b' "$FILE" >/dev/null 2>&1 \
     || refuse "tracking file $FILE belongs to $(jq -r '.branch' "$FILE"), not $BR"
 }
@@ -220,7 +239,7 @@ write_state() {
   mkdir -p "$SDIR" 2>/dev/null || die "cannot create $SDIR"
   WTMP="$(mktemp "$SDIR/.$ENC.json.tmp.XXXXXX" 2>/dev/null)" || { WTMP=""; die "cannot write a temp file in $SDIR"; }
   jq "$@" >"$WTMP" || die "cannot compute the new state"
-  jq -e "$VALID" "$WTMP" >/dev/null 2>&1 || die "refusing to write an invalid tracking file"
+  valid_file "$WTMP" || die "refusing to write an invalid tracking file"
   [ -z "${PIECE_TRACK_TEST_ABORT_BEFORE_RENAME:-}" ] || die "test hook: aborting before rename"
   mv -f "$WTMP" "$FILE" || die "cannot replace $FILE"
   WTMP=""
@@ -254,7 +273,7 @@ cmd_register() {
   { [ -f "$snap" ] && [ -r "$snap" ]; } || die "cannot read snapshot: $snap"
   n="$(jq -s 'length' "$snap" 2>/dev/null)" || refuse "snapshot is not valid JSON: $snap"
   [ "$n" = "1" ] || refuse "snapshot is not valid JSON (expected one value): $snap"
-  reason="$(jq -r "$CHECK" "$snap")" || die "cannot check snapshot: $snap"
+  reason="$(jq -r "$SNAPDEFS$CHECK" "$snap")" || die "cannot check snapshot: $snap"
   [ -z "$reason" ] || refuse "$reason"
   if [ -e "$FILE" ]; then
     need_state
@@ -263,7 +282,7 @@ cmd_register() {
       || die "cannot read $FILE"
     [ -z "$launched" ] || refuse "already launched ($launched); re-register only while every piece is pending"
   fi
-  write_state --arg b "$BR" --argjson d "$depth" --argjson lc "$lcap" --argjson dc "$dcap" "$BUILD" "$snap"
+  write_state --arg b "$BR" --argjson d "$depth" --argjson lc "$lcap" --argjson dc "$dcap" "$SNAPDEFS$BUILD" "$snap"
   echo "registered $(jq '.pieces | length' "$FILE") pieces for $BR"
 }
 
@@ -281,10 +300,18 @@ cmd_launch() {
   is_word "$sid" || die "bad session id"
   is_branch "$pbr" || die "bad branch: $pbr"
   need_state
-  reason="$(jq -r --arg i "$issue" "$SDEFS"'
+  reason="$(jq -r --arg i "$issue" --arg sid "$sid" --arg pb "$pbr" "$SDEFS"'
     . as $s | .pieces[$i] as $p
+    # the first other piece already recorded with session $sid / branch $pb, or null
+    | ([.pieces | to_entries | sort_by(.key | tonumber)[]
+        | select(.key != $i and .value.session == $sid) | .key][0]) as $dsid
+    | ([.pieces | to_entries | sort_by(.key | tonumber)[]
+        | select(.key != $i and .value.branch == $pb) | .key][0]) as $dpb
     | if $p == null then "unknown issue #\($i)"
       elif $p.state != "pending" then "#\($i) is \($p.state), not pending"
+      elif $pb == .branch then "piece branch \($pb) is the orchestrator'"'"'s branch"
+      elif $dsid != null then "session id \($sid) is already recorded on #\($dsid)"
+      elif $dpb != null then "piece branch \($pb) is already recorded on #\($dpb)"
       elif ($p | holds($s) | length) > 0
         then "#\($i) is blocked by " + ([$p | holds($s)[] | "#\(.) (\(blocker_state($s)))"] | join(", "))
       elif .depth >= .depthCap then "depth cap reached (depth \(.depth), cap \(.depthCap))"
