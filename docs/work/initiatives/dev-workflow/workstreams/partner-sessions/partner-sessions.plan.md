@@ -1,7 +1,8 @@
 ---
 id: dev-workflow-partner-sessions-plan
 type: plan
-status: draft
+status: superseded
+superseded_by: https://github.com/cjsteigerwald/ai-crew/issues/33
 owner: dev-workflow
 representation: canonical
 canonical: docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions.plan.md

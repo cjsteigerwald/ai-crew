@@ -1,11 +1,17 @@
 ---
 id: dev-workflow-partner-sessions-spec
 type: spec
-status: draft
+status: superseded
+superseded_by: https://github.com/cjsteigerwald/ai-crew/issues/33
 owner: dev-workflow
 representation: canonical
 canonical: docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions.spec.md
 ---
+
+> **Superseded by [issue #33](https://github.com/cjsteigerwald/ai-crew/issues/33), "Spec: piece
+> orchestration (redesign of partner sessions)".** The coordinator, ledger, frontier, message
+> parser and `coordinating-partner-sessions` skill described below were removed in #39. Kept as
+> history only; do not implement from it.
 
 # coordinating-partner-sessions: one sdlc-process partner session per GitHub issue — design
 

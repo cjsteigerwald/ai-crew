@@ -1,7 +1,8 @@
 ---
 id: dev-workflow-partner-sessions-hardened-2026-10-13-handoff
 type: handoff
-status: draft
+status: superseded
+superseded_by: https://github.com/cjsteigerwald/ai-crew/issues/33
 owner: dev-workflow
 representation: canonical
 canonical: docs/work/initiatives/dev-workflow/workstreams/partner-sessions/partner-sessions-hardened-2026-10-13.handoff.md

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Behavioral test for coordinating-partner-sessions/scripts/piece-track.sh:
+# Behavioral test for orchestrating-pieces/scripts/piece-track.sh:
 # register, launchable, launch, record, merged, failed, dropped, finished,
 # summary, reconcile and path, driven by JSON fixtures with
 # the CLI called as a subprocess. Runnable standalone.
@@ -9,7 +9,7 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-PT="$ROOT/skills/coordinating-partner-sessions/scripts/piece-track.sh"
+PT="$ROOT/skills/orchestrating-pieces/scripts/piece-track.sh"
 FIX="$HERE/fixtures/piece-tracking"
 
 FAIL=0

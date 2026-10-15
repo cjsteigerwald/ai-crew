@@ -23,7 +23,7 @@ tracking file, read and written only by `piece-track.sh` (`PT` below; its header
 and state reference). Command recipes are in [recipes.md](references/recipes.md); the prompt
 each piece agent gets is [handoff-prompt.md](references/handoff-prompt.md).
 
-`PT` = `../coordinating-partner-sessions/scripts/piece-track.sh`, `FF` = `ff-merge.sh` beside it,
+`PT` = `scripts/piece-track.sh`, `FF` = `scripts/ff-merge.sh`,
 both resolved from this skill's directory. Run every call from the orchestrator's own worktree
 (the one with its branch checked out; `FF` needs that cwd). Each Bash call is a fresh shell.
 

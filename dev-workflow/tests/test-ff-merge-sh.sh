@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Behavioral test for coordinating-partner-sessions/scripts/ff-merge.sh:
+# Behavioral test for orchestrating-pieces/scripts/ff-merge.sh:
 # fast-forward-only integration of a partner branch into the ticket branch.
 # Runnable standalone.
 #
@@ -8,7 +8,7 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-FFM="$ROOT/skills/coordinating-partner-sessions/scripts/ff-merge.sh"
+FFM="$ROOT/skills/orchestrating-pieces/scripts/ff-merge.sh"
 
 FAIL=0
 

@@ -317,12 +317,12 @@ if [ -f "$INTAKE_SKILL" ]; then
   grep -qF 'Always use the `sdlc-process:` prefix' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the prefix rule"
   grep -qF 'Never answer a sdlc-process gate on the user' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the no-answering-gates rule"
   grep -qF 'no local-file' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the no-local-file-fallback rule"
-  grep -qF 'one after another or parallel pieces' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the partner-sessions rule 'one after another or parallel pieces'"
-  grep -qF 'dev-workflow:orchestrating-pieces' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the partner-sessions rule 'dev-workflow:orchestrating-pieces'"
-  grep -qF 'piece-tracking/' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the partner-sessions rule 'piece-tracking/'"
-  grep -qF 'AC of a cancelled issue are deferred' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the partner-sessions rule 'AC of a cancelled issue are deferred'"
-  grep -qF 'closing keywords and Refs cover merged issues only' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the partner-sessions rule 'closing keywords and Refs cover merged issues only'"
-  grep -qF 'only when two or more issues are published' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the partner-sessions rule 'only when two or more issues are published'"
+  grep -qF 'one after another or parallel pieces' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the piece-orchestration rule 'one after another or parallel pieces'"
+  grep -qF 'dev-workflow:orchestrating-pieces' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the piece-orchestration rule 'dev-workflow:orchestrating-pieces'"
+  grep -qF 'piece-tracking/' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the piece-orchestration rule 'piece-tracking/'"
+  grep -qF 'AC of a cancelled issue are deferred' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the piece-orchestration rule 'AC of a cancelled issue are deferred'"
+  grep -qF 'closing keywords and Refs cover merged issues only' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the piece-orchestration rule 'closing keywords and Refs cover merged issues only'"
+  grep -qF 'only when two or more issues are published' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the piece-orchestration rule 'only when two or more issues are published'"
   grep -qF 'piece-tracking/' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: Chain artifacts missing the piece tracking-file location"
   grep -qF 'sdlc-process' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: missing the sdlc-process chain artifacts"
 
@@ -410,91 +410,15 @@ if [ "$INTAKE_FAILS" -eq 0 ]; then
   echo "ok: intaking-work-items skill present (description $desc_len chars, SKILL.md $lines lines), supporting files linked, gate rules pinned"
 fi
 
-echo "== coordinating-partner-sessions skill =="
-PS_DIR="$ROOT/skills/coordinating-partner-sessions"
-PARTNER_FAILS=0
-pfail() {
-  PARTNER_FAILS=$((PARTNER_FAILS + 1))
-  fail "$1"
-}
-for f in ledger.md readiness.md partner-brief.md; do
-  [ -f "$PS_DIR/$f" ] || pfail "coordinating-partner-sessions/$f not found"
+echo "== orchestrating-pieces scripts =="
+OPS_DIR="$ROOT/skills/orchestrating-pieces/scripts"
+for s in piece-track.sh ff-merge.sh render-handoff.sh; do
+  [ -f "$OPS_DIR/$s" ] || fail "orchestrating-pieces/scripts/$s not found"
+  [ -x "$OPS_DIR/$s" ] || fail "orchestrating-pieces/scripts/$s is not executable"
 done
-if [ -f "$PS_DIR/ledger.md" ]; then
-  for pin in '## Transition table' '`pending`' '`launched`' '`started`' '`blocked-on #m`' '`done-claimed`' '`verifying`' \
-             '`rework-n/3`' '`resync-requested`' '`merged`' '`failed`' '`cancelled`' 'generation' 'outbox' \
-             'done nopid' 'exit 30' 'supersedes' 'gen=<g>' 'canary-passed' 'launch-failed' \
-             'launch-intent' 'merge-intent' 'partner-sessions/<KEY>/ledger.json' 'git-common-dir' \
-             'never committed' 'PS_OWNER' 'ledger.sh event' 'write.lock' 'exit 41' 'lockf -s' 'flock -w'; do
-    grep -qF -- "$pin" "$PS_DIR/ledger.md" || pfail "coordinating-partner-sessions/ledger.md: missing '$pin'"
-  done
-fi
-if [ -f "$PS_DIR/readiness.md" ]; then
-  for pin in 'a story' 'acceptance criteria' 'test command' 'a stated reason none is needed' 'ask only about what changed'; do
-    grep -qF -- "$pin" "$PS_DIR/readiness.md" || pfail "coordinating-partner-sessions/readiness.md: missing '$pin'"
-  done
-fi
-if [ -f "$PS_DIR/partner-brief.md" ]; then
-  for pin in 'gen=' 'never rebase onto main' 'Never push' 'never open a PR' 'never close or edit GitHub issues' \
-             'STATUS?' 'RESYNC' 'REWORK' 'CANCEL' 'its issue stays open until the ticket PR merges, by design' \
-             '{{COORD_NAME}}' '{{BLOCKER_EVIDENCE}}' 'end your turn; the coordinator will stop this session'; do
-    grep -qF -- "$pin" "$PS_DIR/partner-brief.md" || pfail "coordinating-partner-sessions/partner-brief.md: missing '$pin'"
-  done
-fi
-PS_SKILL="$PS_DIR/SKILL.md"
-ps_desc_len=0
-ps_lines=0
-if [ -f "$PS_SKILL" ]; then
-  fm="$(extract_frontmatter "$PS_SKILL")"
-  echo "$fm" | grep -qE '^name:[[:space:]]*coordinating-partner-sessions[[:space:]]*$' || pfail "coordinating-partner-sessions/SKILL.md: frontmatter name is not 'coordinating-partner-sessions'"
-  ps_desc="$(echo "$fm" | awk '
-    /^description:/ { indesc=1; next }
-    indesc && /^[^[:space:]]/ { exit }
-    indesc { sub(/^[[:space:]]+/, ""); printf "%s%s", sep, $0; sep=" " }
-  ')"
-  ps_desc_len="$(printf '%s' "$ps_desc" | wc -c | tr -d ' ')"
-  [ "$ps_desc_len" -gt 0 ] || pfail "coordinating-partner-sessions/SKILL.md: could not read the description"
-  [ "$ps_desc_len" -le 1024 ] || pfail "coordinating-partner-sessions/SKILL.md: description is $ps_desc_len chars (max 1024)"
-  ps_lines="$(wc -l < "$PS_SKILL" | tr -d ' ')"
-  [ "$ps_lines" -lt 500 ] || pfail "coordinating-partner-sessions/SKILL.md: $ps_lines lines (keep under 500; push detail into supporting files)"
-  for support in ledger.md readiness.md partner-brief.md; do
-    grep -qF "]($support)" "$PS_SKILL" || pfail "coordinating-partner-sessions/SKILL.md: does not link $support"
-  done
-  # The coordinator loop's load-bearing rules: merge rule, gate, canary,
-  # preflight, resume, failure paths and hand-back.
-  for pin in 'fast-forward only' 'RESYNC' 'REWORK' 'STATUS?' 'gen=' \
-             'Git state matches the claim' 'Tests pass, run by the coordinator' 'Every AC has evidence' \
-             'dev-workflow:fresh-verifier' 'Partners never push or open PRs' 'third failed gate' \
-             'stop and ask the user' 'held for approval' 'v2.1.236' 'v2.1.248' 'not in plan mode' \
-             'integration base is the ticket branch' '/rename' 'canary-passed' 'sleep 600' \
-             'only a canary that has ended' 'cross-session-message' \
-             'For each `cancelled` issue, mark its AC `deferred` in the settled AC list, with the reason stored by `drop` or `cancel-ticket`.' \
-             'Refs owner/repo#' 'notify_when_idle' 're-register' 'skip steps 3–5' 'PS_OWNER' \
-             'ledger.sh summary' 'after the user confirms' '/retro' 'skill-retrospective' \
-             'claude stop <id>' "stop every alive session in the issue's session history" \
-             'never stop a session it did not launch' 'sleep 300' 'do not loop'; do
-    grep -qF -- "$pin" "$PS_SKILL" || pfail "coordinating-partner-sessions/SKILL.md: missing '$pin'"
-  done
-else
-  pfail "coordinating-partner-sessions/SKILL.md not found"
-fi
-for s in parse-msg.sh frontier.sh ff-merge.sh ledger.sh piece-track.sh; do
-  [ -f "$PS_DIR/scripts/$s" ] || pfail "coordinating-partner-sessions/scripts/$s not found"
-  [ -x "$PS_DIR/scripts/$s" ] || pfail "coordinating-partner-sessions/scripts/$s is not executable"
-done
-# Public-repo hygiene: no organisation-specific ticket skill names.
-if [ -d "$PS_DIR" ]; then
-  ps_ces="$(grep -rniwE 'ces' "$PS_DIR" 2>/dev/null || true)"
-  [ -z "$ps_ces" ] || pfail "coordinating-partner-sessions/: organisation-specific term 'ces' found: $ps_ces"
-fi
-if [ "$PARTNER_FAILS" -eq 0 ]; then
-  echo "ok: coordinating-partner-sessions skill present (description $ps_desc_len chars, SKILL.md $ps_lines lines), reference files linked and pinned"
-fi
-
-echo "== coordinating-partner-sessions scripts =="
 # Run with the interpreter running this file, so `/bin/bash run.sh` on macOS
 # exercises bash 3.2 end to end.
-for t in parse-msg frontier ff-merge ledger coordinator-contract piece-track; do
+for t in ff-merge piece-track; do
   if "$BASH" "$HERE/test-$t-sh.sh"; then
     :
   else
@@ -682,7 +606,7 @@ else
   pin_file "$OP_SKILL" "$OSL" 'An idle notice is not an ending' 'With a `pid` the piece stays running or stuck: take no action' \
     'Only a row with no `pid`, or no row' '`PT failed <issue>`' 'offer **relaunch** from the piece'"'"'s branch' \
     '**drop** (`PT dropped <issue>`, the user'"'"'s call)' 'Before a relaunch, read the old session'"'"'s row' \
-    'tell the user and do not relaunch' 'A' 'piece with no recorded base cannot relaunch'
+    'tell the user and do not relaunch' 'piece with no recorded base cannot relaunch'
   pin_order "$OP_SKILL" "$OSL" 'An idle notice is not an ending' '`PT failed <issue>`' 'Before a relaunch'
   pin_file "$OP_RECIPES" "$ORL" "accepts a failed piece" 'refused at either cap' '## Idle check' \
     '.pid // "gone"' 'bash "$PT" failed "$N"' 'still has a `pid`, tell the user and do not relaunch' \
@@ -730,6 +654,30 @@ else
   # The hand-back contract of stage 5 is unchanged: Verify, then Ship with one draft PR.
   pin_file "$ROOT/skills/intaking-work-items/chain-sdlc-process.md" "intaking-work-items/chain-sdlc-process.md" \
     'After stage 5, return to SKILL.md step 7 (Verify).' 'The `piece-track.sh summary` table goes into the PR body'
+fi
+
+echo "== removed partner-sessions modules stay removed =="
+# Nothing under dev-workflow/ (this file excepted: it names them) and nothing in the
+# repo README may refer to the modules that piece orchestration replaced.
+REMOVED_FAILS=0
+[ ! -e "$ROOT/skills/coordinating-partner-sessions" ] || { REMOVED_FAILS=$((REMOVED_FAILS + 1)); fail "skills/coordinating-partner-sessions still exists"; }
+REMOVED_LIST="$(mktemp)"
+find "$ROOT" -type f ! -path "$HERE/run.sh" > "$REMOVED_LIST"
+echo "$ROOT/../README.md" >> "$REMOVED_LIST"
+# The grep must see the search space: skills, tests, README and the moved scripts.
+for must in "$ROOT/README.md" "$ROOT/skills/orchestrating-pieces/SKILL.md" "$ROOT/skills/orchestrating-pieces/scripts/piece-track.sh" \
+            "$ROOT/skills/intaking-work-items/chain-sdlc-process.md" "$HERE/test-piece-track-sh.sh" "$ROOT/../README.md"; do
+  grep -qxF -- "$must" "$REMOVED_LIST" || { REMOVED_FAILS=$((REMOVED_FAILS + 1)); fail "removed-module scan does not cover $must"; }
+done
+REMOVED_N="$(wc -l < "$REMOVED_LIST" | tr -d ' ')"
+[ "$REMOVED_N" -ge 20 ] || { REMOVED_FAILS=$((REMOVED_FAILS + 1)); fail "removed-module scan saw only $REMOVED_N files"; }
+while IFS= read -r rf; do
+  rhit="$(grep -nE 'ledger\.sh|ledger\.jq|ledger\.md|frontier\.sh|parse-msg|coordinating-partner-sessions|partner-brief|readiness\.md|lockf -s' "$rf" 2>/dev/null || true)"
+  [ -z "$rhit" ] || { REMOVED_FAILS=$((REMOVED_FAILS + 1)); fail "$rf: references a removed module: $rhit"; }
+done < "$REMOVED_LIST"
+rm -f "$REMOVED_LIST"
+if [ "$REMOVED_FAILS" -eq 0 ]; then
+  echo "ok: no reference to the removed partner-sessions modules in $REMOVED_N files"
 fi
 if [ "$ORCH_FAILS" -eq 0 ] && [ "$PIECE_FAILS" -eq "$PIECE_FAILS_BEFORE" ]; then
   echo "ok: orchestrating-pieces skill present ($OP_DIR/SKILL.md, ${op_lines:-0} lines) and pinned"

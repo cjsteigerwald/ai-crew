@@ -1,7 +1,7 @@
 # Recipes
 
-Command recipes for [SKILL.md](../SKILL.md). Variables: `PT` is `piece-track.sh`, `FF` is
-`ff-merge.sh`, `OS` is this skill's directory, `W` is a scratch directory from `mktemp -d`
+Command recipes for [SKILL.md](../SKILL.md). Variables: `PT` is `$OS/scripts/piece-track.sh`, `FF` is
+`$OS/scripts/ff-merge.sh`, `OS` is this skill's directory, `W` is a scratch directory from `mktemp -d`
 (made once), `REPO` is `owner/repo`, `ORCH` is the orchestrator's branch, `KEY` is the ticket
 key, `OWN_SESSION` is this session's name, `DEPTH` is this orchestrator's depth (0 at top level),
 `DEPTH_CAP` and `LIVE_CAP` are 2 and 3 unless the handoff names others, `TEST_CMD` is the
