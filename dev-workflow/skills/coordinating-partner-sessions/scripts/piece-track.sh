@@ -62,12 +62,16 @@
 #                                       the resync re-report); needs, reason cleared
 #             merged                 -> unchanged, only for the same branch and sha
 #   STUCK     running, done, stuck   -> stuck, needs and reason set, sha kept
-#   merged    done                   -> merged
-#   failed    running, done, stuck   -> failed (the session ended unmerged)
-#   dropped   any state but merged   -> dropped
+#   merged    done                   -> merged;   merged -> unchanged
+#   failed    running, done, stuck   -> failed (the session ended unmerged);
+#             failed                 -> unchanged
+#   dropped   any state but merged   -> dropped;  dropped -> unchanged
+# (Repeated marks are no-ops so an orchestrator can retry after a crash.)
 # A report is also refused for an unknown issue, a pending piece (never
 # launched), a DONE whose branch is not the one recorded at launch, and a
-# STUCK needing itself or an issue outside the set. pending cannot fail: a
+# STUCK whose needed sibling is itself, outside the set, dropped or failed
+# (it can never merge), or blocked by the reporting piece, directly or
+# through other pieces' blockedBy (needing it would deadlock). pending cannot fail: a
 # piece with no session has nothing to fail. A dropped piece is not live and
 # does not clear its dependants: they stay blocked.
 #
@@ -481,6 +485,16 @@ cmd_launch() {
 # none) and $r (STUCK's reason).
 RDEFS='
 def terminal: .state == "merged" or .state == "failed" or .state == "dropped";
+# Whether piece $a waits, directly or through other pieces, on piece $b:
+# a walk of blockedBy within the set (keys as strings; cycle-safe).
+def blocked_by_within($a; $b): . as $s
+  | {seen: [], todo: [$a]}
+  | until(.todo == [];
+      .todo[0] as $c | .todo |= .[1:]
+      | if any(.seen[]; . == $c) then .
+        else .seen += [$c]
+          | .todo += [$s.pieces[$c].blockedBy[] | tostring | select(. as $x | $s.pieces | has($x))] end)
+  | any(.seen[1:][]; . == $b);
 # The refusal for this report, or empty.
 def rec_refusal: .pieces[$i] as $p
   | if $p == null then "unknown issue #\($i)"
@@ -490,6 +504,10 @@ def rec_refusal: .pieces[$i] as $p
     elif $k == "DONE" and $pb != $p.branch then "#\($i) reported branch \($pb), launched on \($p.branch)"
     elif $k == "STUCK" and $n == $i then "#\($i) cannot need itself"
     elif $k == "STUCK" and $n != "" and (.pieces | has($n) | not) then "#\($i) needs unknown issue #\($n)"
+    elif $k == "STUCK" and $n != "" and (.pieces[$n].state == "dropped" or .pieces[$n].state == "failed")
+      then "#\($i) needs #\($n), which is \(.pieces[$n].state) and cannot merge"
+    elif $k == "STUCK" and $n != "" and blocked_by_within($n; $i)
+      then "#\($n) is blocked by #\($i): needing it would deadlock"
     else empty end;
 # The tracking file with this (accepted) report applied.
 def rec_update: .pieces[$i] |=
@@ -565,6 +583,7 @@ cmd_mark() {
   need_state
   why="$(jq -r --arg i "$issue" --arg to "$to" '.pieces[$i] as $p
     | if $p == null then "unknown issue #\($i)"
+      elif $p.state == $to then empty
       elif $to == "merged" and $p.state != "done" then "#\($i) is \($p.state), not done"
       elif $to == "failed" and (any("running", "done", "stuck"; . == $p.state) | not)
         then "#\($i) is \($p.state), not running, done or stuck"

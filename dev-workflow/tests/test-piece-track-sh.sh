@@ -511,6 +511,20 @@ rec_bad "DONE on another branch" "DONE #1 p/3 $SHA" "#1 reported branch p/3, lau
 rec_bad "STUCK needs an unknown issue" "STUCK #1 needs=#9 waits" "needs unknown issue #9"
 rec_bad "STUCK needs itself" "STUCK #1 needs=#1 waits" "#1 cannot need itself"
 
+# A needed sibling must be able to merge without the stuck piece: one blocked
+# by it (directly or transitively), dropped or failed is refused.
+Fsave="$F"; Bsave="$B"; B="nd"; F="$(tpath "$B")"
+track "$B" 0 3 2 '{}' "$(pc 1 running)" "$(pc 2 pending '[1]')" "$(pc 3 pending '[2]')" \
+  "$(pc 4 dropped)" "$(pc 5 failed)" "$(pc 6 running)"
+rec_bad "STUCK needs a sibling it blocks" "STUCK #1 needs=#2 waits" "#2 is blocked by #1"
+rec_bad "STUCK needs a sibling it blocks transitively" "STUCK #1 needs=#3 waits" "#3 is blocked by #1"
+rec_bad "STUCK needs a dropped sibling" "STUCK #1 needs=#4 waits" "needs #4, which is dropped"
+rec_bad "STUCK needs a failed sibling" "STUCK #1 needs=#5 waits" "needs #5, which is failed"
+run --branch "$B" record "STUCK #1 needs=#6 waits on #6"
+expect "STUCK needs an unrelated live sibling" 0 "#1 stuck"
+[ "$(jqf "$F" '.pieces["1"] | [.needs, .reason]')" = '[6,"waits on #6"]' ] || fail "valid needs: $(jqf "$F" '.pieces["1"]')"
+B="$Bsave"; F="$Fsave"
+
 # STARTED on a running piece is accepted and changes nothing.
 rec_same "STARTED" "STARTED #1" "#1 running"
 rec_same "STARTED with CRLF and trailing spaces" "$(printf 'STARTED #1  \r')" "#1 running"
@@ -602,24 +616,36 @@ mark_ok() {
   [ "$(jqf "$F" ".pieces[\"$3\"].state")" = "\"$4\"" ] && [ "$(jqf "$F" ".pieces[\"$3\"] | del(.state)")" = "$pre" ] \
     || fail "$1: $(jqf "$F" ".pieces[\"$3\"]")"
 }
+# mark_same <name> <cmd> <issue> <state> — a mark to the state the piece is
+# already in: exit 0, the file byte-identical and not rewritten (same inode).
+mark_same() {
+  cp "$F" "$T/before.json"
+  ino="$(ls -i "$F" | awk '{print $1}')"
+  run --branch "$B" "$2" "$3"
+  expect "$1" 0 "#$3 $4"
+  same "$1: writes nothing" "$T/before.json" "$F"
+  [ "$(ls -i "$F" | awk '{print $1}')" = "$ino" ] || fail "$1: file rewritten"
+}
 
 track "$B" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 running)" "$(pc 3 stuck)" "$(pc 4 failed)" \
   "$(pc 5 dropped)" "$(pc 6 merged)" "$(pc 7 "done")"
-for n in 1 2 3 4 5 6; do
+for n in 1 2 3 4 5; do
   st="$(jq -r ".pieces[\"$n\"].state" "$F")"
   mark_bad "merged from $st" merged "$n" 1 "#$n is $st, not done"
 done
 mark_bad "merged unknown issue" merged 9 1 "unknown issue #9"
 mark_bad "merged bad issue" merged x 2 "bad issue"
 mark_bad "merged needs one issue" merged "" 2 ""
+mark_same "merged again is a no-op" merged 6 merged
 mark_ok "merged from done" merged 7 merged
 
 track "$B" 0 3 2 '{}' "$(pc 1 pending)" "$(pc 2 running)" "$(pc 3 stuck)" "$(pc 4 failed)" \
   "$(pc 5 dropped)" "$(pc 6 merged)" "$(pc 7 "done")"
-for n in 1 4 5 6; do
+for n in 1 5 6; do
   st="$(jq -r ".pieces[\"$n\"].state" "$F")"
   mark_bad "failed from $st" failed "$n" 1 "#$n is $st"
 done
+mark_same "failed again is a no-op" failed 4 failed
 mark_bad "failed unknown issue" failed 9 1 "unknown issue #9"
 mark_bad "failed bad issue" failed 01 2 "bad issue"
 mark_ok "failed from running" failed 2 failed
@@ -635,12 +661,7 @@ for n in 1 2 3 4 7; do
   st="$(jq -r ".pieces[\"$n\"].state" "$F")"
   mark_ok "dropped from $st" dropped "$n" dropped
 done
-cp "$F" "$T/before.json"
-ino="$(ls -i "$F" | awk '{print $1}')"
-run --branch "$B" dropped 5
-expect "dropped again is a no-op" 0 "#5 dropped"
-same "dropped again writes nothing" "$T/before.json" "$F"
-[ "$(ls -i "$F" | awk '{print $1}')" = "$ino" ] || fail "dropped again rewrote the file"
+mark_same "dropped again is a no-op" dropped 5 dropped
 
 # merged releases dependants; dropped frees a live slot but not its dependants.
 track "$B" 0 3 2 '{}' "$(pc 1 "done")" "$(pc 2 pending '[1]')"
