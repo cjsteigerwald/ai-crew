@@ -75,5 +75,6 @@ Handle a repeated request once.
 When the piece is several issues, become an orchestrator: load `dev-workflow:orchestrating-pieces`
 and run it with your piece branch `{{PIECE_BRANCH}}` as the ticket branch. Your children get depth
 {{CHILD_DEPTH}} + 1 and the same caps. At the depth cap, work the piece yourself or report `STUCK`
-with a scope reason. You stay in piece mode: your children's reports come to you, your own Ship is
+with a scope reason.
+If that piece is several open published issues, ask the user and record `Implementation: inline (user chose)`, or report `STUCK`. Never implement them without that line. You stay in piece mode: your children's reports come to you, your own Ship is
 replaced by one `DONE` to `{{ORCHESTRATOR_SESSION}}`, and the same hard limits bind you.

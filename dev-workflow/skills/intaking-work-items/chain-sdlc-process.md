@@ -71,8 +71,9 @@ readiness, policy-review or publication gates.
    - Every ticket cites the `AC-n` it satisfies. Check coverage: every active AC is cited by at least
      one ticket and no ticket cites a non-active AC. Take any gap back to the user. Record the
      published issue links (each with `AC-n`) in **Chain artifacts**.
-5. **Implement.** The router is expected to select `sdlc-process:implement` →
-   `sdlc-process:tdd` → `sdlc-process:code-review` after its readiness/start checks (intake does
+5. **Implement.** First pass the HARD GATE below (two or more open published issues need the
+   `Implementation:` Run-log line before anything is implemented). The router is expected to select
+   `sdlc-process:implement` → `sdlc-process:tdd` → `sdlc-process:code-review` after its readiness/start checks (intake does
    not dictate the sequence); always prefixed. Give `implement` the requirements doc (and
    tickets, if any) and the settled AC list as the only scope.
    `sdlc-process:code-review` diffs committed trees (`<review base>...HEAD`), so the candidate is
@@ -87,13 +88,26 @@ readiness, policy-review or publication gates.
    **After code-review completes, before Verify:** check the diff and tests against the active AC
    list, and flag back to the user any change that implements a non-active AC.
 
-**Parallel pieces (stage 5 option).** Ask this only when two or more issues are published, and
-ask once, before the router hand-off, whether to run the published issues
-one after another or parallel pieces. One after another is the path above, unchanged. Parallel
-pieces invokes
-`dev-workflow:orchestrating-pieces` with the ticket key, the ticket branch, the issue
-links and the settled AC list; the orchestrator then owns stage 5 and returns to SKILL.md step 7.
-Record the choice in the Run log. Its hand-back contract, which steps 7 and 8 rely on:
+**Pieces by default (stage 5).** With two or more open published issues, the default is
+`dev-workflow:orchestrating-pieces`, for independent issues and blocked chains alike. The purpose is
+intake's context: each issue runs in its own agent, so only short reports come back here. It is
+not about running issues side by side, so a blocked chain gains the same. The orchestrator is
+invoked with the ticket key, the ticket branch, the issue links and the settled AC list, then owns stage 5 and
+returns to SKILL.md step 7.
+
+**Inline is an explicit opt-out.** "Run all issues in this session" is offered only for tiny work
+and only when the user chooses it. It is never a silent fallback. If you ask the user, pieces is
+the first and recommended option and inline is never first or recommended; if the user did not
+choose inline, the answer is pieces. A single published issue stays on the inline path above.
+
+**HARD GATE: `Implementation:` line.** With two or more open published issues, write
+`Implementation: pieces` or `Implementation: inline (user chose)` in the Run log before stage 5
+implements anything.
+Do not let `sdlc-process:implement` run, by invoking it or by letting the sdlc-process router select it, unless the line reads `inline (user chose)`.
+A missing line, or `pieces`, means stage 5 goes through
+`dev-workflow:orchestrating-pieces`. Loading this file is not the gate; the written line is.
+
+The orchestrator's hand-back contract, which steps 7 and 8 rely on:
 
 - The AC of a cancelled issue are deferred in the settled AC list, with the user's reason.
 - Rule: closing keywords and Refs cover merged issues only: `Closes` where the repo lets a merge close
@@ -125,3 +139,5 @@ The **Controls** in SKILL.md apply, with these specifics:
   first incomplete stage and the tracking file at `$(git rev-parse --git-common-dir)/piece-tracking/`
   (`piece-track.sh path` prints it) exists. A finished or cancelled run leaves its tracking file in
   git metadata (cleanup is out of scope).
+  On resume the recorded `Implementation:` line governs a fresh stage-5 start; with none recorded
+  and two or more open published issues, the HARD GATE applies again.

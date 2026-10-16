@@ -78,6 +78,8 @@ Repo-wide checks: <suite, lint, types — the commands as the repo names them>.
 
 ## Run log
 
+Implementation: <pieces | inline (user chose) | n/a, fewer than two published issues>
+
 | Time | Step | Event | Attempt | Blocker |
 |---|---|---|---|---|
 | <HH:MM> | <step> | <event> | <n> | <blocker kind, or —> |
@@ -114,7 +116,7 @@ skipped".>
 <Filled in step 6. mattpocock: the spec issue (`owner/repo#N`) and the ticket issues (`owner/repo#N` —
 `AC-n` each), plus any superseded tickets. sdlc-process: the work branch, the
 published issue links (each with `AC-n`), sdlc-process holds and their resolutions, and any
-superseded tickets, and, if parallel pieces were chosen, the tracking-file location
+superseded tickets, and, if `Implementation: pieces`, the tracking-file location
 (`piece-track.sh path`, under `$(git rev-parse --git-common-dir)/piece-tracking/`). Every chain: **Last completed stage:** <stage, or
 "none">. Before step 6: "None — chain not started".>
 ```
