@@ -1,4 +1,16 @@
+---
+id: dev-workflow-intake-agentic-run-spec
+type: spec
+status: superseded
+superseded_by: dev-workflow/skills/intaking-work-items/SKILL.md
+owner: dev-workflow
+representation: canonical
+canonical: docs/work/initiatives/dev-workflow/workstreams/intake-chain/intake-agentic-run.spec.md
+---
+
 # intaking-work-items: unattended run, AC verification, and close-out — design
+
+> Historical: superseded on 2026-10-13 (superpowers chain and unattended mode removed); see the current skill.
 
 - **Date:** 2026-10-09 (revised the same day after the full-tier plan review)
 - **Skill:** `dev-workflow/skills/intaking-work-items/`

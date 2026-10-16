@@ -16,7 +16,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+          # piece-track.sh locks through perl's flock; perl ships with the runner image.
+          perl -MFcntl -e 'print "perl $^V with Fcntl\n"'
       - name: Run tests
         run: |
           set -euo pipefail
@@ -86,6 +89,13 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Provision jq and report bash
+        run: |
+          command -v jq >/dev/null || brew install jq
+          jq --version
+          /bin/bash --version | head -1
+          # piece-track.sh locks through perl's flock; macOS ships perl.
+          perl -MFcntl -e 'print "perl $^V with Fcntl\n"'
       - name: Run tests
         run: |
           set -euo pipefail

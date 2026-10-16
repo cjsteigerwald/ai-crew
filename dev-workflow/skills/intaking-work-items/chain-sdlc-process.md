@@ -3,14 +3,13 @@
 Read only after the sdlc-process chain is chosen in SKILL.md step 6; it ends by returning to SKILL.md
 step 7 (Verify).
 
+**Piece mode.** In piece mode ([piece-mode.md](piece-mode.md)) that file wins wherever it differs
+from this one: no push or PR, no new work branch, the piece branch from the handoff prompt.
+
 ## Attended only
 
-This chain runs attended: sdlc-process's readiness, policy-review and publication gates need a live
-human. If the run mode is unattended, say so once and switch to attended for the rest of the run
-(steps 6–9): set the requirements doc's `**Run mode:**` field to `attended` and log the reason
-("Run mode: attended (sdlc-process chain)") in the Run log. There is no "go unattended?" question
-here, and no unattended pre-authorization applies on this chain — step 8's push and draft PR each
-need a live confirmation.
+Every gate is answered live: sdlc-process's readiness, policy-review and publication gates, and
+step 8's push and draft PR, each need the user's confirmation.
 
 ## Precondition
 
@@ -88,6 +87,22 @@ readiness, policy-review or publication gates.
    **After code-review completes, before Verify:** check the diff and tests against the active AC
    list, and flag back to the user any change that implements a non-active AC.
 
+**Parallel pieces (stage 5 option).** Ask this only when two or more issues are published, and
+ask once, before the router hand-off, whether to run the published issues
+one after another or parallel pieces. One after another is the path above, unchanged. Parallel
+pieces invokes
+`dev-workflow:orchestrating-pieces` with the ticket key, the ticket branch, the issue
+links and the settled AC list; the orchestrator then owns stage 5 and returns to SKILL.md step 7.
+Record the choice in the Run log. Its hand-back contract, which steps 7 and 8 rely on:
+
+- The AC of a cancelled issue are deferred in the settled AC list, with the user's reason.
+- Rule: closing keywords and Refs cover merged issues only: `Closes` where the repo lets a merge close
+  the issue, otherwise `Refs owner/repo#N` (step 8's rule). Cancelled issues are listed as not
+  delivered, with their reason.
+- The `piece-track.sh summary` table goes into the PR body.
+- A `cancel-ticket` outcome returns no hand-back: intake stops at stage 5 and reports (Cancel
+  below). It does not continue to step 7.
+
 After stage 5, return to SKILL.md step 7 (Verify).
 
 ## Controls on this path
@@ -106,3 +121,7 @@ The **Controls** in SKILL.md apply, with these specifics:
   the first incomplete stage; AC rows reopened by the diff invalidate the tickets that cite them —
   regenerate those through `sdlc-process:to-tickets` (again with per-issue confirmation) and record
   the superseded ones.
+  Re-invoke `dev-workflow:orchestrating-pieces` (it reconciles) only when stage 5 is the
+  first incomplete stage and the tracking file at `$(git rev-parse --git-common-dir)/piece-tracking/`
+  (`piece-track.sh path` prints it) exists. A finished or cancelled run leaves its tracking file in
+  git metadata (cleanup is out of scope).

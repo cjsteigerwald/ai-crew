@@ -52,12 +52,7 @@ user's confirmation for the issues it creates. The same context names every skip
    Take any gap back to the user before implementation. Record the ticket list
    (`owner/repo#N` — `AC-n` each) in **Chain artifacts**.
 
-   Then, in unattended mode, run Preflight ([run-modes.md](run-modes.md)) and ask once
-   (`AskUserQuestion`): "`go unattended?`" — stating that the go
-   `pre-authorizes exactly two outward actions` (commit/push and the draft PR), with the gate
-   mapping from run-modes.md. Record the answer in the Run log.
-
-3. **Implement.** First state the handoff, in both modes: the settled AC list with each AC's
+3. **Implement.** First state the handoff: the settled AC list with each AC's
    disposition, and the AC→test table as the pre-agreed seams; build only the tickets for active
    AC (list them); the spec issue — especially an original GitHub ticket whose text predates
    step 3 — is background only; deferred, skipped, and out-of-scope AC must not be implemented.
@@ -65,18 +60,17 @@ user's confirmation for the issues it creates. The same context names every skip
      `mattpocock-skills:implement-spec`) with the spec issue URL, "intake mode", and the AC→test
      table as the `confirmed seam list` for every implementer's `tdd` call;
      a seam not in the table is a stop (report it, never ask or invent). Before invoking it, read the resolved SKILL.md and require its "In intake mode"
-     clauses at steps 3 and 8 (count ≥ 2); otherwise take the attended fallback. Pass a
+     clauses at steps 3 and 8 (count ≥ 2); otherwise take the fallback. Pass a
      `review base` for every nested `code-review` call: the merge-base of the integration branch with
-     main, settled in the sitting and recorded in the Run log.
+     main, recorded in the Run log.
      `intake mode publishes nothing`: no draft PR at its step 3, no ready or close at step 8, no
      closing keywords; it returns the integration branch.
-   - **If the Skill call errors** (e.g. `disable-model-invocation`), the chain runs `attended only`
-     with today's command: the user types `/mattpocock-skills:implement <spec-url>` (it opens no
-     PR). The unedited `implement-spec` is never used, in either mode.
+   - **If the Skill call errors** (e.g. `disable-model-invocation`), the chain takes the fallback,
+     today's command: the user types `/mattpocock-skills:implement <spec-url>` (it opens no
+     PR). The unedited `implement-spec` is never used.
 
    **After it returns, before Verify:** check the diff and tests against the active AC list, and
-   flag back to the user any change that implements a non-active AC; in unattended mode this is a scope stop (run-modes.md § Stop
-   conditions).
+   flag back to the user any change that implements a non-active AC.
 
 After stage 3, return to SKILL.md step 7 (Verify).
 
@@ -91,7 +85,7 @@ The **Controls** in SKILL.md apply, with these specifics:
     lists no spec issue.
   - **Skip `to-tickets`** is the plan-skip rule: warn once, record it, get an explicit go-ahead.
     The Implement stage still runs — `implement-spec` in intake mode, or the user types
-    `/mattpocock-skills:implement <spec issue URL>` on the attended fallback; intake never
+    `/mattpocock-skills:implement <spec issue URL>` on the fallback; intake never
     implements in their place — with the settled AC list stated as the only scope. The PR body
     states "Intake: plan skipped".
 - **Cancel:** stop, and do not prompt the user to type any further command. Issues already created

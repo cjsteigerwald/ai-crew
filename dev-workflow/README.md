@@ -10,13 +10,14 @@ two domain specialists.
 
 | Skill | Purpose |
 |---|---|
-| `intaking-work-items` | Takes a Jira ticket or GitHub issue to ready-to-build: fetch context, gap-analyze story/scope/requirements/AC, block on clarifying questions, write `docs/specs/<KEY>-requirements.md`, offer confirmed writebacks, then chain design → plan → implement through the superpowers, mattpocock-skills or sdlc-process [attended] chain (user's choice) — unattended after one sitting by default — verify each AC, open a draft PR, and close out on return. |
+| `intaking-work-items` | Takes a Jira ticket or GitHub issue to ready-to-build: fetch context, gap-analyze story/scope/requirements/AC, block on clarifying questions, write `docs/specs/<KEY>-requirements.md`, offer confirmed writebacks, then chain spec → tickets → implement through the sdlc-process (always recommended when installed) or mattpocock-skills chain (user's choice), with a checkpoint between stages, verify each AC, open a draft PR, and close out; at sdlc-process stage 5 it can run the published issues as parallel pieces via orchestrating-pieces |
 | `opening-pull-requests` | The ordered gate sequence before and during PR creation: branch hygiene, sync, lint/test, CI mirror, review-tier decision, review chain, ticket references, confirm, create, verify. |
 | `plan-implementation` | Orchestrated implementation of an approved plan through tiered worker lanes — decompose, route, spec, verify, close. |
 | `authoring-incident-docs` | Produces RCA, findings, and runbook artifacts with correct placement, metadata, and section structure. |
 | `investigating-incidents` | Orchestrates a root-cause investigation: ticket gate, evidence ordering, hypothesis refutation, confidence gates, artifact production, close-out. |
 | `skill-retrospective` | Capture-and-consolidate loop that keeps a skill library self-improving. |
 | `copilot-agent-readiness` | Audits and remediates a repo to maximize GitHub Copilot coding agent output quality. |
+| `orchestrating-pieces` | Piece orchestration: builds a ticket's published GitHub issues in parallel, one piece agent (a `claude --bg` session) per issue, each in its own worktree and branch, talking to you directly. The orchestrating session tracks pieces with the `piece-track.sh` CLI, fast-forwards finished pieces into the ticket branch one at a time and hands back one draft PR. Needs `jq` and `perl` (the CLI locks its tracking file with `flock` through perl). |
 | `review-policy` | The tiered review policy (Exempt / Routine / Full chain, codex-adversary governance, evidence rule) that the other skills and agents here cite. |
 
 ## Agents
@@ -43,6 +44,27 @@ The tiered review policy (Exempt / Routine / Full chain, codex-adversary governa
 the evidence rule) now lives in the `review-policy` skill
 (`skills/review-policy/SKILL.md`), loadable by qualified name as
 `dev-workflow:review-policy` from this or any other plugin.
+
+## Piece orchestration
+
+A **piece** is one GitHub issue. When intake's sdlc-process chain reaches stage 5 with two
+or more published issues, you can choose parallel pieces and the `orchestrating-pieces`
+skill takes over:
+
+- The orchestrator launches one piece agent per issue whose blockers are merged, as a
+  `claude --bg` session handed a self-contained handoff prompt
+  (`skills/orchestrating-pieces/references/handoff-prompt.md`).
+- `skills/orchestrating-pieces/scripts/piece-track.sh` is the single reader and writer of the
+  orchestrator's tracking file: `register`, `launchable`, `launch`, `record`, `merged`,
+  `reconcile`, `summary` and the rest. Writes hold a per-file `flock`; `reconcile` rebuilds
+  state after a restart from the session listing, GitHub and git.
+- A piece agent runs intake in **piece mode** (`skills/intaking-work-items/piece-mode.md`):
+  steps 0 to 7 against its own issue, attended, with you answering directly. It never pushes
+  or opens a PR; it reports done with a branch and a full commit SHA.
+- `ff-merge.sh` fast-forwards each finished piece into the ticket branch, one at a time. The
+  top level then opens one draft PR through intake's ship step, after your go.
+- A piece that turns out to be several issues becomes an orchestrator itself (depth cap 2, 3
+  live children each).
 
 ## Install
 

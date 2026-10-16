@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "branch": "feat/orch",
+  "depth": 0,
+  "liveCap": 3,
+  "depthCap": 2,
+  "external": {"12": "closed"},
+  "pieces": {
+    "34": {"state": "merged", "blockedBy": [], "agent": "piece-34", "session": "s-34", "branch": "feat/orch-34"},
+    "35": {"state": "done", "blockedBy": [34], "agent": "piece-35", "session": "s-35", "branch": "feat/orch-35"},
+    "36": {"state": "running", "blockedBy": [12, 34], "agent": "piece-36", "session": "s-36", "branch": "feat/orch-36"},
+    "37": {"state": "stuck", "blockedBy": [35], "agent": "piece-37", "session": "s-37", "branch": "feat/orch-37"},
+    "38": {"state": "failed", "blockedBy": [], "agent": "piece-38", "session": "s-38", "branch": "feat/orch-38"},
+    "39": {"state": "pending", "blockedBy": [37, 38], "agent": null, "session": null, "branch": null}
+  }
+}
