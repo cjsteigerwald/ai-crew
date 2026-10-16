@@ -10,14 +10,14 @@ two domain specialists.
 
 | Skill | Purpose |
 |---|---|
-| `intaking-work-items` | Takes a Jira ticket or GitHub issue to ready-to-build: fetch context, gap-analyze story/scope/requirements/AC, block on clarifying questions, write `docs/specs/<KEY>-requirements.md`, offer confirmed writebacks, then chain spec → tickets → implement through the sdlc-process (always recommended when installed) or mattpocock-skills chain (user's choice), with a checkpoint between stages, verify each AC, open a draft PR, and close out; at sdlc-process stage 5 it can run the published issues as parallel pieces via orchestrating-pieces |
+| `intaking-work-items` | Takes a Jira ticket or GitHub issue to ready-to-build: fetch context, gap-analyze story/scope/requirements/AC, block on clarifying questions, write `docs/specs/<KEY>-requirements.md`, offer confirmed writebacks, then chain spec → tickets → implement through the sdlc-process (always recommended when installed) or mattpocock-skills chain (user's choice), with a checkpoint between stages, verify each AC, open a draft PR, and close out; at sdlc-process stage 5, with 2+ published issues, it runs them as pieces via orchestrating-pieces by default (inline only if the user opts out) |
 | `opening-pull-requests` | The ordered gate sequence before and during PR creation: branch hygiene, sync, lint/test, CI mirror, review-tier decision, review chain, ticket references, confirm, create, verify. |
 | `plan-implementation` | Orchestrated implementation of an approved plan through tiered worker lanes — decompose, route, spec, verify, close. |
 | `authoring-incident-docs` | Produces RCA, findings, and runbook artifacts with correct placement, metadata, and section structure. |
 | `investigating-incidents` | Orchestrates a root-cause investigation: ticket gate, evidence ordering, hypothesis refutation, confidence gates, artifact production, close-out. |
 | `skill-retrospective` | Capture-and-consolidate loop that keeps a skill library self-improving. |
 | `copilot-agent-readiness` | Audits and remediates a repo to maximize GitHub Copilot coding agent output quality. |
-| `orchestrating-pieces` | Piece orchestration: builds a ticket's published GitHub issues in parallel, one piece agent (a `claude --bg` session) per issue, each in its own worktree and branch, talking to you directly. The orchestrating session tracks pieces with the `piece-track.sh` CLI, fast-forwards finished pieces into the ticket branch one at a time and hands back one draft PR. Needs `jq` and `perl` (the CLI locks its tracking file with `flock` through perl). |
+| `orchestrating-pieces` | Piece orchestration: builds a ticket's published GitHub issues, one piece agent (a `claude --bg` session) per issue, each in its own worktree and branch, talking to you directly. The orchestrating session tracks pieces with the `piece-track.sh` CLI, fast-forwards finished pieces into the ticket branch one at a time and hands back one draft PR. Needs `jq` and `perl` (the CLI locks its tracking file with `flock` through perl). |
 | `review-policy` | The tiered review policy (Exempt / Routine / Full chain, codex-adversary governance, evidence rule) that the other skills and agents here cite. |
 
 ## Agents
@@ -48,8 +48,12 @@ the evidence rule) now lives in the `review-policy` skill
 ## Piece orchestration
 
 A **piece** is one GitHub issue. When intake's sdlc-process chain reaches stage 5 with two
-or more published issues, you can choose parallel pieces and the `orchestrating-pieces`
-skill takes over:
+or more published issues, pieces are the default, blocked chains included, and the
+`orchestrating-pieces` skill takes over. The purpose is intake's context: each issue runs in
+its own agent and only short reports come back. Running all issues inline is an explicit
+opt-out the user must choose. Intake records `Implementation: pieces` or
+`Implementation: inline (user chose)` in its run log before implementing, and does not call
+`sdlc-process:implement` directly with 2+ issues unless the line reads inline.
 
 - The orchestrator launches one piece agent per issue whose blockers are merged, as a
   `claude --bg` session handed a self-contained handoff prompt

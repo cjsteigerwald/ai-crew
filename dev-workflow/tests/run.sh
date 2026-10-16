@@ -317,12 +317,29 @@ if [ -f "$INTAKE_SKILL" ]; then
   grep -qF 'Always use the `sdlc-process:` prefix' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the prefix rule"
   grep -qF 'Never answer a sdlc-process gate on the user' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the no-answering-gates rule"
   grep -qF 'no local-file' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the no-local-file-fallback rule"
-  grep -qF 'one after another or parallel pieces' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the piece-orchestration rule 'one after another or parallel pieces'"
+  grep -qF '**Pieces by default (stage 5).**' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the 'Pieces by default (stage 5)' rule"
+  grep -qF 'for independent issues and blocked chains alike' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: stage 5 does not default to orchestrating-pieces for independent issues and blocked chains alike"
+  grep -qF "intake's context: each issue runs in its own agent, so only short reports come back here" "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: stage 5 does not state the purpose (intake's context)"
+  grep -qF '**Inline is an explicit opt-out.**' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the inline opt-out rule"
+  grep -qF 'It is never a silent fallback' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing 'never a silent fallback' for inline"
+  grep -qF 'and inline is never first or recommended' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing 'inline is never first or recommended'"
+  grep -qF 'the first and recommended option and inline is never first or recommended' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: pieces is not the first and recommended option"
+  grep -qF 'A single published issue stays on the inline path' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the single-issue inline rule"
+  grep -qF '**HARD GATE: `Implementation:` line.**' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the HARD GATE"
+  grep -qF 'implements anything. Do not invoke `sdlc-process:implement` directly unless that line reads' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: gate does not forbid direct sdlc-process:implement unless inline"
+  grep -qF '`Implementation: pieces` or `Implementation: inline (user chose)`' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: gate does not name both Implementation: lines"
+  grep -qF '**HARD GATE: implementation with 2+ published issues.**' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the visible HARD GATE for 2+ published issues"
+  grep -qF 'never a silent fallback. Do not invoke `sdlc-process:implement` directly unless the line reads' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: gate does not forbid direct sdlc-process:implement unless inline"
+  grep -qF 'The default is `pieces`' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: gate does not default to pieces"
+  grep -qF "intake's context stays small" "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: gate does not state the context purpose"
+  grep -qF 'never recommended' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: gate does not say inline is never recommended"
+  grep -qF 'Implementation: <pieces | inline (user chose)' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: Run log missing the 'Implementation:' line"
+  ! grep -rniE 'parallel pieces' "$INTAKE_DIR" "$ROOT/README.md" || ifail "intaking-work-items files or dev-workflow/README.md: still carry 'parallel pieces' wording"
+  grep -qF 'pieces are the default' "$ROOT/README.md" || ifail "README.md: does not say pieces are the default for 2+ issues"
   grep -qF 'dev-workflow:orchestrating-pieces' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the piece-orchestration rule 'dev-workflow:orchestrating-pieces'"
   grep -qF 'piece-tracking/' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the piece-orchestration rule 'piece-tracking/'"
   grep -qF 'AC of a cancelled issue are deferred' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the piece-orchestration rule 'AC of a cancelled issue are deferred'"
   grep -qF 'closing keywords and Refs cover merged issues only' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the piece-orchestration rule 'closing keywords and Refs cover merged issues only'"
-  grep -qF 'only when two or more issues are published' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the piece-orchestration rule 'only when two or more issues are published'"
   grep -qF 'piece-tracking/' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: Chain artifacts missing the piece tracking-file location"
   grep -qF 'sdlc-process' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: missing the sdlc-process chain artifacts"
 
@@ -647,13 +664,18 @@ else
   ! grep -qE 'git push|--force|rebase|ledger\.sh|canary|outbox|gen=' "$OP_SKILL" || orchfail "$OSL: carries a push, rebase, force or dropped-ledger term"
   # The stage-5 option points to the new skill and not to the old one.
   pin_file "$ROOT/skills/intaking-work-items/chain-sdlc-process.md" "intaking-work-items/chain-sdlc-process.md" \
-    '**Parallel pieces (stage 5 option).**' '`dev-workflow:orchestrating-pieces`'
+    '**Pieces by default (stage 5).**' '`dev-workflow:orchestrating-pieces`'
   for f in "$ROOT/skills/intaking-work-items/chain-sdlc-process.md" "$ROOT/skills/intaking-work-items/SKILL.md" "$ROOT/skills/intaking-work-items/template.md"; do
     ! grep -qF 'coordinating-partner-sessions' "$f" || orchfail "${f#"$ROOT"/}: still names coordinating-partner-sessions"
   done
   # The hand-back contract of stage 5 is unchanged: Verify, then Ship with one draft PR.
   pin_file "$ROOT/skills/intaking-work-items/chain-sdlc-process.md" "intaking-work-items/chain-sdlc-process.md" \
     'After stage 5, return to SKILL.md step 7 (Verify).' 'The `piece-track.sh summary` table goes into the PR body'
+  # The gate comes before the implement hand-off, in the chain file and in SKILL.md.
+  pin_order "$ROOT/skills/intaking-work-items/chain-sdlc-process.md" "intaking-work-items/chain-sdlc-process.md" \
+    'First pass the HARD GATE below' '`sdlc-process:implement` → `sdlc-process:tdd`' 'After stage 5, return to SKILL.md step 7 (Verify).'
+  pin_order "$ROOT/skills/intaking-work-items/SKILL.md" "intaking-work-items/SKILL.md" \
+    '**HARD GATE: implementation with 2+ published issues.**' 'sdlc-process → read [chain-sdlc-process.md]' '## 7. Verify'
 fi
 
 echo "== removed partner-sessions modules stay removed =="
