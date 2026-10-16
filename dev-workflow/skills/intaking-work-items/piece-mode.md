@@ -61,3 +61,4 @@ per-issue confirmation, then run `dev-workflow:orchestrating-pieces`
 with the piece branch as the ticket branch. You remain in piece mode at your own level: your
 children's reports come to you, the hand-back above replaces your Ship, and the single `DONE` goes to your orchestrator. At the
 depth cap from the prompt you cannot split: work the piece, or report `STUCK` with a scope reason.
+If that piece is several open published issues, ask the user and record `Implementation: inline (user chose)`, or report `STUCK`. Never implement them without that line.

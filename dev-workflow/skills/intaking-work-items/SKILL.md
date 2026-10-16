@@ -294,8 +294,8 @@ implementation, then goes to step 7 (Verify) and step 8 (Ship). Every chain is a
 stage 5 implements anything: `Implementation: pieces` or `Implementation: inline (user chose)`.
 The default is `pieces`: `dev-workflow:orchestrating-pieces` runs each issue in its own agent so
 intake's context stays small. Inline is an opt-out only the user can choose, never recommended and
-never a silent fallback. Do not invoke `sdlc-process:implement` directly unless the line reads
-`inline (user chose)`. See [chain-sdlc-process.md](chain-sdlc-process.md), stage 5.
+never a silent fallback.
+Do not let `sdlc-process:implement` run, by invoking it or by letting the sdlc-process router select it, unless the line reads `inline (user chose)`. See [chain-sdlc-process.md](chain-sdlc-process.md), stage 5.
 
 **6.2 If mattpocock is chosen**, check these in order. Each failure ends in a defined re-ask
 (sdlc-process / **Skip** when installed; when it is not, the setup action below or **Skip**, never a

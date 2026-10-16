@@ -88,11 +88,11 @@ readiness, policy-review or publication gates.
    **After code-review completes, before Verify:** check the diff and tests against the active AC
    list, and flag back to the user any change that implements a non-active AC.
 
-**Pieces by default (stage 5).** With two or more issues published, the default is
+**Pieces by default (stage 5).** With two or more open published issues, the default is
 `dev-workflow:orchestrating-pieces`, for independent issues and blocked chains alike. The purpose is
 intake's context: each issue runs in its own agent, so only short reports come back here. It is
-not about running issues side by side, so a blocked chain gains the same. The orchestrator is invoked with the
-ticket key, the ticket branch, the issue links and the settled AC list, then owns stage 5 and
+not about running issues side by side, so a blocked chain gains the same. The orchestrator is
+invoked with the ticket key, the ticket branch, the issue links and the settled AC list, then owns stage 5 and
 returns to SKILL.md step 7.
 
 **Inline is an explicit opt-out.** "Run all issues in this session" is offered only for tiny work
@@ -102,8 +102,9 @@ choose inline, the answer is pieces. A single published issue stays on the inlin
 
 **HARD GATE: `Implementation:` line.** With two or more open published issues, write
 `Implementation: pieces` or `Implementation: inline (user chose)` in the Run log before stage 5
-implements anything. Do not invoke `sdlc-process:implement` directly unless that line reads
-`inline (user chose)`. A missing line, or `pieces`, means stage 5 goes through
+implements anything.
+Do not let `sdlc-process:implement` run, by invoking it or by letting the sdlc-process router select it, unless the line reads `inline (user chose)`.
+A missing line, or `pieces`, means stage 5 goes through
 `dev-workflow:orchestrating-pieces`. Loading this file is not the gate; the written line is.
 
 The orchestrator's hand-back contract, which steps 7 and 8 rely on:
@@ -138,3 +139,5 @@ The **Controls** in SKILL.md apply, with these specifics:
   first incomplete stage and the tracking file at `$(git rev-parse --git-common-dir)/piece-tracking/`
   (`piece-track.sh path` prints it) exists. A finished or cancelled run leaves its tracking file in
   git metadata (cleanup is out of scope).
+  On resume the recorded `Implementation:` line governs a fresh stage-5 start; with none recorded
+  and two or more open published issues, the HARD GATE applies again.

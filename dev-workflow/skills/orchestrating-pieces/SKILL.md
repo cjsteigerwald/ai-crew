@@ -1,17 +1,18 @@
 ---
 name: orchestrating-pieces
 description: >
-  Builds a ticket's published GitHub issues in parallel: one piece agent per
-  issue, each a `claude --bg` session in its own worktree and branch, talking to
-  the user directly. This session registers the pieces, launches the ones whose
-  blockers are merged, records their reports, fast-forwards finished pieces into
-  its branch one at a time, and hands back: the top level to intake's Verify and
-  Ship (one draft PR), a nested orchestrator to its parent as a DONE report. Use
-  when intake's sdlc-process chain reaches stage 5 and the user picks parallel
-  pieces, when a piece agent finds its piece is several issues, or to resume a
-  run after a restart. Skip for one issue or sequential work (sdlc-process
-  directly), an unsettled ticket (intaking-work-items first), or unpublished
-  issues (to-tickets first).
+  Builds a ticket's published GitHub issues with one piece agent per issue, so
+  intake's context stays small and only short reports come back. Each piece is a
+  `claude --bg` session in its own worktree and branch, talking to the user
+  directly. This session registers the pieces, launches the ones whose blockers
+  are merged, records their reports, fast-forwards finished pieces into its
+  branch one at a time, and hands back: the top level to intake's Verify and Ship
+  (one draft PR), a nested orchestrator to its parent as a DONE report. Use when
+  intake's sdlc-process stage 5 has two or more open published issues (blocked
+  chains included), when a piece agent finds its piece is several issues, or to
+  resume a run after a restart. Skip for one issue or when the user chose inline
+  (sdlc-process directly), an unsettled ticket (intaking-work-items first), or
+  unpublished issues (to-tickets first).
 ---
 
 # Orchestrating pieces
