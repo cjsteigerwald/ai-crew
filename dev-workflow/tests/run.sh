@@ -220,6 +220,8 @@ grep -qF 'dev-workflow:review-policy' "$ROOT/README.md" || fail "README.md: § R
 
 grep -qF '| `review-policy` |' "$ROOT/README.md" || fail "README.md: Skills table missing a row starting with '| \`review-policy\`'"
 
+grep -qF '| `setting-up-project-boards` |' "$ROOT/README.md" || fail "README.md: Skills table missing a row starting with '| \`setting-up-project-boards\`'"
+
 # Repo-wide leftover-citation guard: not just dev-workflow, and not just the
 # exact old phrase — case-insensitive, covering "README's review policy",
 # "README § review policy", and "this plugin's README" style references.
