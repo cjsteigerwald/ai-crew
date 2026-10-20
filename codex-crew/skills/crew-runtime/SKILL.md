@@ -66,9 +66,16 @@ retracted or revised, not preserved by weakening the test.
 
 Primary helper — `crew-codex`, on PATH while the plugin is enabled:
 
-- `crew-codex task [--background] [--write] [--resume-last] [--model <m>] [--effort <none|minimal|low|medium|high|xhigh>] "<prompt>"`
+- `crew-codex task [--background] [--write] [--resume-last] [--model <m>] [--effort <none|minimal|low|medium|high|xhigh>] ["<prompt>" | --focus-file <path>]`
 - `crew-codex review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <m>]`
-- `crew-codex adversarial-review [--wait|--background] [--base <ref>] [--scope <...>] [--model <m>] [--effort <none|minimal|low|medium|high|xhigh>] [focus text]`
+- `crew-codex adversarial-review [--wait|--background] [--base <ref>] [--scope <...>] [--model <m>] [--effort <none|minimal|low|medium|high|xhigh>] [focus text | --focus-file <path>]`
+  **`--focus-file <path>`** (also on `task` and `review`) reads the focus text/prompt
+  from a file, **deletes the file once read** (before the turn starts or detaches,
+  also on refusal; the directory is left), and refuses with exit 2 if the file is
+  missing, empty or whitespace-only, or if positional text is also given. Use it so
+  the launch is one plain `crew-codex ...` command — no `$(cat ...)`, `rm` or
+  variable — which a prefix allow rule matches under auto mode and which keeps
+  focus text out of the shell.
   **`--effort` is honored on `adversarial-review` only.** codex-companion still
   cannot set reasoning effort on any review path, so `crew-codex` runs EVERY
   `adversarial-review` through its own driver, `lib/review-with-effort.mjs`,

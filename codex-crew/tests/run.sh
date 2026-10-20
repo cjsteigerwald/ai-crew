@@ -1519,6 +1519,43 @@ check "bare 'help' still forwards as a task prompt" 0 "COMPANION-RAN:task|help" 
 out="$(run_guard task --effort high "do the thing")" && rc=0 || rc=$?
 check "task --effort forwards untouched" 0 "COMPANION-RAN:task|--effort|high|do the thing" "$rc" "$out"
 
+# --focus-file: the focus text comes from a file that is read, then deleted, so
+# the launch can be one plain `crew-codex ...` command (auto-mode allow rules).
+# review and task forward to the recording fake companion; adversarial-review
+# shares the same parsing function, so its refusals are asserted here too.
+FF="$TMP/focus"; mkdir -p "$FF"
+printf "it's a \`mandate\` with \$(touch %s/PWNED) and\nnewlines\n" "$FF" > "$FF/ok.txt"
+out="$(run_guard review --base main --focus-file "$FF/ok.txt")" && rc=0 || rc=$?
+check "review --focus-file forwards the file text as one positional" 0 "COMPANION-RAN:review|--base|main|--|it's a \`mandate\` with \$(touch" "$rc" "$out"
+[[ ! -e "$FF/ok.txt" ]] && { echo "PASS: focus file deleted after read"; pass=$((pass + 1)); } || { echo "FAIL: focus file still present after read"; fail=$((fail + 1)); }
+[[ ! -e "$FF/PWNED" ]] && { echo "PASS: focus text was never executed"; pass=$((pass + 1)); } || { echo "FAIL: focus text executed"; fail=$((fail + 1)); }
+
+printf 'plan text' > "$FF/t.txt"
+out="$(run_guard task --background --model m --effort high --focus-file="$FF/t.txt")" && rc=0 || rc=$?
+check "task --focus-file= with --background forwards flags then text" 0 "COMPANION-RAN:task|--background|--model|m|--effort|high|--|plan text" "$rc" "$out"
+[[ ! -e "$FF/t.txt" ]] && { echo "PASS: task focus file deleted"; pass=$((pass + 1)); } || { echo "FAIL: task focus file still present"; fail=$((fail + 1)); }
+
+for sub in review adversarial-review task; do
+  : > "$INVOKED"
+  out="$(run_guard "$sub" --focus-file "$FF/missing.txt")" && rc=0 || rc=$?
+  check "$sub --focus-file missing is refused" 2 "does not exist" "$rc" "$out"
+  check_no_dispatch "$sub missing focus file did not dispatch" "$INVOKED"
+
+  printf '  \n\t\n' > "$FF/empty.txt"
+  out="$(run_guard "$sub" --focus-file "$FF/empty.txt")" && rc=0 || rc=$?
+  check "$sub --focus-file whitespace-only is refused" 2 "empty or whitespace-only" "$rc" "$out"
+  check_no_dispatch "$sub empty focus file did not dispatch" "$INVOKED"
+  [[ ! -e "$FF/empty.txt" ]] && { echo "PASS: $sub refused empty file is still deleted"; pass=$((pass + 1)); } || { echo "FAIL: $sub empty file lingers"; fail=$((fail + 1)); }
+
+  printf 'mandate' > "$FF/both.txt"
+  out="$(run_guard "$sub" --focus-file "$FF/both.txt" extra words)" && rc=0 || rc=$?
+  check "$sub --focus-file + positional is refused" 2 "cannot be combined with positional" "$rc" "$out"
+  check_no_dispatch "$sub conflicting focus did not dispatch" "$INVOKED"
+
+  out="$(run_guard "$sub" --focus-file)" && rc=0 || rc=$?
+  check "$sub --focus-file without a value is refused" 2 "without a path" "$rc" "$out"
+done
+
 # Case 28: bare crew-codex and top-level help print usage, forward nothing
 out="$(run_guard)" && rc=0 || rc=$?
 check "bare crew-codex exits 0" 0 "Subcommands crew-codex handles itself" "$rc" "$out"

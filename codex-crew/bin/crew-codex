@@ -108,6 +108,8 @@ USAGE
 
   if [[ "$sub" == "adversarial-review" ]]; then
     cat <<USAGE
+  --focus-file <path>           read the focus text from <path> instead of the
+                                command line (see FOCUS FILE below)
   [focus text]                  every remaining word becomes the review focus
 
 Flag crew-codex adds on top of the companion:
@@ -129,6 +131,16 @@ gpt-6-sol/luna is low: those models return a 400 on reasoning.effort for
 'none' and 'minimal', so those two are accepted (other model families may take them) but warned
 about, and the job fails at the API rather than in the wrapper.
 
+FOCUS FILE. --focus-file <path> (also on review and task) reads the focus text
+from <path> as UTF-8, so the launch is ONE plain crew-codex command with no
+command substitution, rm or variable assignment in it, which is what lets a
+prefix allow rule such as Bash(crew-codex adversarial-review:*) match under
+Claude Code auto mode, and keeps focus text out of any shell. Refused (exit 2, nothing dispatched) when the
+file is missing, unreadable, empty or whitespace-only, or when positional focus
+text is also given. The file is ALWAYS deleted as soon as it has been read —
+before the turn starts, also on refusal, and before --background detaches; its
+parent directory is left alone (remove it yourself).
+
 EFFORT IS THE CALLER'S. The turn runs at exactly the --effort you pass; WITHOUT
 --effort it runs at medium, sent explicitly — never at model_reasoning_effort
 from ${CODEX_HOME:-$HOME/.codex}/config.toml. Nothing raises or lowers it. Ask
@@ -143,6 +155,9 @@ stderr and in the job record. Informational only: it changes nothing.
 USAGE
   else
     cat <<USAGE
+  --focus-file <path>           read the focus text from <path> (deleted once
+                                read; refused if empty, missing or combined
+                                with positional focus text)
   [focus text]                  every remaining word becomes the review focus
 
 The native review path accepts NO --effort flag. It runs through the
@@ -168,6 +183,11 @@ Flags codex-companion parses on the task path:
   --effort <none|minimal|low|medium|high|xhigh>
   --cwd <path>                  workspace root
   --prompt-file <path>          read the prompt from a file
+  --focus-file <path>           crew-codex flag: read the prompt from <path> and
+                                DELETE it once read (before the job starts or
+                                detaches); refused if missing, empty or combined
+                                with positional text or --prompt-file. Keeps the
+                                launch one plain command for auto-mode allow rules.
   [prompt]                      every remaining word becomes the prompt
 
 Unlike the native review path, task DOES accept --effort — codex-companion
@@ -181,6 +201,106 @@ if [[ $# -eq 0 || "${1:-}" == "--help" || "${1:-}" == "-h" || "${1:-}" == "help"
   crew_usage
   exit 0
 fi
+
+# ---- --focus-file: focus text from a file, never from the command line -----
+# Why this exists: under Claude Code auto mode a launch that must first build the
+# focus text with `FOCUS="$(cat ...)"; rm -rf ...` is a compound command that no
+# prefix allow rule (`Bash(crew-codex adversarial-review:*)`) can match, so every
+# dispatch is judged from scratch and refused. With --focus-file the launch is one
+# plain `crew-codex ...` command and the guards the compound recipe carried live
+# here instead: refuse an empty/missing mandate, never put focus text through a
+# shell, and leave no focus file behind.
+#
+# Rewrites "$@" in place: the flag and its value are dropped and the file's text is
+# appended after a `--` sentinel, so it is a single positional the vendor parser
+# and the driver never interpret as flags (same sentinel rule as everywhere else
+# in this script). Runs BEFORE any other check that can exit, and the file is
+# deleted as soon as it has been read (or refused), so no exit path after this
+# point leaves it behind. Only the FILE is deleted, never its directory.
+# $1 = subcommand (review|adversarial-review|task).
+crew_apply_focus_file() {
+  local sub="$1" arg ff="" ff_seen=0 pending=0 sentinel=0 positionals=0 vpending=0
+  local -a rest=()
+  for arg in "$@"; do
+    if [[ $sentinel -eq 1 ]]; then positionals=$((positionals + 1)); rest+=("$arg"); continue; fi
+    if [[ $pending -eq 1 ]]; then ff="$arg"; pending=0; continue; fi
+    if [[ $vpending -eq 1 ]]; then vpending=0; rest+=("$arg"); continue; fi
+    case "$arg" in
+      --) sentinel=1; rest+=("$arg") ;;
+      --focus-file)
+        [[ $ff_seen -eq 1 ]] && { echo "crew-codex: --focus-file given more than once." >&2; exit 2; }
+        ff_seen=1; pending=1 ;;
+      --focus-file=*)
+        [[ $ff_seen -eq 1 ]] && { echo "crew-codex: --focus-file given more than once." >&2; exit 2; }
+        ff_seen=1; ff="${arg#--focus-file=}" ;;
+      *)
+        rest+=("$arg")
+        # Same per-subcommand tables as the dispatch stamp below: whatever the
+        # vendor parser would read as a flag or a flag's value is not focus text.
+        if [[ "${#rest[@]}" -gt 1 ]]; then
+          case "$sub:$arg" in
+            review:--base|review:--scope|review:--model|review:--cwd|\
+            adversarial-review:--base|adversarial-review:--scope|adversarial-review:--model|adversarial-review:--cwd|\
+            adversarial-review:--effort|\
+            task:--model|task:--effort|task:--cwd|task:--prompt-file) vpending=1 ;;
+            *:--base=*|*:--scope=*|*:--model=*|*:--cwd=*|*:--effort=*|*:--prompt-file=*) ;;
+            *:--json|*:--wait|*:--background|*:--write|*:--resume-last|*:--resume|*:--fresh) ;;
+            *) positionals=$((positionals + 1)) ;;
+          esac
+        fi
+        ;;
+    esac
+  done
+  [[ $ff_seen -eq 1 ]] || return 0
+  if [[ $pending -eq 1 || -z "$ff" ]]; then
+    echo "crew-codex: --focus-file was given without a path." >&2
+    exit 2
+  fi
+  local text="" rc=0
+  if [[ ! -f "$ff" ]]; then
+    echo "crew-codex: --focus-file '$ff' does not exist or is not a regular file — refusing to dispatch without a mandate." >&2
+    exit 2
+  fi
+  text="$(cat -- "$ff" 2>/dev/null)" || rc=$?
+  # Delete BEFORE judging what was read: an empty, conflicting or unreadable
+  # file must not linger either.
+  if ! rm -f -- "$ff" 2>/dev/null && [[ -e "$ff" ]]; then
+    echo "crew-codex: could not delete focus file '$ff' — refusing to dispatch with a lingering mandate file." >&2
+    exit 2
+  fi
+  if [[ $rc -ne 0 ]]; then
+    echo "crew-codex: --focus-file '$ff' is unreadable — refusing to dispatch without a mandate." >&2
+    exit 2
+  fi
+  if [[ -z "${text//[[:space:]]/}" ]]; then
+    echo "crew-codex: --focus-file '$ff' is empty or whitespace-only — refusing to dispatch an empty mandate." >&2
+    exit 2
+  fi
+  if [[ $positionals -gt 0 ]]; then
+    echo "crew-codex: --focus-file cannot be combined with positional focus text (found $positionals token(s)). Use one or the other." >&2
+    exit 2
+  fi
+  if [[ "$sub" == "task" ]]; then
+    for arg in "${rest[@]}"; do
+      [[ "$arg" == "--" ]] && break
+      case "$arg" in
+        --prompt-file|--prompt-file=*)
+          echo "crew-codex: --focus-file cannot be combined with --prompt-file." >&2
+          exit 2 ;;
+      esac
+    done
+  fi
+  # Drop an existing bare `--` (no positionals followed it, checked above) so the
+  # sentinel is not doubled.
+  local -a out=()
+  local a
+  for a in "${rest[@]}"; do
+    [[ "$a" == "--" ]] && continue
+    out+=("$a")
+  done
+  FOCUS_REWRITTEN=("${out[@]}" -- "$text")
+}
+FOCUS_REWRITTEN=()
 
 # Set by the review guard below and read by the effort-routing block after the
 # companion is resolved. Declared here because `set -u` is on and the guard
@@ -217,6 +337,10 @@ if [[ "$1" == "review" || "$1" == "adversarial-review" ]]; then
       --help) review_usage "$1"; exit 0 ;;
     esac
   done
+  # --focus-file: read, delete and fold into the positional focus text now, so
+  # every later exit (bad --effort, missing companion) has already consumed it.
+  crew_apply_focus_file "$@"
+  [[ ${#FOCUS_REWRITTEN[@]} -gt 0 ]] && { set -- "${FOCUS_REWRITTEN[@]}"; FOCUS_REWRITTEN=(); }
   # Collect --effort in BOTH spellings, last occurrence wins — the same rule
   # the companion's own parser applies, so what we validate and route on is
   # what would actually take effect.
@@ -283,6 +407,8 @@ if [[ "$1" == "task" ]]; then
       --help|-h) task_usage; exit 0 ;;
     esac
   done
+  crew_apply_focus_file "$@"
+  [[ ${#FOCUS_REWRITTEN[@]} -gt 0 ]] && { set -- "${FOCUS_REWRITTEN[@]}"; FOCUS_REWRITTEN=(); }
 fi
 
 if ! command -v node >/dev/null 2>&1; then
