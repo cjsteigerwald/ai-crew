@@ -42,8 +42,8 @@
     {
       "name": "dev-workflow",
       "source": "./dev-workflow",
-      "version": "0.1.9",
-      "description": "Engineering workflow skills (ticket intake and requirements gap analysis, PR gates, orchestrated plan implementation, incident investigation and write-ups, skill retrospectives, Copilot readiness) plus verifier, adversarial reviewer, worker, and specialist review agents."
+      "version": "0.1.10",
+      "description": "Engineering workflow skills (ticket intake and requirements gap analysis, PR gates, orchestrated plan implementation, incident investigation and write-ups, skill retrospectives, Copilot readiness, GitHub project-board setup) plus verifier, adversarial reviewer, worker, and specialist review agents."
     }
   ]
 }
