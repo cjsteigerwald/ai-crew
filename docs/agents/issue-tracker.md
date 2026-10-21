@@ -60,7 +60,7 @@ Run `gh issue view <number> --comments`.
 
 ## Wayfinding operations
 
-Used by `/wayfinder`, which ships in the **mattpocock-skills** plugin — this section applies only
+Used by `/wayfinder`, which ships in the **sdlc-process** and **mattpocock-skills** plugins — this section applies only
 when that plugin is installed. The **map** is a single issue with **child** issues as tickets.
 
 - **Map**: a single issue labelled `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body. `gh issue create --label wayfinder:map`.

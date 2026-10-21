@@ -10,7 +10,8 @@ two domain specialists.
 
 | Skill | Purpose |
 |---|---|
-| `intaking-work-items` | Takes a Jira ticket or GitHub issue to ready-to-build: fetch context, gap-analyze story/scope/requirements/AC, block on clarifying questions, write `docs/specs/<KEY>-requirements.md`, offer confirmed writebacks, then chain spec → tickets → implement through the sdlc-process (always recommended when installed) or mattpocock-skills chain (user's choice), with a checkpoint between stages, verify each AC, open a draft PR, and close out; at sdlc-process stage 5 it can run the published issues as parallel pieces via orchestrating-pieces |
+| `intaking-work-items` | Single resumable entry point for a ticket: fetch context, gap-analyze story/scope/requirements/AC into an agenda, grill it with `sdlc-process:grill-with-docs` (escalating to `sdlc-process:wayfinder` when the work is more than one session can hold), write `docs/specs/<KEY>-requirements.md`, then run the sdlc-process chain spec → tickets → implement (`sdlc-process:implement` for one ticket, `dev-workflow:implement-spec` for two or more), with a checkpoint between stages, review by tier, verify each AC, open a draft PR, and close out; it detects the ticket's stage from its artifacts and resumes there, and at the implement stage it can run long-running published issues as parallel pieces via orchestrating-pieces |
+| `implement-spec` | Implements a published spec and its tickets (two or more) on one integration branch with isolated implementer subagents, then code-reviews it. Agent-callable; intake calls it in intake mode, which publishes nothing. Adapted from mattpocock/skills (MIT; license in the skill directory). |
 | `opening-pull-requests` | The ordered gate sequence before and during PR creation: branch hygiene, sync, lint/test, CI mirror, review-tier decision, review chain, ticket references, confirm, create, verify. |
 | `plan-implementation` | Orchestrated implementation of an approved plan through tiered worker lanes — decompose, route, spec, verify, close. |
 | `authoring-incident-docs` | Produces RCA, findings, and runbook artifacts with correct placement, metadata, and section structure. |
@@ -49,7 +50,8 @@ the evidence rule) now lives in the `review-policy` skill
 ## Piece orchestration
 
 A **piece** is one GitHub issue. When intake's sdlc-process chain reaches stage 5 with two
-or more published issues, you can choose parallel pieces and the `orchestrating-pieces`
+or more published issues that are long-running and each need direct user interaction, you
+can choose parallel pieces (otherwise `implement-spec` builds them) and the `orchestrating-pieces`
 skill takes over:
 
 - The orchestrator launches one piece agent per issue whose blockers are merged, as a

@@ -12,7 +12,7 @@ never leave `TBD`. No secrets, tokens, or credential values anywhere in the doc.
 **Fetched:** <YYYY-MM-DD, required — resume diffs comments and changes against this date> — ticket status `<status>`, sprint `<sprint or none>`, estimate `<value or none>`
 **Intake by:** <name> with the `dev-workflow:intaking-work-items` skill
 **Status:** <Draft | Ready | Partial | Delivered | Cancelled> — <last completed step; skipped steps and what each lost, e.g. "gap analysis skipped — requirements not gap-checked">
-**Chain:** <sdlc-process | mattpocock | — (not yet chosen)>
+**Chain:** <sdlc-process | — (not yet started)>
 
 > Snapshot of the ticket on the fetched date plus the decisions below. If the ticket changes,
 > re-run intake for the changed rows rather than editing this doc by memory.
@@ -111,11 +111,15 @@ skipped".>
 
 ## Chain artifacts
 
-<Filled in step 6. mattpocock: the spec issue (`owner/repo#N`) and the ticket issues (`owner/repo#N` —
-`AC-n` each), plus any superseded tickets. sdlc-process: the work branch, the
-published issue links (each with `AC-n`), sdlc-process holds and their resolutions, and any
-superseded tickets, and, if parallel pieces were chosen, the tracking-file location
-(`piece-track.sh path`, under `$(git rev-parse --git-common-dir)/piece-tracking/`). Every chain: **Last completed stage:** <stage, or
+<Filled in steps 3 and 6; the pointers resume reads. `Wayfinding: <none | active <map URL> | hold — <what's missing> | complete>`;
+`CONTEXT.md` and ADR paths grilling changed; the work branch (also the integration branch);
+the spec issue (`owner/repo#N`); the published ticket issue links (each with `AC-n`); the
+commit-bound records, each with its SHA (`plan pass @<revisions>`, ticket `integrated @<sha>`,
+`code-review @<sha>`, `full-tier diff pass @<sha>`, `verify @<sha>`; a deliberate skip is
+`skipped (user)`, and a stage the review tier does not require is `n.a. (<tier>)`, not a missing
+record); the review tier (`Exempt`, `Routine` or `Full`); the draft PR and its head; sdlc-process holds and their
+resolutions; any superseded tickets; and, if parallel pieces were chosen, the tracking-file location
+(`piece-track.sh path`, under `$(git rev-parse --git-common-dir)/piece-tracking/`). Always: **Last completed stage:** <stage, or
 "none">. Before step 6: "None — chain not started".>
 ```
 

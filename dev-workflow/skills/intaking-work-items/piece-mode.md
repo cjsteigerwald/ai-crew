@@ -17,7 +17,8 @@ confirmations are never asked, and nothing is pushed.
 |---|---|
 | Primary item | The piece's issue. Its acceptance criteria are the starting AC. Fetch it as step 1 says. |
 | Steps 0 to 7 | Run as written, through Verify, attended, against that issue. A gap table with no Vague or Missing row and no contradiction takes step 3's fast path: no questions, and step 4 still writes the requirements doc. Open questions are asked as step 3 says, one at a time, by you, to the user. |
-| Chain | Fixed to sdlc-process, per [chain-sdlc-process.md](chain-sdlc-process.md). Step 6.1's chain question is not asked; record `Chain: sdlc-process` in the doc. If sdlc-process is not installed, report `STUCK` with that reason. |
+| Chain | Fixed to sdlc-process, per [chain-sdlc-process.md](chain-sdlc-process.md). There is no chain choice; record `Chain: sdlc-process` in the doc. If sdlc-process is not installed, report `STUCK` with that reason. |
+| Wayfinder | Never loaded. If grilling shows the issue needs a map, report `STUCK` with a scope reason. |
 | Doc key | `<repo>-<issue number>` per step 1 (for example `ai-crew-37`), never the ticket key, so sibling pieces do not collide. The doc is `docs/specs/<repo>-<issue number>-requirements.md`. |
 | Work branch | The piece branch from the prompt, already created in your worktree. Create no other branch. |
 | Review base | The merge-base of the piece branch with the base branch, not with `main`. |

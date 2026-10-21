@@ -34,9 +34,11 @@ substitute your own and update the cross-references in each skill/agent.
    cannot be set per dispatch (the Agent tool exposes model, not effort), so escalate by
    dispatching `dev-workflow:fresh-verifier-high` in place of `fresh-verifier` — model may
    still be overridden per dispatch — rather than counting it as an extra verifier
-   instance beyond what this policy already allows.
+   instance beyond what this policy already allows. When a `code-review` report (Standards
+   and Spec axes) already exists for the diff, pass it to both as input; they focus on
+   independence and refutation rather than redoing standards and spec conformance.
 3. **Routine** — everything else: small, low-blast-radius changes (≤3 files, ≤~150
-   lines, none of the sensitive surfaces above). A single code-review pass is enough.
+   lines, none of the sensitive surfaces above). A single `code-review` pass is enough.
 
 When in doubt between Routine and Full, run Full. The tier is re-checked against the
 **actual diff** at pre-PR time — a Routine-planned change that grew past the thresholds
