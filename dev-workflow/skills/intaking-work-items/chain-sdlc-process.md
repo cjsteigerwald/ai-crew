@@ -9,8 +9,8 @@ from this one: no push or PR, no new work branch, the piece branch from the hand
 
 ## Attended only
 
-Every gate is answered live: sdlc-process's readiness, policy-review and publication gates, and
-step 8's push and draft PR, each need the user's confirmation.
+Every user gate is answered live: sdlc-process's readiness and publication gates, and step 8's push
+and draft PR, each need the user's confirmation. Policy review is not a user gate (see **Entry**).
 
 ## Precondition
 
@@ -31,17 +31,27 @@ it to ask about or hold on ownership and readiness; the user decides each.
 
 Every flow skill intake loads (`grill-with-docs`, `wayfinder`, `to-spec`, `to-tickets`,
 `implement`) goes through the entry: load `sdlc-process:sdlc-process` with the `Skill` tool, then
-`sdlc-process:orchestrator`, once at the start of step 3 (or at resume, if the run starts later),
-and again at each new session. Reload `sdlc-process:orchestrator` at the start of any session that
-dispatches agents and before each dispatch wave. Intake states which flow it expects the entry's
-situation table to select for the stage (step 3: "Bounded repo-backed idea"; wayfinder:
+`sdlc-process:orchestrator` — do not invert the order — once at the start of step 3 (or at resume,
+if the run starts later), and again at each new session. Reload the orchestrator at the start of
+any session that dispatches agents and before each dispatch wave. Intake states which flow it
+expects the entry's situation table to select (step 3: "Bounded repo-backed idea"; wayfinder:
 "Uncertainty exceeds a session"; stage 4: "Resolved intent/design"; stage 5: "Authorized delivery
-assignment"). Intake's stage gates stay; the entry does not replace them.
+assignment"); if the entry selects another flow, relay that to the user rather than forcing
+intake's. Intake's stage gates stay; the entry does not replace them.
 
-**Policy review.** Before advancing a stage (publishing the spec or tickets, starting
-implementation, pushing or opening the PR), obtain the independent `sdlc-process:sdlc-policy-review`
-assessment the entry requires, supplying exact artifacts. Intake never marks its own checkpoint
-passed, and a user "go" does not stand in for the assessment.
+**Policy review** is an independent assessment by a separately assigned agent
+(`sdlc-process:sdlc-policy-reviewer`, via `sdlc-process:sdlc-policy-review`), never a user gate and
+never skippable. Obtain it, supplying exact artifacts, at every checkpoint boundary the entry's
+contract names — in this flow at least:
+- publishing the spec or tickets;
+- starting implementation (each `implement-spec` wave, or one assessment that explicitly covers them);
+- handing the candidate to code-review;
+- pushing and opening the draft PR, as one publication sequence;
+- marking the PR ready, closing tickets, or transitioning Jira at close-out;
+- reassessment after any hold is resolved (not a new "go").
+
+The user's role is resolving a hold or recording a permitted exception, which the entry keeps on
+record as a missed checkpoint. Intake never marks its own checkpoint passed.
 
 ## Authority
 
@@ -75,10 +85,12 @@ readiness, policy-review or publication gates.
 3. **Holds.** When sdlc-process holds (missing owner, readiness evidence, policy reviewer) or asks a
    question, relay it to the user verbatim with options: resolve it (the user answers or provides),
    skip the stage, or cancel.
-   Never answer a sdlc-process gate on the user's behalf. Record each hold and its resolution in the Run log.
+   Never answer a sdlc-process gate on the user's behalf. A resolved policy hold is followed by
+   reassessment, not a new "go". Record each hold and its resolution in the Run log.
 4. **Spec and tickets — the plan stage.** Each output is published to the tracker; record its link
    in **Chain artifacts** so the next stage reads a pointer, not the conversation. Recommend a
-   fresh session (or `/handoff`) between this stage and stage 5 to keep context small.
+   fresh session between this stage and stage 5 to keep context small: load `sdlc-process:handoff`
+   with the `Skill` tool to produce the handoff.
    - `sdlc-process:to-spec` synthesizes the spec from the requirements doc, the grilling outcome
      and the settled AC list. After it publishes, read the issue back: every active AC is
      reflected, and no deferred, skipped, or out-of-scope AC appears as in scope (extra user
@@ -94,6 +106,8 @@ readiness, policy-review or publication gates.
      confirmation (Controls).
    - Every ticket cites the `AC-n` it satisfies. Check coverage: every active AC is cited by at least
      one ticket and no ticket cites a non-active AC. Take any gap back to the user.
+   - On Full tier, run the plan-side pass on the published spec and tickets before stage 5
+     (SKILL.md **Review = tier**) and record its outcome in **Chain artifacts**.
 5. **Implement.** Route by the number of published tickets. The implementer gets the requirements
    doc, the tickets and the settled AC list as the only scope:
    - **One ticket, or no decomposition:** `sdlc-process:implement`, which runs `sdlc-process:tdd`
@@ -102,9 +116,10 @@ readiness, policy-review or publication gates.
      local adaptation of the entry table's "Authorized delivery assignment" row (`implement`,
      `tdd`) for a spec with two or more published tickets; `tdd` and `code-review` obligations are
      carried inside it, and the row's readiness and start checks still apply. Pass the spec issue
-     URL, the AC→test table as the `confirmed seam list`, the `review base` and the requirements
-     doc path. A seam not in the table is a stop. Intake mode publishes nothing and returns the
-     integration branch.
+     URL, the work branch as the integration branch (in intake mode the work branch IS the
+     integration branch; none is created), the AC→test table as the `confirmed seam list`, the
+     `review base` and the requirements doc path. A seam not in the table is a stop. Intake mode
+     publishes nothing.
    - **Parallel pieces**, below, only when the pieces are long-running and each needs direct user
      interaction; otherwise implement-spec.
 
@@ -116,6 +131,11 @@ readiness, policy-review or publication gates.
    AND the path `docs/specs/<KEY>-requirements.md` as the spec to every code-review call. No PR,
    push, ready, close or closing keywords — intake step 8 owns the draft PR (pushing still needs
    the user's go per step 8).
+
+   **Records.** Write to **Chain artifacts** as stage 5 goes: each ticket when it is integrated on
+   the work branch, the code-review outcome, and on Full tier the verifier + adversary outcome.
+   Implement is complete only when all three are recorded; commits alone only show progress.
+   Resume the unintegrated tickets, or the review, otherwise.
 
    **After the review completes, before Verify:** check the diff and tests against the active AC
    list, and flag back to the user any change that implements a non-active AC.

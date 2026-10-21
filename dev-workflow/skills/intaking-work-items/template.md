@@ -111,9 +111,11 @@ skipped".>
 
 ## Chain artifacts
 
-<Filled in steps 3 and 6; the pointers resume reads. The wayfinder map issue URL, if step 3 escalated;
-`CONTEXT.md` and ADR paths grilling changed; the work branch; the spec issue (`owner/repo#N`); the
-published ticket issue links (each with `AC-n`); the draft PR; sdlc-process holds and their
+<Filled in steps 3 and 6; the pointers resume reads. `Wayfinding: <none | active <map URL> | complete>`;
+`CONTEXT.md` and ADR paths grilling changed; the work branch (also the integration branch);
+the spec issue (`owner/repo#N`); the published ticket issue links (each with `AC-n`); the Full-tier
+plan-pass outcome; `Implement:` the tickets integrated on the work branch, the code-review outcome
+and, for Full tier, the verifier + adversary outcome; the draft PR; sdlc-process holds and their
 resolutions; any superseded tickets; and, if parallel pieces were chosen, the tracking-file location
 (`piece-track.sh path`, under `$(git rev-parse --git-common-dir)/piece-tracking/`). Always: **Last completed stage:** <stage, or
 "none">. Before step 6: "None — chain not started".>
