@@ -76,7 +76,9 @@ full chain now. When torn between Routine and Full, run Full.
 
 Per the same table. **Routine** is a single `code-review` pass. On the **full chain**,
 `codex-adversary` is mandatory — omitting it is a blocking error. If a `code-review` report
-already exists for the diff, hand it to the verifier and the adversary as input. A finding from the
+already exists for the diff, hand it to the verifier and the adversary as input. A current
+`full-tier diff pass @<sha>` record (from intake: its SHA is an ancestor of HEAD and nothing it
+covers changed since) satisfies this gate's Full pass. A finding from the
 verifier or adversary cannot be dismissed without written evidence.
 
 ### 7. Ticket references

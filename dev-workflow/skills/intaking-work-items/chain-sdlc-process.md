@@ -106,8 +106,8 @@ readiness, policy-review or publication gates.
      confirmation (Controls).
    - Every ticket cites the `AC-n` it satisfies. Check coverage: every active AC is cited by at least
      one ticket and no ticket cites a non-active AC. Take any gap back to the user.
-   - On Full tier, run the plan-side pass on the published spec and tickets before stage 5
-     (SKILL.md **Review = tier**) and record its outcome in **Chain artifacts**.
+   - On Full tier, run the plan pass on the published spec and tickets after `to-tickets` and
+     before stage 5 (SKILL.md **Review = tier**); record `plan pass @<revisions>`.
 5. **Implement.** Route by the number of published tickets. The implementer gets the requirements
    doc, the tickets and the settled AC list as the only scope:
    - **One ticket, or no decomposition:** `sdlc-process:implement`, which runs `sdlc-process:tdd`
@@ -132,10 +132,11 @@ readiness, policy-review or publication gates.
    push, ready, close or closing keywords — intake step 8 owns the draft PR (pushing still needs
    the user's go per step 8).
 
-   **Records.** Write to **Chain artifacts** as stage 5 goes: each ticket when it is integrated on
-   the work branch, the code-review outcome, and on Full tier the verifier + adversary outcome.
-   Implement is complete only when all three are recorded; commits alone only show progress.
-   Resume the unintegrated tickets, or the review, otherwise.
+   **Records.** Write commit-bound records to **Chain artifacts** as stage 5 goes (SKILL.md step
+   1, **Detect the stage**): each ticket `integrated @<sha>`, then `code-review @<sha>`, then on
+   Full tier the diff pass, last, as `full-tier diff pass @<sha>`: the end of stage 5, after
+   code-review and before Verify. Commits alone only show progress. Verify fixes that change code
+   go through a bounded `sdlc-process:code-review` of the fix diff.
 
    **After the review completes, before Verify:** check the diff and tests against the active AC
    list, and flag back to the user any change that implements a non-active AC.

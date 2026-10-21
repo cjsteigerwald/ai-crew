@@ -94,7 +94,8 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
     description, AC, comments since the `Fetched:` date, links, and status.
   - Reopen every checklist row the changes touch, and any approval that depended on those rows
     (requirements OK, spec, tickets). Resume from the earliest reopened step, or from the stage
-    step 1's **Detect the stage** names if nothing changed. Update `Fetched:`.
+    step 1's **Detect the stage** names if nothing changed. Under `Wayfinding: active`, reopened rows
+    go to wayfinder as new fog or decision tickets, not to grilling. Update `Fetched:`.
   - If freshness can't be verified (the fetch fails), say so and block downstream stages until
     the user explicitly skips the check — the skip rules above apply.
   - A CANCELLED doc is never revived silently: ask first (resume it, or start over with a fresh
@@ -153,24 +154,28 @@ meaning the moment it leaves this repo.
 If `docs/specs/<KEY>-requirements.md` already exists, this is a resume: fetch anyway, then diff
 against the doc's snapshot (see **Controls**) before resuming.
 
-**Detect the stage** from durable artifacts, never from conversation. Verify each pointer in
-**Chain artifacts** against the tracker and git (`gh issue view`, `git log <review base>..HEAD`,
-`gh pr list --head <branch>`). Read the rows top to bottom; **the first row whose state holds
-decides**, so each row assumes the rows above it do not hold:
+**Detect the stage** from commit-bound records, never from conversation. Every stage record in the
+doc's **Chain artifacts** carries the commit SHA it was made at (each ticket `integrated @<sha>`,
+`code-review @<sha>`, `full-tier diff pass @<sha>`, `verify @<sha>`, the PR head when opened);
+plan-side records carry the spec and ticket revisions they assessed (`plan pass @<spec+tickets
+updatedAt>`). A record is CURRENT only if its SHA is an ancestor of HEAD, nothing it covers
+changed since (`git diff <sha>..HEAD` touches none of its scope), and, for an integrated ticket,
+its commit is not reverted (`git log <sha>..HEAD`). Resume at the **earliest stage** below whose
+record is missing or not current, even when a PR exists: an existing PR is kept and reused for
+Ship and Close-out, never treated as proof. Close-out needs Implement, the reviews and Verify
+all current at the PR head.
 
-| State | Resume at |
+| Stage | Record needed, else resume at |
 |---|---|
-| `Wayfinding: active <map URL>` in Chain artifacts | load `sdlc-process:wayfinder` with that map URL to resolve its next decision, then stop. Never return to grilling or chart a second map. A map that meets step 3's completion predicate goes to step 2 re-rating and step 4 instead |
-| A PR (draft or ready) exists for the work branch | step 9 (Close-out) |
-| All tickets integrated, code-review outcome recorded, and (Full tier) verifier + adversary outcome recorded; no PR | step 7 (Verify), then step 8 (Ship) |
-| Tickets published but those three records are not all present (commits only show progress) | step 6 Implement for the unintegrated tickets, or resume review |
-| Spec issue published, no tickets | step 6, `to-tickets` (Full tier: plan-side pass first, see **Review = tier**) |
-| Requirements doc `Ready`, no spec issue | step 6, `to-spec` |
-| Requirements doc `Draft` | step 3 |
-| No requirements doc | step 2 |
-
-Each stage writes its output to the tracker or the repo and records the pointer in the doc, so the
-next stage reads a pointer, not the conversation.
+| 1. Map | No `Wayfinding: active <map URL>`. If active: load `sdlc-process:wayfinder` with that map URL for its next decision, then stop; never return to grilling or chart a second map. If `Wayfinding: hold`: ask step 3's hold question first |
+| 2. Requirements | Doc exists with Status `Ready` (none: step 2; `Draft`: step 3) |
+| 3. Spec | Spec issue published: step 6, `to-spec` |
+| 4. Tickets | Tickets published: step 6, `to-tickets` |
+| 5. Plan pass | Full tier: `plan pass @<revisions>` current for the published spec and tickets |
+| 6. Implement | Every ticket `integrated @<sha>` current: step 6 Implement for the rest |
+| 7. Review | `code-review @<sha>` current; Full tier also `full-tier diff pass @<sha>` |
+| 8. Verify | `verify @<sha>` current: step 7 |
+| 9. Ship, Close-out | PR head recorded and reused if a PR exists: step 8, then step 9 |
 
 **Jira** — Atlassian MCP `getJiraIssue`. Collect: summary, description, any acceptance-criteria
 field, comments, status, sprint, story points, parent/epic, issue links, remote links.
@@ -250,18 +255,9 @@ Present the result as one table, then the questions you will ask, in order. That
 
 **Escalate to wayfinder** only after grilling, and only when the remaining uncertainty is more than
 one agent session can hold. Signals: research or a prototype is needed before decisions can be
-made, the work spans multiple repos, or it spans multiple phases. Never call it by default. Load
-`sdlc-process:wayfinder` to chart the map (publication is an outward action under step 5's
-per-action rule). Before stopping, write the requirements doc (Status `Draft`) with the Chain
-artifacts field `Wayfinding: active <map URL>`, then **STOP** the run. Wayfinder resolves one
-decision ticket per session; later runs resume it through step 1's first stage-detection row.
-
-**The map is complete** only when all of these hold: the map issue shows no remaining in-scope
-fog; every decision ticket's resolution has been read; and no ticket was closed with "new tickets
-to follow" still pending. Zero open decision tickets alone is not enough. Then re-rate the gap
-table (step 2), update the requirements doc and get the user's OK (step 4) so the settled AC list
-reflects the decisions, mark `Wayfinding: complete` in Chain artifacts, and continue at `to-spec`
-in step 6.
+made, the work spans multiple repos, or it spans multiple phases. Never call it by default. Then
+follow [wayfinder.md](wayfinder.md): it covers charting the map, stopping, the completion
+predicate and the `Wayfinding: hold` route.
 
 If the user asked only "is this ticket ready?", stop at the step-2 table and the open questions.
 
@@ -332,7 +328,7 @@ none, tasks cite "no AC — unverified". Never plan from the original text after
 
 Follow [verify.md](verify.md): re-run the repo checks, then every active AC by its
 AC→test row, then the Definition of done, on the final branch. Write each result with its evidence
-to the doc's Verification evidence table. Nothing ships until every active AC is verified or
+to the doc's Verification evidence table and record `verify @<sha>`. Nothing ships until every active AC is verified or
 unverified with reason, or a stop applies (see **Run log and stops**).
 
 ## 8. Ship
@@ -354,9 +350,12 @@ it), or "sdlc-process: no tickets published".
 **Review = tier.** `dev-workflow:review-policy` owns the tiers; intake only cites them. The
 `sdlc-process:code-review` run inside Implement (Standards and Spec axes) is the Routine pass;
 Exempt runs none. **Full** adds two passes, each one message dispatching
-`dev-workflow:fresh-verifier` + `dev-workflow:codex-adversary`: on the published spec and tickets
-before Implement, and at the PR gate on the diff with the code-review report as input (they
-focus on independence and refutation). Record both outcomes in Chain artifacts.
+`dev-workflow:fresh-verifier` + `dev-workflow:codex-adversary`: the plan pass on the published
+spec and tickets (between to-tickets and Implement), and the diff pass at the end of Implement,
+after code-review and before Verify, with the code-review report as input (independence and
+refutation). Record each as a commit-bound record. The PR gate accepts a current `full-tier diff
+pass @<sha>`. Verify fixes that change code go through a bounded `sdlc-process:code-review` of the
+fix diff; repeat the Full pass only when `dev-workflow:review-policy`'s re-pass rules require it.
 
 A lint/test failure inside `opening-pull-requests` is a step-7 failure. If gate 2's rebase or a
 review fix changes the tree, step 7 re-runs on the commit Ship pushes. The PR body carries the
@@ -367,7 +366,7 @@ not delivered.
 
 ## 9. Close-out
 
-Runs after Ship.
+Runs after Ship, and only with Implement, the reviews and Verify all current at the PR head.
 
 1. Show the Run log, the evidence table, and any blockers.
 2. Walk each person-only AC with the user and record the result in the doc's evidence table.
