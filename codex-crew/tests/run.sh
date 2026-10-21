@@ -4747,6 +4747,16 @@ for ADV_SH in bash /bin/bash; do
   adv_check_same "$L --base override" \
     "adversarial-review|--cwd|$ADV_WT|--base|origin/dev|--model|gpt-6-astra|--effort|medium|--wait|--" "$(adv_head)"
 
+  # --background replaces --wait; argv shape and count are unchanged.
+  out="$(adv_run "$ADV_SH" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --background --model m1 --effort high)" && rc=0 || rc=$?
+  check "$L --background exits 0" 0 "FAKE-CREW-CODEX-RAN" "$rc" "$out"
+  adv_check_same "$L --background argv" \
+    "adversarial-review|--cwd|$ADV_WT|--base|origin/main|--model|m1|--effort|high|--background|--" "$(adv_head)"
+  adv_check_same "$L --background argc stays 12" "12" "$(adv_argc)"
+  adv_check_same "$L --background focus text is the last argv" "Review this change adversarially." "$(adv_last)"
+  adv_check_same "$L no flag still uses --wait" "--wait" \
+    "$(adv_run "$ADV_SH" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" >/dev/null; adv_head | tr '|' '\n' | grep -x -e '--wait' -e '--background')"
+
   # Hostile focus text reaches argv verbatim as exactly one trailing argument.
   for hostile in '--model=x' '--background' '-- --base=evil' '--effort high'; do
     printf '%s' "$hostile" > "$TMP/adv/hostile.txt"
@@ -4782,7 +4792,9 @@ ADVEOF
   adv_refuse "duplicate --cwd" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --cwd "$ADV_WT"
   adv_refuse "missing value" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --model
   adv_refuse "value starting with -" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --model --base
-  adv_refuse "--background" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --background
+  adv_refuse "duplicate --background" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --background --background
+  adv_refuse "--background=true" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --background=true
+  adv_refuse "-background" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" -background
   adv_refuse "--wait" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --wait
   adv_refuse "missing --cwd" --focus-file "$ADV_FOCUS"
   adv_refuse "missing --focus-file" --cwd "$ADV_WT"
@@ -4833,6 +4845,41 @@ printf '#!/usr/bin/env bash\necho WRONG-CREW-CODEX\n' > "$TMP/adv/otherbin/crew-
 out="$(PATH="$TMP/adv/otherbin:$PATH" "$TMP/adv/linkdir/crew-adversary-review" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" 2>&1)" && rc=0 || rc=$?
 check "crew-adversary-review via symlink uses the sibling crew-codex" 0 "FAKE-CREW-CODEX-RAN" "$rc" "$out"
 
+# End to end through the REAL driver's background detach (fake vendor plugin
+# from the effort-driver fixture above): the wrapper's sibling crew-codex is the
+# real one, the detached job's prompt carries the full focus text, and the focus
+# file is untouched.
+mkdir -p "$TMP/adv/realbin"
+ln -sf "$HERE/../bin/crew-adversary-review" "$TMP/adv/realbin/crew-adversary-review"
+ln -sf "$CREW" "$TMP/adv/realbin/crew-codex"
+printf 'REAL-DRIVER-FOCUS --model=x `tick` $(dollar)\nsecond line\n' > "$TMP/adv/bgfocus.txt"
+BG_SUM="$(cksum < "$TMP/adv/bgfocus.txt")"
+: > "$INVOKED_E"; rm -f "$TMP/effort/turn.json"
+out="$(CLAUDE_CONFIG_DIR="$TMP/effort" CREW_TEST_INVOKED="$INVOKED_E" \
+  CREW_TEST_TURN_RECORD="$TMP/effort/turn.json" CREW_TEST_STATE_DIR="$STATE_E" \
+  CREW_TEST_JOB_SUFFIX="advbg" CREW_CODEX_ARCHIVE_DIR="$ARC_E" \
+  CODEX_HOME="$TMP/effort/codex-home" CREW_CODEX_RETRY_DELAYS="0" \
+  "$TMP/adv/realbin/crew-adversary-review" --cwd "$ADV_WT" --focus-file "$TMP/adv/bgfocus.txt" --background --effort high 2>&1)" && rc=0 || rc=$?
+check "crew-adversary-review --background through the real driver returns a job id" 0 "started in the background as review-stub-advbg" "$rc" "$out"
+waited=0
+while [[ $waited -lt 30 ]]; do
+  [[ -f "$TMP/effort/turn.json" ]] && break
+  sleep 1; waited=$((waited + 1))
+done
+if python3 -c "
+import json
+t = json.load(open('$TMP/effort/turn.json'))
+assert 'FOCUS=REAL-DRIVER-FOCUS --model=x \`tick\` \$(dollar)\nsecond line' in t['prompt'], t['prompt']
+assert t['effort'] == 'high', t
+j = json.load(open('$STATE_E/review-stub-advbg.json'))
+assert j['status'] == 'completed', j
+" 2>/dev/null; then
+  echo "PASS: detached job's prompt carries the full focus text"; pass=$((pass + 1))
+else
+  echo "FAIL: detached job prompt missing focus text (turn: $(cat "$TMP/effort/turn.json" 2>/dev/null))"; fail=$((fail + 1))
+fi
+adv_check_same "focus file intact after real background launch" "$BG_SUM" "$(cksum < "$TMP/adv/bgfocus.txt")"
+
 if [[ -x "$HERE/../bin/crew-adversary-review" ]]; then
   echo "PASS: crew-adversary-review is executable"; pass=$((pass + 1))
 else
@@ -4846,6 +4893,11 @@ ADV_AGENT="$HERE/../../dev-workflow/agents/codex-adversary.md"
 if grep -q -- 'crew-adversary-review --cwd' "$ADV_AGENT"; then echo "PASS: codex-adversary recipe uses crew-adversary-review"; pass=$((pass + 1)); else echo "FAIL: codex-adversary recipe does not use crew-adversary-review"; fail=$((fail + 1)); fi
 if grep -qF 'Bash(crew-adversary-review:*)' "$ADV_AGENT"; then echo "PASS: codex-adversary recipe documents the allow rule"; pass=$((pass + 1)); else echo "FAIL: codex-adversary recipe lacks the allow rule"; fail=$((fail + 1)); fi
 if sed '/^2\. \*\*Pinned plain Codex CLI/,$d' "$ADV_AGENT" | grep -qF '$(cat'; then echo "FAIL: codex-adversary driver route still contains '\$(cat'"; fail=$((fail + 1)); else echo "PASS: codex-adversary driver route has no '\$(cat'"; pass=$((pass + 1)); fi
+if grep -q -- 'crew-adversary-review --cwd <worktree> --focus-file <path> --background' "$ADV_AGENT"; then echo "PASS: codex-adversary launch line carries --background"; pass=$((pass + 1)); else echo "FAIL: codex-adversary launch line lacks --background"; fail=$((fail + 1)); fi
+if grep -q 'crew-codex await <job-id>' "$ADV_AGENT"; then echo "PASS: codex-adversary recipe has an await step"; pass=$((pass + 1)); else echo "FAIL: codex-adversary recipe lacks an await step"; fail=$((fail + 1)); fi
+# The launch section (before the job-id/await steps) must not describe a
+# foreground Bash timeout; the await loop itself legitimately sets one.
+if sed -n '/Driver path command/,/Grab the/p' "$ADV_AGENT" | grep -q 'timeout: 600000'; then echo "FAIL: codex-adversary launch section still has foreground timeout wording"; fail=$((fail + 1)); else echo "PASS: codex-adversary launch section has no foreground timeout wording"; pass=$((pass + 1)); fi
 for banned in 'focus-dir' 'mkdir -p -m 700' '--base main ' 'crew_focus' 'marker' '--focus-file <dir>'; do
   if grep -qF -- "$banned" "$ADV_AGENT"; then echo "FAIL: codex-adversary recipe still contains '$banned'"; fail=$((fail + 1)); else echo "PASS: codex-adversary recipe has no '$banned'"; pass=$((pass + 1)); fi
 done

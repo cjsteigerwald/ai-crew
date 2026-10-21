@@ -74,7 +74,7 @@ find proportionally more.
       1. **Write it with the `Write` tool** — never `cat`, `echo`, or a heredoc. `Write` does not invoke a shell, so nothing in the prose can be interpreted.
       2. **Choose a private path.** If `$CLAUDE_JOB_DIR` is set, use `$CLAUDE_JOB_DIR/tmp/focus.txt` (the harness-private job directory; check with `printenv CLAUDE_JOB_DIR` in its own Bash call and copy the printed value literally into the `Write` call). Otherwise run `mktemp -d` as its own plain Bash command (it creates a fresh `0700` directory with an unpredictable name) and write `<dir>/focus.txt`. ⚠️ The default umask here is `0022`, so a focus file written straight into `/tmp` lands mode `0644` — world-readable, holding your full mandate and any incident text pasted into it. ⚠️ Do NOT use a fixed path like `/tmp/crew-focus.txt`: concurrent Claude Code sessions on this machine would overwrite each other's file. `Write` takes a literal path and does not expand `$$` or any other shell syntax.
       3. **Launch with `crew-adversary-review`, in a Bash call of its own** (below). It reads the file, refuses (exit 2, nothing dispatched) on a missing, empty, oversize or non-regular file, a non-git `--cwd`, or any argument it does not know, runs `git fetch origin`, and passes the text to Codex as a single argument after a `--` sentinel so it can never be parsed as options. It only reads the file — it never deletes it. Exit 2 means STOP and report — do not retry with inline focus text.
-      4. **Cleanup is yours, afterwards:** remove the file in a separate plain call (`rm <path>`, plus `rmdir <dir>` if you made one with `mktemp -d`).
+      4. **Cleanup is yours, after the job has completed** (the text is already on the launch's argv, so the file is no longer needed once the launch returned; deleting after `await` is simplest): remove it in a separate plain call (`rm <path>`, plus `rmdir <dir>` if you made one with `mktemp -d`).
 
       ⚠️ **Why the launch must be a plain command.** Under Claude Code auto mode a Bash call is auto-allowed only when it matches a prefix allow rule. This route needs `Bash(crew-adversary-review:*)` (and `Bash(crew-codex task:*)` for plan reviews, plus the other `crew-codex` verbs you use). A compound call that starts with a variable assignment, or contains `$(...)`, `rm` or `cd`, never matches a prefix rule; the classifier then judges it from scratch and refuses it, so the review never launches. Keep the launch call to exactly the `crew-adversary-review ...` text below — no assignment, no `$(...)`, no pipes, no redirects, no `&&`/`;` chaining.
 
@@ -83,11 +83,12 @@ find proportionally more.
       **Driver path command** (the wrapper runs `git fetch origin` itself and defaults to `--base origin/main`, so never review against a stale local `main`; add `--base <ref>` only to override):
 
       ```
-      crew-adversary-review --cwd <worktree> --focus-file <path> --model gpt-6-astra --effort <level>
+      crew-adversary-review --cwd <worktree> --focus-file <path> --background --model gpt-6-astra --effort <level>
       ```
 
-      `<worktree>` is the absolute path of the worktree under review, which should also be the Bash tool's working directory so later `crew-codex await`/`status`/`result` resolve the job. The wrapper always runs the review in the foreground (`--wait`) and refuses `--background`: the Bash call blocks until Codex finishes, so give it Bash `timeout: 600000`. A review that outlives that cap is killed with its Bash call — see the cancel-first rule below.
+      `<worktree>` is the absolute path of the worktree under review, which should also be the Bash tool's working directory so the later `crew-codex await`/`status`/`result`/`steer` resolve the job.
 
+      - ⚠️⚠️ **`--background` belongs ON THE COMMAND LINE.** The wrapper passes it to the ≥0.5 driver, which writes the job record, spawns a detached child, prints the job id, and returns in about a second — so the Bash tool's 120s default timeout stops mattering (reviews run 5–17 minutes). **Four dispatchers have failed this step by omitting the flag and relying only on the Bash tool's `run_in_background` parameter.** Pass both, but the flag is the one that actually protects you. Without it the wrapper runs `--wait` in the foreground and a long review dies with the Bash call.
       - Defaults when an option is omitted: `--model gpt-6-astra`, `--effort medium`. Still pass both explicitly so the envelope's `effort requested` is the level that ran.
       - **Pin the model.** Without a pin the review would inherit the CLI default, and a stale `model` pin in `~/.codex/config.toml` silently downgrades or breaks every review.
 

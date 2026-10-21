@@ -541,17 +541,19 @@ adversarial review whose focus text is read from a file, as ONE plain command
 that an auto-mode allow rule `Bash(crew-adversary-review:*)` can match:
 
 ```
-crew-adversary-review --cwd <dir> --focus-file <path> [--base <ref>] [--model <m>] [--effort <e>]
+crew-adversary-review --cwd <dir> --focus-file <path> [--base <ref>] [--model <m>] [--effort <e>] [--background]
 ```
 
 Defaults: `--base origin/main`, `--model gpt-6-astra`, `--effort medium`. It
 accepts only those long options as separate `--opt value` pairs (anything else
 exits 2), checks `<dir>` is a git work tree and the file is a non-empty regular
 file of at most 64 KiB, runs `git fetch origin` (failure exits 1), then execs the
-sibling `crew-codex adversarial-review ... --wait -- "<text>"`. The text follows
+sibling `crew-codex adversarial-review ... --wait -- "<text>"` (`--background`
+instead of `--wait` when `--background` is given: the job detaches, prints a job
+id, and is supervised with `crew-codex await <job-id>`). The text follows
 a `--` sentinel, so nothing in it can be read as an option. The script only
-reads the file; it never writes, moves or deletes anything, and never
-backgrounds the review.
+reads the file; it never writes, moves or deletes anything. The text is on argv
+before the job detaches, so the file is not needed after the launch returns.
 
 ## Tests
 

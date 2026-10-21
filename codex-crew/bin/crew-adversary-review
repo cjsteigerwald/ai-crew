@@ -10,7 +10,11 @@
 # in the text can be parsed as an option (crew-codex and its review driver both
 # treat every token after `--` as literal focus text).
 #
-# It never writes, moves or deletes any file, and never runs in the background.
+# It never writes, moves or deletes any file. By default the review runs in the
+# foreground (--wait); with `--background` crew-codex detaches the job and
+# prints a job id (supervise it with `crew-codex await <job-id>`). The focus
+# text is passed on argv before the job detaches, so the file is not needed
+# once the launch has returned.
 # Must run under macOS /bin/bash 3.2: no bash-4 constructs.
 set -euo pipefail
 
@@ -18,18 +22,20 @@ MAX_FOCUS_BYTES=65536
 
 usage() {
   cat <<'USAGE'
-Usage: crew-adversary-review --cwd <dir> --focus-file <path> [--base <ref>] [--model <m>] [--effort <e>]
+Usage: crew-adversary-review --cwd <dir> --focus-file <path> [--base <ref>] [--model <m>] [--effort <e>] [--background]
 
-Runs `git fetch origin` in <dir>, then a foreground (--wait) crew-codex
-adversarial review whose focus text is the contents of <path>.
+Runs `git fetch origin` in <dir>, then a crew-codex adversarial review whose
+focus text is the contents of <path>. Foreground (--wait) by default.
 
   --cwd <dir>          git work tree to review (required)
   --focus-file <path>  readable, non-empty regular file, at most 64 KiB (required)
   --base <ref>         diff base (default: origin/main)
   --model <m>          model (default: gpt-6-astra)
   --effort <e>         reasoning effort (default: medium)
+  --background         detach the job and print its job id (no value; at most once)
 
-Only these long options, each as a separate `--opt value` pair. The file is
+Only these long options, each as a separate `--opt value` pair (`--background`
+takes no value). The file is
 only read: never written, moved or deleted.
 USAGE
 }
@@ -45,13 +51,15 @@ if [[ $# -eq 1 && "$1" == "--help" ]]; then
 fi
 
 cwd="" focus_file="" base="" model="" effort=""
-have_cwd=0 have_focus=0 have_base=0 have_model=0 have_effort=0
+have_cwd=0 have_focus=0 have_base=0 have_model=0 have_effort=0 background=0
 
 while [[ $# -gt 0 ]]; do
   opt="$1"
   case "$opt" in
     --cwd|--focus-file|--base|--model|--effort) ;;
-    --background) die "--background is not supported: this wrapper always runs in the foreground (--wait)" ;;
+    --background)
+      [[ $background -eq 0 ]] || die "duplicate --background"
+      background=1; shift; continue ;;
     --help) die "--help must be the only argument" ;;
     *) die "unexpected argument '$opt' (see --help)" ;;
   esac
@@ -107,4 +115,10 @@ if ! git -C "$cwd" fetch origin; then
   exit 1
 fi
 
-exec "$crew_codex" adversarial-review --cwd "$cwd" --base "$base" --model "$model" --effort "$effort" --wait -- "$focus_text"
+if [[ $background -eq 1 ]]; then
+  mode="--background"
+else
+  mode="--wait"
+fi
+
+exec "$crew_codex" adversarial-review --cwd "$cwd" --base "$base" --model "$model" --effort "$effort" "$mode" -- "$focus_text"
