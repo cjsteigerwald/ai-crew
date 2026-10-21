@@ -4668,6 +4668,252 @@ else
 fi
 
 
+# --- crew-adversary-review: file-based focus launcher ------------------------
+# The wrapper resolves crew-codex as its SIBLING, so the fixture copies it into
+# a private bin dir next to a fake crew-codex that records argv NUL-separated.
+ADV_BIN="$TMP/adv/bin"
+mkdir -p "$ADV_BIN"
+cp "$HERE/../bin/crew-adversary-review" "$ADV_BIN/crew-adversary-review"
+cat > "$ADV_BIN/crew-codex" <<'ADVEOF'
+#!/usr/bin/env bash
+: > "$ADV_ARGV"
+for a in "$@"; do printf '%s\0' "$a" >> "$ADV_ARGV"; done
+echo "FAKE-CREW-CODEX-RAN"
+ADVEOF
+chmod +x "$ADV_BIN/crew-adversary-review" "$ADV_BIN/crew-codex"
+ADV_ARGV="$TMP/adv/argv"
+export ADV_ARGV
+
+# A work tree with a local bare origin, so `git fetch origin` is real.
+git init -q --bare "$TMP/adv/origin.git"
+git init -q "$TMP/adv/wt"
+git -C "$TMP/adv/wt" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$TMP/adv/wt" remote add origin "$TMP/adv/origin.git"
+ADV_WT="$TMP/adv/wt"
+mkdir -p "$TMP/adv/notgit"
+
+# Fetch recorder: a git shim on PATH that logs fetches, then defers to real git.
+REAL_GIT="$(command -v git)"
+mkdir -p "$TMP/adv/shim"
+cat > "$TMP/adv/shim/git" <<ADVEOF
+#!/usr/bin/env bash
+case " \$* " in *" fetch origin"*) echo "\$*" >> "$TMP/adv/fetch.log" ;; esac
+exec "$REAL_GIT" "\$@"
+ADVEOF
+chmod +x "$TMP/adv/shim/git"
+
+# adv_run <shell> <args...>: run the wrapper, resetting the recorders first.
+adv_run() {
+  local sh="$1"; shift
+  : > "$ADV_ARGV"; : > "$TMP/adv/fetch.log"
+  PATH="$TMP/adv/shim:$PATH" "$sh" "$ADV_BIN/crew-adversary-review" "$@" 2>&1
+}
+adv_argc() { tr -cd '\0' < "$ADV_ARGV" | wc -c | tr -d ' '; }
+adv_last() { python3 -c "import sys; print(open(sys.argv[1],'rb').read().split(b'\0')[-2].decode(), end='')" "$ADV_ARGV"; }
+adv_head() { python3 -c "import sys; print('|'.join(x.decode() for x in open(sys.argv[1],'rb').read().split(b'\0')[:-2]), end='')" "$ADV_ARGV"; }
+
+adv_check_same() {  # name expected actual
+  if [[ "$2" == "$3" ]]; then echo "PASS: $1"; pass=$((pass + 1))
+  else echo "FAIL: $1 (want: [$2] got: [$3])"; fail=$((fail + 1)); fi
+}
+
+ADV_FOCUS="$TMP/adv/focus.txt"
+printf 'Review this change adversarially.\n' > "$ADV_FOCUS"
+adv_sum() { cksum < "$ADV_FOCUS"; }
+ADV_SUM="$(adv_sum)"
+
+for ADV_SH in bash /bin/bash; do
+  if [[ "$ADV_SH" == "/bin/bash" ]]; then
+    { [[ -x /bin/bash ]] && [[ "$(/bin/bash -c 'echo ${BASH_VERSINFO[0]}')" -lt 4 ]]; } \
+      || { skip "crew-adversary-review under bash 3.2" "/bin/bash is absent or not bash 3.x"; continue; }
+    L="/bin/bash 3.2 crew-adversary-review"
+  else
+    L="crew-adversary-review"
+  fi
+
+  # Happy path: exact argv, fetch called.
+  out="$(adv_run "$ADV_SH" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --model m1 --effort high)" && rc=0 || rc=$?
+  check "$L happy path exits 0" 0 "FAKE-CREW-CODEX-RAN" "$rc" "$out"
+  adv_check_same "$L happy path argv" \
+    "adversarial-review|--cwd|$ADV_WT|--base|origin/main|--model|m1|--effort|high|--wait|--" "$(adv_head)"
+  adv_check_same "$L happy path focus text is the last argv" "Review this change adversarially." "$(adv_last)"
+  adv_check_same "$L ran git fetch origin" "-C $ADV_WT fetch origin" "$(cat "$TMP/adv/fetch.log")"
+
+  # Defaults + --base override.
+  out="$(adv_run "$ADV_SH" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS")" && rc=0 || rc=$?
+  adv_check_same "$L defaults (origin/main, gpt-6-astra, medium)" \
+    "adversarial-review|--cwd|$ADV_WT|--base|origin/main|--model|gpt-6-astra|--effort|medium|--wait|--" "$(adv_head)"
+  out="$(adv_run "$ADV_SH" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --base origin/dev)" && rc=0 || rc=$?
+  adv_check_same "$L --base override" \
+    "adversarial-review|--cwd|$ADV_WT|--base|origin/dev|--model|gpt-6-astra|--effort|medium|--wait|--" "$(adv_head)"
+
+  # --background replaces --wait; argv shape and count are unchanged.
+  out="$(adv_run "$ADV_SH" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --background --model m1 --effort high)" && rc=0 || rc=$?
+  check "$L --background exits 0" 0 "FAKE-CREW-CODEX-RAN" "$rc" "$out"
+  adv_check_same "$L --background argv" \
+    "adversarial-review|--cwd|$ADV_WT|--base|origin/main|--model|m1|--effort|high|--background|--" "$(adv_head)"
+  adv_check_same "$L --background argc stays 12" "12" "$(adv_argc)"
+  adv_check_same "$L --background focus text is the last argv" "Review this change adversarially." "$(adv_last)"
+  adv_check_same "$L no flag still uses --wait" "--wait" \
+    "$(adv_run "$ADV_SH" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" >/dev/null; adv_head | tr '|' '\n' | grep -x -e '--wait' -e '--background')"
+
+  # Hostile focus text reaches argv verbatim as exactly one trailing argument.
+  for hostile in '--model=x' '--background' '-- --base=evil' '--effort high'; do
+    printf '%s' "$hostile" > "$TMP/adv/hostile.txt"
+    out="$(adv_run "$ADV_SH" --cwd "$ADV_WT" --focus-file "$TMP/adv/hostile.txt")" && rc=0 || rc=$?
+    adv_check_same "$L focus text '$hostile' verbatim" "$hostile" "$(adv_last)"
+    adv_check_same "$L focus text '$hostile' is one argument (argc 12)" "12" "$(adv_argc)"
+  done
+  cat > "$TMP/adv/multi.txt" <<'ADVEOF'
+Line "one" with 'quotes'
+$(touch /tmp/should-not-exist-adv) `touch /tmp/should-not-exist-adv` $HOME ${PATH}
+--background
+ADVEOF
+  out="$(adv_run "$ADV_SH" --cwd "$ADV_WT" --focus-file "$TMP/adv/multi.txt")" && rc=0 || rc=$?
+  adv_check_same "$L multi-line focus text verbatim" "$(cat "$TMP/adv/multi.txt")" "$(adv_last)"
+  adv_check_same "$L multi-line focus text is one argument" "12" "$(adv_argc)"
+  if [[ ! -e /tmp/should-not-exist-adv ]]; then echo "PASS: $L focus text was never shell-evaluated"; pass=$((pass + 1))
+  else echo "FAIL: $L focus text was shell-evaluated"; fail=$((fail + 1)); rm -f /tmp/should-not-exist-adv; fi
+
+  # Refusals: exit 2, crew-codex never invoked, stderr names the wrapper.
+  adv_refuse() {  # name, then args
+    local name="$1"; shift
+    out="$(adv_run "$ADV_SH" "$@")" && rc=0 || rc=$?
+    check "$L refuses $name" 2 "crew-adversary-review:" "$rc" "$out"
+    adv_check_same "$L $name did not invoke crew-codex" "0" "$(adv_argc)"
+  }
+  adv_refuse "unknown flag" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --verbose
+  adv_refuse "--model=x form" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --model=x
+  adv_refuse "-cwd" -cwd "$ADV_WT" --focus-file "$ADV_FOCUS"
+  adv_refuse "positional" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" extra
+  adv_refuse "bare --" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --
+  adv_refuse "-- with text" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" -- focus
+  adv_refuse "duplicate option" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --model a --model b
+  adv_refuse "duplicate --cwd" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --cwd "$ADV_WT"
+  adv_refuse "missing value" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --model
+  adv_refuse "value starting with -" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --model --base
+  adv_refuse "duplicate --background" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --background --background
+  adv_refuse "--background=true" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --background=true
+  adv_refuse "-background" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" -background
+  adv_refuse "--wait" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --wait
+  adv_refuse "missing --cwd" --focus-file "$ADV_FOCUS"
+  adv_refuse "missing --focus-file" --cwd "$ADV_WT"
+  adv_refuse "no arguments"
+  adv_refuse "nonexistent focus file" --cwd "$ADV_WT" --focus-file "$TMP/adv/nope.txt"
+  adv_refuse "directory as focus file" --cwd "$ADV_WT" --focus-file "$TMP/adv"
+  : > "$TMP/adv/empty.txt"; printf ' \n\t\n' > "$TMP/adv/blank.txt"
+  adv_refuse "empty focus file" --cwd "$ADV_WT" --focus-file "$TMP/adv/empty.txt"
+  adv_refuse "whitespace-only focus file" --cwd "$ADV_WT" --focus-file "$TMP/adv/blank.txt"
+  head -c 65537 /dev/zero | tr '\0' 'a' > "$TMP/adv/big.txt"
+  adv_refuse "oversize focus file" --cwd "$ADV_WT" --focus-file "$TMP/adv/big.txt"
+  adv_refuse "cwd not a git repo" --cwd "$TMP/adv/notgit" --focus-file "$ADV_FOCUS"
+  adv_refuse "cwd not a directory" --cwd "$ADV_FOCUS" --focus-file "$ADV_FOCUS"
+  # Exactly at the cap is accepted.
+  head -c 65536 /dev/zero | tr '\0' 'a' > "$TMP/adv/cap.txt"
+  out="$(adv_run "$ADV_SH" --cwd "$ADV_WT" --focus-file "$TMP/adv/cap.txt")" && rc=0 || rc=$?
+  check "$L accepts a focus file exactly at the 64 KiB cap" 0 "FAKE-CREW-CODEX-RAN" "$rc" "$out"
+
+  # A focus file reached through a symlink is read (never written).
+  ln -sf "$ADV_FOCUS" "$TMP/adv/focus.link"
+  out="$(adv_run "$ADV_SH" --cwd "$ADV_WT" --focus-file "$TMP/adv/focus.link")" && rc=0 || rc=$?
+  check "$L reads a focus file through a symlink" 0 "FAKE-CREW-CODEX-RAN" "$rc" "$out"
+
+  # --help: usage, exit 0, nothing dispatched.
+  out="$(adv_run "$ADV_SH" --help)" && rc=0 || rc=$?
+  check "$L --help prints usage" 0 "Usage: crew-adversary-review" "$rc" "$out"
+  adv_check_same "$L --help did not invoke crew-codex" "0" "$(adv_argc)"
+
+  # The focus file is untouched after success, refusal and --help.
+  adv_check_same "$L focus file intact after success/refusal/--help" "$ADV_SUM" "$(adv_sum)"
+
+  # Fetch failure: non-zero, crew-codex not invoked.
+  rm -rf "$TMP/adv/wt-nofetch"
+  git init -q "$TMP/adv/wt-nofetch"
+  git -C "$TMP/adv/wt-nofetch" remote add origin "$TMP/adv/does-not-exist.git"
+  out="$(adv_run "$ADV_SH" --cwd "$TMP/adv/wt-nofetch" --focus-file "$ADV_FOCUS")" && rc=0 || rc=$?
+  check "$L fetch failure exits non-zero and says so" 1 "git fetch origin' failed" "$rc" "$out"
+  adv_check_same "$L fetch failure did not invoke crew-codex" "0" "$(adv_argc)"
+  adv_check_same "$L focus file intact after fetch failure" "$ADV_SUM" "$(adv_sum)"
+done
+
+# Sibling resolution: through a symlink, the wrapper still uses the crew-codex
+# next to the real script, not one earlier on PATH.
+mkdir -p "$TMP/adv/linkdir" "$TMP/adv/otherbin"
+ln -sf "$ADV_BIN/crew-adversary-review" "$TMP/adv/linkdir/crew-adversary-review"
+printf '#!/usr/bin/env bash\necho WRONG-CREW-CODEX\n' > "$TMP/adv/otherbin/crew-codex"; chmod +x "$TMP/adv/otherbin/crew-codex"
+: > "$ADV_ARGV"
+out="$(PATH="$TMP/adv/otherbin:$PATH" "$TMP/adv/linkdir/crew-adversary-review" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" 2>&1)" && rc=0 || rc=$?
+check "crew-adversary-review via symlink uses the sibling crew-codex" 0 "FAKE-CREW-CODEX-RAN" "$rc" "$out"
+
+# End to end through the REAL driver's background detach (fake vendor plugin
+# from the effort-driver fixture above): the wrapper's sibling crew-codex is the
+# real one, the detached job's prompt carries the full focus text, and the focus
+# file is untouched.
+mkdir -p "$TMP/adv/realbin"
+ln -sf "$HERE/../bin/crew-adversary-review" "$TMP/adv/realbin/crew-adversary-review"
+ln -sf "$CREW" "$TMP/adv/realbin/crew-codex"
+printf 'REAL-DRIVER-FOCUS --model=x `tick` $(dollar)\nsecond line\n' > "$TMP/adv/bgfocus.txt"
+BG_SUM="$(cksum < "$TMP/adv/bgfocus.txt")"
+: > "$INVOKED_E"; rm -f "$TMP/effort/turn.json"
+out="$(CLAUDE_CONFIG_DIR="$TMP/effort" CREW_TEST_INVOKED="$INVOKED_E" \
+  CREW_TEST_TURN_RECORD="$TMP/effort/turn.json" CREW_TEST_STATE_DIR="$STATE_E" \
+  CREW_TEST_JOB_SUFFIX="advbg" CREW_CODEX_ARCHIVE_DIR="$ARC_E" \
+  CODEX_HOME="$TMP/effort/codex-home" CREW_CODEX_RETRY_DELAYS="0" \
+  "$TMP/adv/realbin/crew-adversary-review" --cwd "$ADV_WT" --focus-file "$TMP/adv/bgfocus.txt" --background --effort high 2>&1)" && rc=0 || rc=$?
+check "crew-adversary-review --background through the real driver returns a job id" 0 "started in the background as review-stub-advbg" "$rc" "$out"
+waited=0
+while [[ $waited -lt 30 ]]; do
+  [[ -f "$TMP/effort/turn.json" ]] && break
+  sleep 1; waited=$((waited + 1))
+done
+if python3 -c "
+import json
+t = json.load(open('$TMP/effort/turn.json'))
+assert 'FOCUS=REAL-DRIVER-FOCUS --model=x \`tick\` \$(dollar)\nsecond line' in t['prompt'], t['prompt']
+assert t['effort'] == 'high', t
+j = json.load(open('$STATE_E/review-stub-advbg.json'))
+assert j['status'] == 'completed', j
+" 2>/dev/null; then
+  echo "PASS: detached job's prompt carries the full focus text"; pass=$((pass + 1))
+else
+  echo "FAIL: detached job prompt missing focus text (turn: $(cat "$TMP/effort/turn.json" 2>/dev/null))"; fail=$((fail + 1))
+fi
+adv_check_same "focus file intact after real background launch" "$BG_SUM" "$(cksum < "$TMP/adv/bgfocus.txt")"
+
+if [[ -x "$HERE/../bin/crew-adversary-review" ]]; then
+  echo "PASS: crew-adversary-review is executable"; pass=$((pass + 1))
+else
+  echo "FAIL: crew-adversary-review is not executable"; fail=$((fail + 1))
+fi
+
+# Recipe assertions on the dispatcher agent. The plain-CLI fallback (step 2)
+# legitimately keeps FOCUS="$(cat ...)", so the no-$(cat rule covers the driver
+# route only: everything before the "Pinned plain Codex CLI" heading.
+ADV_AGENT="$HERE/../../dev-workflow/agents/codex-adversary.md"
+if grep -q -- 'crew-adversary-review --cwd' "$ADV_AGENT"; then echo "PASS: codex-adversary recipe uses crew-adversary-review"; pass=$((pass + 1)); else echo "FAIL: codex-adversary recipe does not use crew-adversary-review"; fail=$((fail + 1)); fi
+if grep -qF 'Bash(crew-adversary-review:*)' "$ADV_AGENT"; then echo "PASS: codex-adversary recipe documents the allow rule"; pass=$((pass + 1)); else echo "FAIL: codex-adversary recipe lacks the allow rule"; fail=$((fail + 1)); fi
+if sed '/^2\. \*\*Pinned plain Codex CLI/,$d' "$ADV_AGENT" | grep -qF '$(cat'; then echo "FAIL: codex-adversary driver route still contains '\$(cat'"; fail=$((fail + 1)); else echo "PASS: codex-adversary driver route has no '\$(cat'"; pass=$((pass + 1)); fi
+if grep -q -- 'crew-adversary-review --cwd <worktree> --focus-file <path> --background' "$ADV_AGENT"; then echo "PASS: codex-adversary launch line carries --background"; pass=$((pass + 1)); else echo "FAIL: codex-adversary launch line lacks --background"; fail=$((fail + 1)); fi
+if grep -q 'crew-codex await <job-id>' "$ADV_AGENT"; then echo "PASS: codex-adversary recipe has an await step"; pass=$((pass + 1)); else echo "FAIL: codex-adversary recipe lacks an await step"; fail=$((fail + 1)); fi
+# The launch section (before the job-id/await steps) must not describe a
+# foreground Bash timeout; the await loop itself legitimately sets one.
+if sed -n '/Driver path command/,/Grab the/p' "$ADV_AGENT" | grep -q 'timeout: 600000'; then echo "FAIL: codex-adversary launch section still has foreground timeout wording"; fail=$((fail + 1)); else echo "PASS: codex-adversary launch section has no foreground timeout wording"; pass=$((pass + 1)); fi
+ADV_DRIVER_ROUTE="$(sed '/^2\. \*\*Pinned plain Codex CLI/,$d' "$ADV_AGENT")"
+for banned in '$(command -v' '>/dev/null' '2>&1'; do
+  if grep -qF -- "$banned" <<<"$ADV_DRIVER_ROUTE"; then echo "FAIL: codex-adversary driver route contains '$banned'"; fail=$((fail + 1)); else echo "PASS: codex-adversary driver route has no '$banned'"; pass=$((pass + 1)); fi
+done
+if grep -qF 'Run `command -v crew-codex` on its own' <<<"$ADV_DRIVER_ROUTE"; then echo "PASS: codex-adversary driver route has a plain command -v step"; pass=$((pass + 1)); else echo "FAIL: codex-adversary driver route lacks a plain command -v step"; fail=$((fail + 1)); fi
+if grep -F 'crew-codex reap --dry-run' <<<"$ADV_DRIVER_ROUTE" | grep -vqE 'reap --dry-run[^`]*(>|2>|\||&&|;)' && ! grep -qE 'reap --dry-run *(>|2>|\||&&|;)' <<<"$ADV_DRIVER_ROUTE"; then echo "PASS: codex-adversary reap probe is a plain call"; pass=$((pass + 1)); else echo "FAIL: codex-adversary reap probe has a redirect, pipe or chain"; fail=$((fail + 1)); fi
+if ! grep -q 'readlink' <<<"$ADV_DRIVER_ROUTE"; then echo "PASS: codex-adversary probe does not follow symlinks"; pass=$((pass + 1)); else echo "FAIL: codex-adversary probe follows symlinks (readlink)"; fail=$((fail + 1)); fi
+for banned in 'rm -rf' 'CLAUDE_JOB_DIR'; do
+  if grep -qF -- "$banned" "$ADV_AGENT"; then echo "FAIL: codex-adversary recipe contains '$banned'"; fail=$((fail + 1)); else echo "PASS: codex-adversary recipe has no '$banned'"; pass=$((pass + 1)); fi
+done
+if grep -qF 'mktemp -d' "$ADV_AGENT"; then echo "PASS: codex-adversary recipe uses mktemp -d"; pass=$((pass + 1)); else echo "FAIL: codex-adversary recipe lacks mktemp -d"; fail=$((fail + 1)); fi
+if grep -qF 'rm "$D/focus.txt"' "$ADV_AGENT" && grep -qF 'rmdir "$D"' "$ADV_AGENT"; then echo "PASS: codex-adversary fallback deletes only focus.txt then rmdir"; pass=$((pass + 1)); else echo "FAIL: codex-adversary fallback cleanup is not focus.txt + rmdir"; fail=$((fail + 1)); fi
+for banned in 'focus-dir' 'mkdir -p -m 700' '--base main ' 'crew_focus' 'marker' '--focus-file <dir>'; do
+  if grep -qF -- "$banned" "$ADV_AGENT"; then echo "FAIL: codex-adversary recipe still contains '$banned'"; fail=$((fail + 1)); else echo "PASS: codex-adversary recipe has no '$banned'"; pass=$((pass + 1)); fi
+done
+
 echo
 echo "$pass passed, $fail failed, $skipped skipped"
 [[ "$fail" -eq 0 ]]

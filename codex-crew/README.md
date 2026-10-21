@@ -534,6 +534,32 @@ are announced on stderr, never silent. Any other failure passes through
 untouched on the first attempt, and there is no automatic tier fallback —
 substituting a cheaper model is an orchestrator decision, made in the open.
 
+## `crew-adversary-review`
+
+`bin/crew-adversary-review` (on PATH beside `crew-codex`) launches an
+adversarial review whose focus text is read from a file, as ONE plain command
+that an auto-mode allow rule `Bash(crew-adversary-review:*)` can match:
+
+```
+crew-adversary-review --cwd <dir> --focus-file <path> [--base <ref>] [--model <m>] [--effort <e>] [--background]
+```
+
+Defaults: `--base origin/main`, `--model gpt-6-astra`, `--effort medium`. It
+accepts only those long options as separate `--opt value` pairs (anything else
+exits 2), checks `<dir>` is a git work tree and the file is a non-empty regular
+file of at most 64 KiB, runs `git fetch origin` (failure exits 1), then execs the
+sibling `crew-codex adversarial-review ... --wait -- "<text>"` (`--background`
+instead of `--wait` when `--background` is given: the job detaches, prints a job
+id, and is supervised with `crew-codex await <job-id>`). The text is one argv
+element after a `--` sentinel, which crew-codex's option parsers and the review
+driver treat as literal focus text. The script only reads the file; it never
+writes, moves or deletes any file, and its only mutation is `git fetch origin`
+in `<dir>`. The text is on argv before the job detaches, so the file is not
+needed after the launch returns. Note: in foreground (`--wait`) mode, crew-codex's
+launch-lock and broker-teardown heuristic matches a bare `--background` token
+anywhere in argv, `--` or not, so it can misfire if the focus text contains that
+token; that is why the recipe always uses `--background`.
+
 ## Tests
 
 ```bash
