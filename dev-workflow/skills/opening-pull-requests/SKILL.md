@@ -74,9 +74,10 @@ full chain now. When torn between Routine and Full, run Full.
 
 ### 6. Review chain for that tier
 
-Per the same table. On the **full chain**, `codex-adversary` is mandatory — omitting it
-is a blocking error. A finding from the verifier or adversary cannot be dismissed without written
-evidence.
+Per the same table. **Routine** is a single `code-review` pass. On the **full chain**,
+`codex-adversary` is mandatory — omitting it is a blocking error. If a `code-review` report
+already exists for the diff, hand it to the verifier and the adversary as input. A finding from the
+verifier or adversary cannot be dismissed without written evidence.
 
 ### 7. Ticket references
 
