@@ -8,8 +8,8 @@ Never call wayfinder by default.
 Load `sdlc-process:wayfinder` (through the entry, see [chain-sdlc-process.md](chain-sdlc-process.md))
 to chart the map; publication is an outward action under SKILL.md step 5's per-action rule. Before
 stopping, write the requirements doc (Status `Draft`) with the Chain artifacts field
-`Wayfinding: active <map URL>`, then **STOP** the run. Wayfinder resolves one decision ticket per
-session; later runs resume it through the map row of SKILL.md step 1's stage table.
+`Wayfinding: active <map URL>`, then **STOP** the run. While a map is active, never return to grilling or chart a second map. Wayfinder resolves one decision ticket per
+session; later runs resume it through SKILL.md step 1's resume status, which suggests resolving the next map decision.
 
 ## Complete
 

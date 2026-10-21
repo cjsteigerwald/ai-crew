@@ -7,7 +7,7 @@ description: >
   session), writes docs/specs/<KEY>-requirements.md, then runs to-spec, to-tickets
   and implementation (sdlc-process:implement for one ticket, dev-workflow:implement-spec for two
   or more), reviews by tier, verifies each AC and opens a draft PR. Resumes
-  from the first incomplete stage. Use when
+  via a status block and one question. Use when
   starting or resuming work on an existing ticket — "start work on PROJ-571", "pick
   up issue #12", "bring in this ticket", "work on owner/repo#N", "continue PROJ-571",
   a pasted Jira or GitHub issue URL, or "is this ticket ready". Skip when creating a
@@ -94,7 +94,7 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
     description, AC, comments since the `Fetched:` date, links, and status.
   - Reopen every checklist row the changes touch, and any approval that depended on those rows
     (requirements OK, spec, tickets). Resume from the earliest reopened step, or from the stage
-    step 1's **Detect the stage** names if nothing changed. Under `Wayfinding: active`, reopened rows
+    step 1's **Resume status** suggests if nothing changed. Under `Wayfinding: active`, reopened rows
     go to wayfinder as new fog or decision tickets, not to grilling. Update `Fetched:`.
   - If freshness can't be verified (the fetch fails), say so and block downstream stages until
     the user explicitly skips the check — the skip rules above apply.
@@ -154,28 +154,21 @@ meaning the moment it leaves this repo.
 If `docs/specs/<KEY>-requirements.md` already exists, this is a resume: fetch anyway, then diff
 against the doc's snapshot (see **Controls**) before resuming.
 
-**Detect the stage** from commit-bound records, never from conversation. Every stage record in the
-doc's **Chain artifacts** carries the commit SHA it was made at (each ticket `integrated @<sha>`,
-`code-review @<sha>`, `full-tier diff pass @<sha>`, `verify @<sha>`, the PR head when opened);
-plan-side records carry the spec and ticket revisions they assessed (`plan pass @<spec+tickets
-updatedAt>`). A record is CURRENT only if its SHA is an ancestor of HEAD, nothing it covers
-changed since (`git diff <sha>..HEAD` touches none of its scope), and, for an integrated ticket,
-its commit is not reverted (`git log <sha>..HEAD`). Resume at the **earliest stage** below whose
-record is missing or not current, even when a PR exists: an existing PR is kept and reused for
-Ship and Close-out, never treated as proof. Close-out needs Implement, the reviews and Verify
-all current at the PR head.
-
-| Stage | Record needed, else resume at |
-|---|---|
-| 1. Map | No `Wayfinding: active <map URL>`. If active: load `sdlc-process:wayfinder` with that map URL for its next decision, then stop; never return to grilling or chart a second map. If `Wayfinding: hold`: ask step 3's hold question first |
-| 2. Requirements | Doc exists with Status `Ready` (none: step 2; `Draft`: step 3) |
-| 3. Spec | Spec issue published: step 6, `to-spec` |
-| 4. Tickets | Tickets published: step 6, `to-tickets` |
-| 5. Plan pass | Full tier: `plan pass @<revisions>` current for the published spec and tickets |
-| 6. Implement | Every ticket `integrated @<sha>` current: step 6 Implement for the rest |
-| 7. Review | `code-review @<sha>` current; Full tier also `full-tier diff pass @<sha>` |
-| 8. Verify | `verify @<sha>` current: step 7 |
-| 9. Ship, Close-out | PR head recorded and reused if a PR exists: step 8, then step 9 |
+**Resume status.** Each stage writes a record with its commit SHA to the doc's Chain artifacts
+(ticket `integrated @<sha>`, `plan pass @<revisions>`, `code-review @<sha>`, `full-tier diff pass
+@<sha>`, `verify @<sha>`, the PR head); a deliberate skip is `skipped (user)` or `n.a. (Exempt)`,
+never a missing record. On resume (the doc exists, or "continue <KEY>"), show ONE compact status
+block from those records plus live git and tracker reads: branch @ HEAD short SHA; Requirements
+status and Wayfinding state; spec issue; each ticket and whether it is integrated; each review
+record with its SHA and "N commits behind HEAD"; Verify; draft PR (number, head SHA). A record
+whose SHA is not an ancestor of HEAD is marked "not on branch" (the only automatic check). Then
+**Suggested next:** the first stage in the normal order with no record (skipped and n.a. count as
+recorded), and ONE `AskUserQuestion`: the suggestion first (Recommended), the user's choice of
+stage as the alternative. Two priorities are automatic: `Wayfinding: active` suggests "resolve the
+next map decision" ([wayfinder.md](wayfinder.md)); `Wayfinding: hold` asks the hold question first.
+Resume only chooses where to continue; it never marks a gate passed. Close-out needs Verify and
+the tier's reviews to have run on the PR's current head; if the status shows otherwise, say so
+and suggest the earlier stage.
 
 **Jira** — Atlassian MCP `getJiraIssue`. Collect: summary, description, any acceptance-criteria
 field, comments, status, sprint, story points, parent/epic, issue links, remote links.
@@ -272,8 +265,8 @@ If the user asked only "is this ticket ready?", stop at the step-2 table and the
   made (paths), and the wayfinder map URL if step 3 escalated.
 - Every AC gets a stable number (`AC-1`, `AC-2`, …) — downstream plans and PRs cite them.
 - Record source links and the fetched date: the doc is a snapshot, and the ticket will drift.
-- No secrets, tokens, or credential values — names, IDs, and status codes only.
-- Don't commit unless the user or the repo's workflow says to.
+- No secrets, tokens, or credential values — names, IDs, and status codes only. Don't commit unless
+  the user or the repo's workflow says to.
 - Show the user the path and a short summary; get an explicit OK before step 5.
 
 ## 5. Writeback offer — confirm each action
@@ -353,9 +346,11 @@ Exempt runs none. **Full** adds two passes, each one message dispatching
 `dev-workflow:fresh-verifier` + `dev-workflow:codex-adversary`: the plan pass on the published
 spec and tickets (between to-tickets and Implement), and the diff pass at the end of Implement,
 after code-review and before Verify, with the code-review report as input (independence and
-refutation). Record each as a commit-bound record. The PR gate accepts a current `full-tier diff
-pass @<sha>`. Verify fixes that change code go through a bounded `sdlc-process:code-review` of the
-fix diff; repeat the Full pass only when `dev-workflow:review-policy`'s re-pass rules require it.
+refutation). Record each with its SHA. The PR gate accepts a `full-tier diff pass` recorded at the
+PR's current head. A Verify fix that changes code re-runs, at the same position, a bounded
+`sdlc-process:code-review` of the fix diff and then the Full-tier diff pass, before Verify re-runs;
+each re-pass declares its trigger under review-policy's cap. If the cap is exhausted, stop and ask
+the user how to proceed.
 
 A lint/test failure inside `opening-pull-requests` is a step-7 failure. If gate 2's rebase or a
 review fix changes the tree, step 7 re-runs on the commit Ship pushes. The PR body carries the
@@ -366,7 +361,8 @@ not delivered.
 
 ## 9. Close-out
 
-Runs after Ship, and only with Implement, the reviews and Verify all current at the PR head.
+Runs after Ship. It needs Verify and the tier's reviews to have run on the PR's current head;
+otherwise say so and suggest the earlier stage.
 
 1. Show the Run log, the evidence table, and any blockers.
 2. Walk each person-only AC with the user and record the result in the doc's evidence table.
@@ -380,15 +376,11 @@ Runs after Ship, and only with Implement, the reviews and Verify all current at 
 
 ## Gotchas
 
-- **Why this exists:** tickets reach implementation with untestable AC, and the ambiguity is then
-  resolved silently in code where nobody reviews the decision. The gate moves it into the open.
 - **Jira descriptions and rich-text fields may come back as ADF JSON**, not text. Read the text
   nodes; never paste raw ADF into the requirements doc or a gap reason.
 - **AC may live outside the description** — a dedicated field, an app-owned checklist, or a comment.
   An empty "Acceptance Criteria" heading in the description is not proof there are none.
-- **Jira status and GitHub issue state are different facts.** A Jira "Done" doesn't close the GitHub
-  issue, and a closed GitHub issue doesn't mean the Jira ticket is done.
-- **Closed ≠ done.** An issue closed by a merge, or by hand, may still have unmet exit criteria —
-  check the AC against evidence, not the state badge.
+- **Jira status and GitHub issue state are different facts, and closed ≠ done.** Check the AC
+  against evidence, not the state badge.
 - **A bare `#N` is ambiguous** — GitHub numbers issues and PRs in one space, and the repo is inferred.
   Resolve it once, then write `owner/repo#N`.

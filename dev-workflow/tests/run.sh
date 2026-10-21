@@ -390,7 +390,7 @@ GUARD_EOF
   grep -qF '**Fallback**' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: step 3 missing the one-question-per-message fallback"
   grep -qF 'sdlc-process:wayfinder' "$INTAKE_DIR/wayfinder.md" || ifail "intaking-work-items/SKILL.md: missing the wayfinder escalation"
   grep -qF 'Never call it by default' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: wayfinder escalation not limited to the signals"
-  grep -qF '**Detect the stage**' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: step 1 missing stage detection"
+  grep -qF '**Resume status.**' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: step 1 missing stage detection"
   grep -qF '**Review = tier.**' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the review-tier rule"
   grep -qF 'dev-workflow:implement-spec' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the implement-spec route"
   grep -qF 'never ask the user to type either' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the load-tdd-and-code-review-via-Skill rule"
@@ -408,24 +408,30 @@ GUARD_EOF
     io_a="$(ipos "$1" "$3")"; io_b="$(ipos "$1" "$4")"; io_c="${io_b}"; [ -z "${5:-}" ] || io_c="$(ipos "$1" "$5")"
     { [ -n "$io_a" ] && [ -n "$io_b" ] && [ -n "$io_c" ] && [ "$io_a" -lt "$io_b" ] && [ "$io_b" -le "$io_c" ] && { [ -z "${5:-}" ] || [ "$io_b" -lt "$io_c" ]; }; } || ifail "$2: '$3', '$4'${5:+, '$5'} not found in that order"
   }
-  grep -qF 'CURRENT only if' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the commit-bound CURRENT-only-if rule"
-  grep -qF '**earliest stage**' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: resume is not at the earliest non-current stage"
-  grep -qF 'never treated as proof' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: an existing PR must not count as proof"
-  iordered "$INTAKE_SKILL" "intaking-work-items/SKILL.md stage table" '| 4. Tickets' '| 5. Plan pass' '| 6. Implement'
-  iordered "$INTAKE_SKILL" "intaking-work-items/SKILL.md stage table" '| 6. Implement' '| 7. Review | `code-review @<sha>`' '| 8. Verify'
-  iordered "$INTAKE_SKILL" "intaking-work-items/SKILL.md stage table (map before requirements)" '| 1. Map | No `Wayfinding: active' '| 2. Requirements' '| 3. Spec'
-  iordered "$INTAKE_SKILL" "intaking-work-items/SKILL.md Review = tier" 'after code-review and before Verify' 'The PR gate accepts a current'
-  iordered "$INTAKE_DIR/chain-sdlc-process.md" "intaking-work-items/chain-sdlc-process.md stage 5 records" '`code-review @<sha>`' 'full-tier diff pass @<sha>`: the end of stage 5'
+  grep -qF '**Suggested next:**' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: resume status missing 'Suggested next'"
+  grep -qF 'ONE `AskUserQuestion`' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: resume must ask a single AskUserQuestion"
+  grep -qF 'skipped (user)' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: a deliberate skip must be recorded as 'skipped (user)'"
+  grep -qF 'n.a. (Exempt)' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: Exempt review must be recorded as 'n.a. (Exempt)'"
+  grep -qF 'skipped (user)' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: Chain artifacts missing the skipped (user) value"
+  grep -qF '`Wayfinding: active` suggests' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the active-map priority"
+  grep -qF '`Wayfinding: hold` asks the hold question first' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the hold priority"
+  grep -qF 'never marks a gate passed' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: resume must never mark a gate passed"
+  grep -qF 'not on branch' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the not-on-branch check"
+  for gone in 'CURRENT only if' 'earliest stage' 'never treated as proof' 're-pass rules'; do
+    grep -qF "$gone" "$INTAKE_SKILL" && ifail "intaking-work-items/SKILL.md: removed text '$gone' is back"
+  done
+  iordered "$INTAKE_SKILL" "intaking-work-items/SKILL.md Review = tier (plan pass, then diff pass)" '(between to-tickets and Implement)' 'after code-review and before Verify' 'PR gate accepts'
+  iordered "$INTAKE_DIR/chain-sdlc-process.md" "intaking-work-items/chain-sdlc-process.md stage 5 records" '`code-review @<sha>`' 'full-tier diff pass @<sha>`: the end of stage 5' 'before Verify'
   grep -qF 'Wayfinding: hold' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the Wayfinding: hold route"
   grep -qF 'do not loop on wayfinder' "$INTAKE_DIR/wayfinder.md" || ifail "intaking-work-items/SKILL.md: hold must not loop on wayfinder"
   grep -qF 'hold — <what' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: Chain artifacts missing the Wayfinding: hold state"
   grep -qF 'not to grilling' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: reopened rows under an active map must go to wayfinder, not grilling"
-  grep -qF 'full-tier diff pass @<sha>' "$ROOT/skills/opening-pull-requests/SKILL.md" || ifail "opening-pull-requests/SKILL.md: PR gate does not accept the commit-bound Full pass"
+  grep -qF '`full-tier diff pass` record at the PR'"'"'s current head' "$ROOT/skills/opening-pull-requests/SKILL.md" || ifail "opening-pull-requests/SKILL.md: PR gate does not accept the commit-bound Full pass"
   # Entry-then-orchestrator by POSITION inside the Entry section: swapping the two names fails.
   ent_a="$(awk '/^## Entry/{f=1} f&&/sdlc-process:sdlc-process/{print NR; exit}' "$INTAKE_DIR/chain-sdlc-process.md")"
   ent_b="$(awk '/^## Entry/{f=1} f&&/sdlc-process:orchestrator/{print NR; exit}' "$INTAKE_DIR/chain-sdlc-process.md")"
   { [ -n "$ent_a" ] && [ -n "$ent_b" ] && [ "$ent_a" -lt "$ent_b" ]; } || ifail "intaking-work-items/chain-sdlc-process.md: Entry must load sdlc-process:sdlc-process before sdlc-process:orchestrator"
-  grep -qF 'never return to grilling or chart a second map' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the active-map priority rule"
+  grep -qF 'never return to grilling or chart a second map' "$INTAKE_DIR/wayfinder.md" || ifail "intaking-work-items/SKILL.md: missing the active-map priority rule"
   grep -qF 'shows no remaining in-scope' "$INTAKE_DIR/wayfinder.md" || ifail "intaking-work-items/SKILL.md: missing the map-completion fog predicate"
   grep -qF "every decision ticket's resolution has been read" "$INTAKE_DIR/wayfinder.md" || ifail "intaking-work-items/SKILL.md: missing the map-completion resolution predicate"
   grep -qF 'still pending' "$INTAKE_DIR/wayfinder.md" || ifail "intaking-work-items/SKILL.md: missing the map-completion pending-tickets predicate"
