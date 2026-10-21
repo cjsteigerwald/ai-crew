@@ -342,8 +342,12 @@ crew-codex review|adversarial-review|task --focus-file <path>
                                                      <path>; exit 2, no dispatch,
                                                      when missing, empty, given
                                                      twice, combined with
-                                                     positional text, or a value
-                                                     flag is left valueless
+                                                     positional text or a prompt
+                                                     file, or a value flag is
+                                                     left valueless
+crew-codex focus-dir                                 private marked dir for one
+                                                     --focus-file handoff; path
+                                                     on stdout
 ```
 
 Scope differs by spelling, deliberately. `--help` is intercepted at any
@@ -365,13 +369,24 @@ is never parsed as flags. "Positional text" is judged with the option table of
 the parser that actually receives that subcommand — the companion's review and
 task tables, and `lib/review-with-effort.mjs` for `adversarial-review` — so a flag
 valid on another subcommand (`--prompt-file` or `--write` on adversarial-review,
-`--wait` on task) counts as positional and is refused. **Deletion rule:** the file
-is deleted (also on a refusal or `--help` exit; never its directory) only when it
-is a disposable handoff — a regular file, not a symlink, that you own, in a
-directory you own with mode `0700` sitting directly under the temp dir (physical
-`${TMPDIR:-/tmp}`, `/tmp` or `/private/tmp`). Any other file is read but left in
-place, with a one-line stderr note, so `--focus-file ~/notes.md` can never
-destroy your notes.
+`--wait` on task) counts as positional and is refused, and a prompt file in any
+spelling the companion accepts (`--prompt-file x`, `--prompt-file=x`,
+`-prompt-file x`) cannot be combined with `--focus-file`. Only the real `--`
+sentinel is replaced; a `--` taken as an option's value (`--model --`) stays.
+
+**Deletion rule — `crew-codex focus-dir`.** `crew-codex focus-dir` creates a fresh
+directory (`mktemp -d` under `${TMPDIR:-/tmp}`, unpredictable name, mode `0700`)
+holding a marker file, and prints its physical path. A focus file is deleted only
+when it is a regular file you own (not a symlink) directly inside such a
+directory — resolved physically, owned by you, mode exactly `0700`, marker
+present. Deletion happens just before dispatch (before the turn starts or
+`--background` detaches; the text is already in argv, so the job never re-reads
+the file), and the directory goes with it once only the marker is left. A
+refusal or `--help` exit deletes nothing. Any other file — in `/tmp` or
+`$TMPDIR` too, whatever `TMPDIR` is set to — is read but left in place, with a
+one-line stderr note, so `--focus-file ~/notes.md` can never destroy your notes.
+Under auto mode give `focus-dir` its own prefix allow rule, e.g.
+`Bash(crew-codex focus-dir:*)`, beside the `adversarial-review` / `task` ones.
 
 **Per-dispatch reasoning effort on adversarial reviews.** codex-companion
 cannot set reasoning effort on any review: its review parser knows only

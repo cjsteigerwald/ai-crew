@@ -82,6 +82,12 @@ Subcommands crew-codex handles itself:
                                 everything, 2 usage error, 3 the sweep was
                                 INCOMPLETE (entries blocked, unresolved or
                                 skipped — read the lines, do not treat as clean)
+  focus-dir                     create a private (0700, unpredictable) directory
+                                marked as a crew-codex focus dir and print its
+                                path. A --focus-file directly inside it is
+                                deleted once read, just before dispatch; any
+                                other --focus-file is read and kept. One plain
+                                command, so auto-mode allow rules can match it.
   --help | -h | help            this text
 
 Everything else (task, review, adversarial-review, status, result, cancel,
@@ -141,13 +147,13 @@ whitespace-only, given twice, or combined with positional focus text (any token
 this subcommand's parser would not read as one of its flags or a flag's value),
 or when a value-taking flag is left without its value.
 
-Deleted only when it is a disposable handoff: a regular file (not a symlink)
-you own, in a directory you own with mode 0700 (no group/other bits) that sits
-DIRECTLY under the temp dir — physical \${TMPDIR:-/tmp}, /tmp or /private/tmp,
-symlinks resolved. e.g. mkdir -p -m 700 /tmp/crew-focus-<unique>. Such a file is
-deleted before the turn starts or --background detaches, and on every refusal
-or --help exit too; its directory is left (remove it yourself). Any other file
-is read but LEFT IN PLACE, with a one-line note on stderr.
+Deleted only when it sits DIRECTLY in a directory made by
+'crew-codex focus-dir' (yours, mode 0700, marker present; the file a regular
+file you own, not a symlink): 'crew-codex focus-dir' prints one. Such a file
+is deleted just before the turn starts or --background detaches — never on a
+refusal or --help exit — and the directory with it once only the marker is
+left. Any other file, in /tmp or \$TMPDIR included, is read but LEFT IN PLACE,
+with a one-line note on stderr.
 
 EFFORT IS THE CALLER'S. The turn runs at exactly the --effort you pass; WITHOUT
 --effort it runs at medium, sent explicitly — never at model_reasoning_effort
@@ -163,9 +169,9 @@ stderr and in the job record. Informational only: it changes nothing.
 USAGE
   else
     cat <<USAGE
-  --focus-file <path>           read the focus text from <path>; deleted once
-                                read only if it sits in a private 0700 dir
-                                directly under the temp dir, else left in
+  --focus-file <path>           read the focus text from <path>; deleted just
+                                before dispatch only if it sits directly in a
+                                dir made by 'crew-codex focus-dir', else left in
                                 place; refused if empty, missing or combined
                                 with positional focus text
   [focus text]                  every remaining word becomes the review focus
@@ -194,12 +200,14 @@ Flags codex-companion parses on the task path:
   --cwd <path>                  workspace root
   --prompt-file <path>          read the prompt from a file
   --focus-file <path>           crew-codex flag: read the prompt from <path>;
-                                DELETED once read (before the job starts or
-                                detaches) only if it sits in a private 0700 dir
-                                you own directly under the temp dir, else left
-                                in place with a note. Refused if missing, empty
-                                or combined with positional text or
-                                --prompt-file. Keeps the launch one plain
+                                DELETED just before the job starts or detaches
+                                (never on a refusal or --help) only if it sits
+                                directly in a dir made by 'crew-codex
+                                focus-dir', else left in place with a note.
+                                Refused if missing, empty or combined with
+                                positional text or a prompt file in any
+                                spelling (--prompt-file, --prompt-file=,
+                                -prompt-file). Keeps the launch one plain
                                 command for auto-mode allow rules.
   [prompt]                      every remaining word becomes the prompt
 
@@ -224,84 +232,149 @@ fi
 # here instead: refuse an empty/missing mandate, never put focus text through a
 # shell, and leave no handoff file behind.
 #
-# Three steps, in this order, for review|adversarial-review|task:
-#   1. crew_focus_parse  — BEFORE the help scans. Classifies argv with the SAME
+# Four steps, in this order, for review|adversarial-review|task:
+#   1. crew_focus_parse   — BEFORE the help scans. Classifies argv with the SAME
 #      option table the downstream parser for this subcommand uses, records every
-#      --focus-file operand, and arms an EXIT trap, so every later exit (help,
-#      duplicate flag, any refusal) still disposes of the handoff file(s).
-#   2. help scans (exit 0 — the trap disposes).
-#   3. crew_focus_apply  — refuses or reads, disposes explicitly, and rewrites
-#      "$@": the flag and its value are dropped and the file's text is appended
-#      after a `--` sentinel, so it is a single positional the vendor parser and
-#      the driver never interpret as flags.
+#      --focus-file operand, the position of the REAL `--` sentinel (one in option
+#      position, not one consumed as an option's value) and whether a prompt-file
+#      option was given in any spelling that parser accepts. Never exits, never
+#      deletes.
+#   2. help scans (exit 0 — nothing has been read, nothing is deleted).
+#   3. crew_focus_apply   — refuses or reads, and rewrites "$@": the flag and its
+#      value are dropped, the real sentinel is dropped, and the file's text is
+#      appended after a fresh `--`, so it is a single positional the vendor parser
+#      and the driver never interpret as flags. Never deletes.
+#   4. crew_focus_release — just before dispatch, after every refusal exit, so a
+#      help, refusal or validation exit never deletes anything. The text already
+#      sits in "$@" by then: a --background job is handed the text, never the
+#      path, so the deletion cannot race a read.
 #
-# DELETION RULE (crew_focus_disposable). A focus file is deleted only when it is a
-# disposable handoff: a regular file, NOT a symlink, owned by the current user,
-# whose parent directory — resolved physically (`cd -P`) — is owned by the current
-# user, has no group/other permission bits (mode 0700 or stricter) and is a DIRECT
-# child of a system temp root: physical "${TMPDIR:-/tmp}", /tmp or /private/tmp.
-# `mkdir -p -m 700 /tmp/crew-focus-<unique>` and `mktemp -d` both qualify (on
-# macOS /tmp -> /private/tmp and $TMPDIR is /var/folders/...; both resolve). Any
-# other file is READ but left in place, with a one-line note on stderr. A symlink
-# is never deleted and neither is its target; only the FILE is ever deleted,
-# never its directory.
+# DELETION RULE (crew_focus_disposable). A focus file is deleted only when its
+# directory was made by `crew-codex focus-dir`: the file's parent, resolved
+# physically (`cd -P`), is a real directory (not a symlink) owned by the current
+# user with mode exactly 0700 that holds the marker file — a regular file, not a
+# symlink, owned by the current user, whose first line is the marker text — and
+# the focus file is a regular file (not a symlink, not the marker) owned by the
+# current user DIRECTLY inside it. Where the directory sits does not matter, and
+# TMPDIR plays no part: it is the caller's to set, so
+# `TMPDIR=$HOME crew-codex ... --focus-file ~/.ssh/config` must not make the
+# user's own private directory look disposable. Everything else — /tmp, $TMPDIR,
+# a symlink, a dir without the marker — is READ but left in place, with a
+# one-line note on stderr. Once only the marker is left, the directory goes too.
 CREW_FOCUS_PATHS=()
 CREW_FOCUS_SEEN=0 CREW_FOCUS_ERR="" CREW_FOCUS_POSITIONALS=0 CREW_FOCUS_PENDING_OPT=""
+CREW_FOCUS_SENTINEL_IDX=-1 CREW_FOCUS_PROMPT_FILE=0 CREW_FOCUS_APPLIED=0
 CREW_FOCUS_REST=()
 FOCUS_REWRITTEN=()
+CREW_FOCUS_MARKER=".crew-codex-focus-dir"
+CREW_FOCUS_MARKER_TEXT="crew-codex focus-dir v1"
+
+focus_dir_usage() {
+  cat <<'USAGE'
+crew-codex focus-dir
+
+Create a fresh private directory for ONE --focus-file handoff and print its
+path on stdout. The directory is made by mktemp under ${TMPDIR:-/tmp} (name not
+predictable), has mode 0700 and holds a marker file naming it a crew-codex focus
+dir; the printed path is physical (symlinks resolved). Write the focus text into
+a file directly inside it, then launch with --focus-file <dir>/<file>.
+
+A focus file is deleted after it is read ONLY when it sits directly in such a
+directory: owned by you, mode 0700, marker present, the file a regular file you
+own (not a symlink). Deletion happens just before dispatch — never on --help, a
+refusal or any other exit that dispatches nothing — and the directory goes too
+once only the marker is left. Any other file, /tmp and $TMPDIR included, is read
+and kept.
+USAGE
+}
 
 # owner uid and permission bits ("501 700") of $1, GNU stat first, then BSD.
 crew_focus_stat() {
   stat -c '%u %a' -- "$1" 2>/dev/null || stat -f '%u %Lp' -- "$1" 2>/dev/null
 }
 
+# Exit 0 when $1 (a PHYSICAL path) is a focus dir made by crew_focus_dir_create:
+# a real dir of ours, mode exactly 0700, holding our regular, non-symlink marker.
+crew_focus_markerdir() {
+  local d="$1" me st m line=""
+  [[ -d "$d" && ! -L "$d" ]] || return 1
+  me="$(id -u)"
+  st="$(crew_focus_stat "$d")" || return 1
+  [[ "$st" == "$me 700" ]] || return 1
+  m="$d/$CREW_FOCUS_MARKER"
+  [[ -f "$m" && ! -L "$m" ]] || return 1
+  st="$(crew_focus_stat "$m")" || return 1
+  [[ "${st%% *}" == "$me" ]] || return 1
+  IFS= read -r line <"$m" 2>/dev/null || true
+  [[ "$line" == "$CREW_FOCUS_MARKER_TEXT" ]]
+}
+
+# `crew-codex focus-dir`: mktemp -d (unpredictable name, created 0700), chmod 700
+# anyway, write the marker with a private umask, print the physical path.
+crew_focus_dir_create() {
+  local base="${TMPDIR:-/tmp}" d=""
+  base="${base%/}"
+  [[ -n "$base" ]] || base=/tmp
+  d="$(mktemp -d "$base/crew-focus.XXXXXXXXXX" 2>/dev/null)" \
+    || d="$(mktemp -d /tmp/crew-focus.XXXXXXXXXX 2>/dev/null)" \
+    || { echo "crew-codex: focus-dir: could not create a private directory." >&2; return 1; }
+  if ! chmod 700 "$d" 2>/dev/null \
+     || ! ( umask 077; printf '%s\n' "$CREW_FOCUS_MARKER_TEXT" >"$d/$CREW_FOCUS_MARKER" ) 2>/dev/null \
+     || ! d="$(CDPATH='' cd -P -- "$d" 2>/dev/null && pwd -P)" \
+     || ! crew_focus_markerdir "$d"; then
+    [[ -n "$d" && -d "$d" ]] && rm -rf -- "${d:?}" 2>/dev/null || true
+    echo "crew-codex: focus-dir: could not set up a private focus directory." >&2
+    return 1
+  fi
+  printf '%s\n' "$d"
+}
+
 # Exit 0 when $1 may be deleted under the DELETION RULE above, and set
-# CREW_FOCUS_PHYS to the path to delete: the file's name inside its PHYSICAL
-# parent. Deleting through that path, not the one given, means a symlinked
-# directory component swapped after this check cannot redirect the rm; the
-# physical parent is ours and 0700, so nobody else can change its entries.
-CREW_FOCUS_PHYS=""
+# CREW_FOCUS_PHYS to the path to delete — the file's name inside its PHYSICAL
+# parent — and CREW_FOCUS_PHYS_DIR to that parent. Deleting through the physical
+# path, not the one given, means a symlinked directory component swapped after
+# this check cannot redirect the rm; the physical parent is ours and 0700, so
+# nobody else can change its entries.
+CREW_FOCUS_PHYS="" CREW_FOCUS_PHYS_DIR=""
 crew_focus_disposable() {
-  local f="$1" pdir pphys gp root rphys me st ok=1
-  CREW_FOCUS_PHYS=""
+  local f="$1" name pphys me st
+  CREW_FOCUS_PHYS="" CREW_FOCUS_PHYS_DIR=""
+  [[ -L "$f" ]] && return 1
+  [[ -f "$f" ]] || return 1
+  name="$(basename -- "$f")"
+  [[ "$name" != "$CREW_FOCUS_MARKER" ]] || return 1
+  pphys="$(CDPATH='' cd -P -- "$(dirname -- "$f")" 2>/dev/null && pwd -P)" || return 1
+  f="$pphys/$name"
   [[ -L "$f" ]] && return 1
   [[ -f "$f" ]] || return 1
   me="$(id -u)"
-  pdir="$(dirname -- "$f")"
-  pphys="$(CDPATH='' cd -P -- "$pdir" 2>/dev/null && pwd -P)" || return 1
-  f="$pphys/$(basename -- "$f")"
-  [[ -L "$f" ]] && return 1
-  [[ -f "$f" ]] || return 1
   st="$(crew_focus_stat "$f")" || return 1
   [[ "${st%% *}" == "$me" ]] || return 1
-  gp="$(dirname -- "$pphys")"
-  for root in "${TMPDIR:-/tmp}" /tmp /private/tmp; do
-    rphys="$(CDPATH='' cd -P -- "$root" 2>/dev/null && pwd -P)" || continue
-    if [[ "$gp" == "$rphys" && "$pphys" != "$rphys" ]]; then ok=0; break; fi
-  done
-  [[ $ok -eq 0 ]] || return 1
-  st="$(crew_focus_stat "$pphys")" || return 1
-  [[ "${st%% *}" == "$me" ]] || return 1
-  # Permission bits as octal digits; the last two are group and other.
-  [[ "${st##* }" =~ 00$ ]] || return 1
-  CREW_FOCUS_PHYS="$f"
+  crew_focus_markerdir "$pphys" || return 1
+  CREW_FOCUS_PHYS="$f" CREW_FOCUS_PHYS_DIR="$pphys"
   return 0
 }
 
-# Dispose of every recorded focus file: delete the disposable ones, note the rest.
-# Idempotent (the list is emptied), so the EXIT trap and the explicit call after a
-# successful read never double-report. Returns 1 if a disposable file survived.
+# Dispose of every recorded focus file: delete the disposable ones (and their
+# directory once only the marker is left), note the rest. Idempotent (the list
+# is emptied). Returns 1 if a disposable file survived. Called once, just
+# before dispatch — never from a help or refusal path.
 crew_focus_release() {
   local f rc=0
   for f in ${CREW_FOCUS_PATHS[@]+"${CREW_FOCUS_PATHS[@]}"}; do
     if crew_focus_disposable "$f"; then
-      rm -f -- "$CREW_FOCUS_PHYS" 2>/dev/null || true
+      rm -f -- "${CREW_FOCUS_PHYS:?}" 2>/dev/null || true
       if [[ -e "$CREW_FOCUS_PHYS" || -L "$CREW_FOCUS_PHYS" ]]; then
         echo "crew-codex: could not delete focus file '$f'." >&2
         rc=1
+        continue
+      fi
+      if [[ "$(ls -A -- "$CREW_FOCUS_PHYS_DIR" 2>/dev/null)" == "$CREW_FOCUS_MARKER" ]]; then
+        rm -f -- "${CREW_FOCUS_PHYS_DIR:?}/${CREW_FOCUS_MARKER:?}" 2>/dev/null \
+          && rmdir -- "${CREW_FOCUS_PHYS_DIR:?}" 2>/dev/null || true
       fi
     elif [[ -e "$f" || -L "$f" ]]; then
-      echo "crew-codex: focus file '$f' left in place — only a regular file in a private (0700, yours) directory directly under the temp dir is deleted." >&2
+      echo "crew-codex: focus file '$f' left in place — only a file directly inside a directory made by 'crew-codex focus-dir' is deleted." >&2
     fi
   done
   CREW_FOCUS_PATHS=()
@@ -316,12 +389,16 @@ crew_focus_release() {
 #   review             codex-companion handleReviewCommand (+ lib/args.mjs)
 #   adversarial-review lib/review-with-effort.mjs parseArgv (crew-codex's driver)
 #   task               codex-companion handleTask
+# Both parsers take a value option as `--key <v>`, `--key=<v>` AND the single-dash
+# `-key <v>` (lib/args.mjs looks the short spelling up in the same tables), so
+# `-prompt-file x` IS a prompt file; `-key=<v>` is not (it is a positional).
 # Aliases: the companion's parseCommandInput adds C->cwd and both add m->model,
 # applied to the long AND the short spelling, as lib/args.mjs does.
 # `--effort` is listed for review although the companion does not parse it there:
 # the effort guard below refuses it with its own, specific message, which a
 # generic "positional text" refusal would otherwise pre-empt.
-# Never exits: refusals are deferred to crew_focus_apply, after the help scans.
+# Never exits and never deletes: refusals are deferred to crew_focus_apply, after
+# the help scans.
 crew_focus_parse() {
   local sub="$1" arg key raw vopts bopts sentinel=0 pending=0 vpending=""
   shift
@@ -334,7 +411,8 @@ crew_focus_parse() {
     *) return 0 ;;
   esac
   CREW_FOCUS_PATHS=() CREW_FOCUS_SEEN=0 CREW_FOCUS_ERR="" CREW_FOCUS_POSITIONALS=0
-  CREW_FOCUS_PENDING_OPT="" CREW_FOCUS_REST=("$sub")
+  CREW_FOCUS_PENDING_OPT="" CREW_FOCUS_SENTINEL_IDX=-1 CREW_FOCUS_PROMPT_FILE=0
+  CREW_FOCUS_REST=("$sub")
   for arg in "$@"; do
     if [[ $sentinel -eq 1 ]]; then
       CREW_FOCUS_POSITIONALS=$((CREW_FOCUS_POSITIONALS + 1)); CREW_FOCUS_REST+=("$arg"); continue
@@ -361,9 +439,12 @@ crew_focus_parse() {
     # A --focus-file token is ours even where an option value was expected, so
     # `--model --focus-file f` leaves --model valueless (refused) instead of
     # dispatching with model "--focus-file". Anything else fills the value — `--`
-    # included, exactly as the downstream parser takes it.
+    # included, exactly as the downstream parser takes it; such a `--` is a VALUE
+    # and stays in argv (crew_focus_apply drops only the real sentinel).
     if [[ -n "$vpending" ]]; then vpending=""; CREW_FOCUS_REST+=("$arg"); continue; fi
-    if [[ "$arg" == "--" ]]; then sentinel=1; CREW_FOCUS_REST+=("$arg"); continue; fi
+    if [[ "$arg" == "--" ]]; then
+      sentinel=1; CREW_FOCUS_SENTINEL_IDX=${#CREW_FOCUS_REST[@]}; CREW_FOCUS_REST+=("$arg"); continue
+    fi
     CREW_FOCUS_REST+=("$arg")
     if [[ "$arg" != -* || "$arg" == "-" ]]; then
       CREW_FOCUS_POSITIONALS=$((CREW_FOCUS_POSITIONALS + 1)); continue
@@ -373,6 +454,7 @@ crew_focus_parse() {
       case "$key" in m) key=model ;; C) key=cwd ;; esac
       if [[ "$bopts" == *" $key "* ]]; then continue; fi
       if [[ "$vopts" == *" $key "* ]]; then
+        [[ "$key" == prompt-file ]] && CREW_FOCUS_PROMPT_FILE=1
         [[ "$raw" == *=* ]] || vpending="$arg"
         continue
       fi
@@ -381,24 +463,22 @@ crew_focus_parse() {
       key="${arg#-}"
       case "$key" in m) key=model ;; C) key=cwd ;; esac
       if [[ "$bopts" == *" $key "* ]]; then continue; fi
-      if [[ "$vopts" == *" $key "* ]]; then vpending="$arg"; continue; fi
+      if [[ "$vopts" == *" $key "* ]]; then
+        [[ "$key" == prompt-file ]] && CREW_FOCUS_PROMPT_FILE=1
+        vpending="$arg"; continue
+      fi
     fi
     CREW_FOCUS_POSITIONALS=$((CREW_FOCUS_POSITIONALS + 1))
   done
   [[ $pending -eq 1 && -z "$CREW_FOCUS_ERR" ]] && CREW_FOCUS_ERR="nopath"
   CREW_FOCUS_PENDING_OPT="$vpending"
-  # Armed here, before any help scan, so `--focus-file f --help` and every
-  # refusal below still dispose of the handoff file. Replaced later by the one
-  # dispatch EXIT trap (crew_arm_cleanup), by which point the explicit release in
-  # crew_focus_apply has already run.
-  if [[ $CREW_FOCUS_SEEN -eq 1 ]]; then trap 'crew_focus_release || true' EXIT; fi
   return 0
 }
 
-# Refuse, or read + dispose + rewrite. Every `exit` here runs the EXIT trap armed
-# by crew_focus_parse, which disposes of the recorded files per the rule above.
+# Refuse, or read + rewrite. Deletes nothing: every exit here leaves the file
+# where it was, and crew_focus_release disposes of it just before dispatch.
 crew_focus_apply() {
-  local sub="$1" ff text="" rc=0 arg
+  local sub="$1" ff text="" rc=0 arg i
   [[ $CREW_FOCUS_SEEN -eq 1 ]] || return 0
   case "$CREW_FOCUS_ERR" in
     dup) echo "crew-codex: --focus-file given more than once." >&2; exit 2 ;;
@@ -417,12 +497,6 @@ crew_focus_apply() {
     exit 2
   fi
   text="$(cat -- "$ff" 2>/dev/null)" || rc=$?
-  # Dispose BEFORE judging what was read: an empty, conflicting or unreadable
-  # handoff must not linger either.
-  if ! crew_focus_release; then
-    echo "crew-codex: refusing to dispatch with a lingering mandate file." >&2
-    exit 2
-  fi
   if [[ $rc -ne 0 ]]; then
     echo "crew-codex: --focus-file '$ff' is unreadable — refusing to dispatch without a mandate." >&2
     exit 2
@@ -435,25 +509,54 @@ crew_focus_apply() {
     echo "crew-codex: --focus-file cannot be combined with positional focus text (found $CREW_FOCUS_POSITIONALS token(s) $sub does not parse as a flag or a flag's value). Use one or the other." >&2
     exit 2
   fi
-  if [[ "$sub" == "task" ]]; then
-    for arg in ${CREW_FOCUS_REST[@]+"${CREW_FOCUS_REST[@]}"}; do
-      [[ "$arg" == "--" ]] && break
-      case "$arg" in
-        --prompt-file|--prompt-file=*)
-          echo "crew-codex: --focus-file cannot be combined with --prompt-file." >&2
-          exit 2 ;;
-      esac
-    done
+  # Set by crew_focus_parse for every spelling the task parser reads as its
+  # prompt-file option (--prompt-file, --prompt-file=, -prompt-file); the
+  # companion prefers that file over positionals, so the mandate would be dropped.
+  if [[ $CREW_FOCUS_PROMPT_FILE -eq 1 ]]; then
+    echo "crew-codex: --focus-file cannot be combined with --prompt-file (in any spelling)." >&2
+    exit 2
   fi
-  # Drop an existing bare `--` (no positionals followed it, checked above) so the
-  # sentinel is not doubled.
+  # Drop ONLY the real sentinel (no positionals followed it, checked above) so it
+  # is not doubled. A `--` consumed as an option's value stays: removing it would
+  # shift the appended `--` into that value slot and expose the text as flags.
   FOCUS_REWRITTEN=()
+  i=0
   for arg in ${CREW_FOCUS_REST[@]+"${CREW_FOCUS_REST[@]}"}; do
-    [[ "$arg" == "--" ]] && continue
-    FOCUS_REWRITTEN+=("$arg")
+    [[ $i -ne $CREW_FOCUS_SENTINEL_IDX ]] && FOCUS_REWRITTEN+=("$arg")
+    i=$((i + 1))
   done
   FOCUS_REWRITTEN+=(-- "$text")
+  CREW_FOCUS_APPLIED=1
 }
+
+# Was --background requested? Once --focus-file has been applied the last
+# argument is the focus text — free prose that may well mention "--background" —
+# so only the arguments before it are looked at. Without --focus-file the
+# historical whole-argv match is kept unchanged.
+crew_bg_requested() {
+  local a i=0 n=$(($# - 1))
+  if [[ $CREW_FOCUS_APPLIED -eq 1 ]]; then
+    for a in "$@"; do
+      i=$((i + 1))
+      [[ $i -le $n ]] || break
+      [[ "$a" == "--background" ]] && return 0
+    done
+    return 1
+  fi
+  [[ " $* " == *" --background "* ]]
+}
+
+if [[ "$1" == "focus-dir" ]]; then
+  case "${2:-}" in
+    --help|-h|help) focus_dir_usage; exit 0 ;;
+  esac
+  if [[ $# -gt 1 ]]; then
+    echo "crew-codex: focus-dir takes no arguments (see crew-codex focus-dir --help)." >&2
+    exit 2
+  fi
+  crew_focus_dir_create || exit 1
+  exit 0
+fi
 
 # Set by the review guard below and read by the effort-routing block after the
 # companion is resolved. Declared here because `set -u` is on and the guard
@@ -478,7 +581,8 @@ if [[ "$1" == "review" || "$1" == "adversarial-review" ]]; then
   #             exit 0 WITHOUT dispatching — silently swallowing a real review
   #             and reporting success to the caller. Refusing to review is a
   #             worse failure than printing usage one position later.
-  # Record --focus-file operands and arm their disposal BEFORE any help exit.
+  # Record --focus-file operands BEFORE any help exit. Nothing is read or
+  # deleted on a help exit: disposal happens only just before dispatch.
   crew_focus_parse "$@"
   case "${2:-}" in
     -h|help) review_usage "$1"; exit 0 ;;
@@ -492,8 +596,9 @@ if [[ "$1" == "review" || "$1" == "adversarial-review" ]]; then
       --help) review_usage "$1"; exit 0 ;;
     esac
   done
-  # --focus-file: read, dispose of and fold into the positional focus text now,
-  # so every later exit (bad --effort, missing companion) has already consumed it.
+  # --focus-file: read and fold into the positional focus text now. The file is
+  # disposed of only just before dispatch (crew_focus_release), so a later
+  # refusal (bad --effort, missing companion) leaves it where it was.
   crew_focus_apply "$1"
   [[ ${#FOCUS_REWRITTEN[@]} -gt 0 ]] && { set -- "${FOCUS_REWRITTEN[@]}"; FOCUS_REWRITTEN=(); }
   # Collect --effort in BOTH spellings, last occurrence wins — the same rule
@@ -3767,7 +3872,7 @@ case "${1:-}" in
       # Only detached launches take the lock: they return in seconds. A
       # foreground launch holds for the whole job, which would serialise the
       # fleet, so it stays unlocked and can still race a redirect.
-      if [[ " $* " == *" --background "* ]]; then
+      if crew_bg_requested "$@"; then
         crew_lock_acquire
         CREW_HELD_LOCK=1
       fi
@@ -3793,6 +3898,15 @@ case "${1:-}" in
     done
     ;;
 esac
+
+# --focus-file disposal, at the last moment before dispatch: every refusal and
+# help exit above has left the handoff where it was. The text already sits in
+# "$@"/RUN_CMD, so neither the foreground turn nor a --background job ever reads
+# the file again — deleting it here cannot race a read.
+if ! crew_focus_release; then
+  echo "crew-codex: refusing to dispatch with a lingering mandate file." >&2
+  exit 2
+fi
 
 attempt=1
 while :; do
@@ -4027,7 +4141,7 @@ if [[ -n "$CREW_SPAWNED_PID" ]]; then
     # A foreground launch has already finished by the time it returns, so its
     # broker has nothing left to serve and goes now rather than at the next
     # sweep.
-    if [[ " $* " != *" --background "* ]]; then
+    if ! crew_bg_requested "$@"; then
       side="$(crew_sidecar "$launched_id")"
       if [[ -f "$side" ]]; then
         IFS=$'\t' read -r _fe fbpid fbdir _fcwd fbstart _frest <"$side" || true

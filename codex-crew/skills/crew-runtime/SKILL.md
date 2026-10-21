@@ -73,13 +73,15 @@ Primary helper — `crew-codex`, on PATH while the plugin is enabled:
   from a file and refuses with exit 2 (nothing dispatched) if the file is missing,
   empty or whitespace-only, given twice, combined with positional text (any token
   that subcommand's parser does not read as its own flag or a flag's value), or if
-  a value flag such as `--model` is left without its value. **Deletion rule:** the
-  file is deleted (before the turn starts or detaches, and also on a refusal or
-  `--help` exit; never its directory) only when it is a disposable handoff — a
-  regular file, not a symlink, that you own, in a directory you own with mode
-  `0700` sitting directly under the temp dir (physical `${TMPDIR:-/tmp}`, `/tmp` or
-  `/private/tmp`), e.g. `mkdir -p -m 700 /tmp/crew-focus-<unique>`. Any other file
-  is read but left in place, with a one-line note on stderr. Use it so
+  a value flag such as `--model` is left without its value, or with a prompt file
+  in any spelling. **Deletion rule:** create the handoff directory with
+  `crew-codex focus-dir` (prints a fresh `0700` marked directory) and write the file
+  directly inside it; that file — a regular file you own, not a symlink — is
+  deleted just before the turn starts or detaches, and the directory with it.
+  A refusal or `--help` exit deletes nothing. Any other file, in `/tmp` or
+  `$TMPDIR` too, is read but left in place, with a one-line note on stderr.
+  Under auto mode `crew-codex focus-dir` needs its own prefix allow rule, e.g.
+  `Bash(crew-codex focus-dir:*)`. Use it so
   the launch is one plain `crew-codex ...` command — no `$(cat ...)`, `rm` or
   variable — which a prefix allow rule matches under auto mode and which keeps
   focus text out of the shell.
@@ -99,6 +101,7 @@ Primary helper — `crew-codex`, on PATH while the plugin is enabled:
   It never silently falls back to the vendor path, because that would run the
   review at an effort you did not ask for while reporting success. Update
   codex-crew, or pin the codex plugin to a version the driver supports.
+- `crew-codex focus-dir` — create a private (`0700`, unpredictable) marked directory for one `--focus-file` handoff and print its path
 - **Effort is the caller's.** The turn runs at exactly the `--effort` given.
   With no `--effort` at all, `adversarial-review` still goes through the
   driver and runs at `medium`, sent explicitly — never at the codex config's
