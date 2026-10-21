@@ -172,7 +172,7 @@ echo "== review-policy skill =="
 # evidence rule; the hash catches wording changes the heading checks can't.
 # The frontmatter description is excluded on purpose — description tuning
 # shouldn't trip this.
-REVIEW_POLICY_SHA256="dc396434f418dc4f5ffcf9c7a0b165cec61905b51e9019bc726bed213dec35a8"
+REVIEW_POLICY_SHA256="d983678b5fe88485f0c0ed564f665bf29735feae71958474ac744f3924589fd4"
 
 # extract_skill_body <file> — prints everything after the frontmatter's
 # closing '---' line.
@@ -269,7 +269,7 @@ if [ -f "$INTAKE_SKILL" ]; then
   [ "$lines" -lt 500 ] || ifail "intaking-work-items/SKILL.md: $lines lines (keep under 500; push detail into supporting files)"
 
   # Supporting files exist and are linked one level deep from SKILL.md.
-  for support in checklist.md template.md chain-mattpocock.md chain-sdlc-process.md verify.md; do
+  for support in checklist.md template.md chain-sdlc-process.md verify.md wayfinder.md; do
     [ -f "$INTAKE_DIR/$support" ] || ifail "intaking-work-items/$support not found"
     grep -qF "]($support)" "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: does not link $support"
   done
@@ -307,8 +307,6 @@ if [ -f "$INTAKE_SKILL" ]; then
   grep -qF 'Acceptance criteria (settled)' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: stub doc missing the 'Acceptance criteria (settled)' section"
   grep -qF '## Acceptance criteria (settled)' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: stub note missing the 'Acceptance criteria (settled)' section"
   grep -qF '**Chain:**' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: missing the '**Chain:**' header field"
-  grep -qF 'Never replicate these skills' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: missing the 'Never replicate' rule for user-only mattpocock skills"
-  grep -qF 'mattpocock path needs GitHub issues' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the GitHub-only gate for the mattpocock chain"
   grep -qF 'sdlc-process:sdlc-process' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the sdlc-process:sdlc-process chain entry"
   grep -qF 'sdlc-process:implement' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the sdlc-process:implement route"
   grep -qF 'sdlc-process:code-review' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the sdlc-process:code-review route"
@@ -319,7 +317,7 @@ if [ -f "$INTAKE_SKILL" ]; then
   grep -qF 'Always use the `sdlc-process:` prefix' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the prefix rule"
   grep -qF 'Never answer a sdlc-process gate on the user' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the no-answering-gates rule"
   grep -qF 'no local-file' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the no-local-file-fallback rule"
-  grep -qF 'one after another or parallel pieces' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the piece-orchestration rule 'one after another or parallel pieces'"
+  grep -qF 'implement-spec (the default) or parallel pieces' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the piece-orchestration rule 'implement-spec (the default) or parallel pieces'"
   grep -qF 'dev-workflow:orchestrating-pieces' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the piece-orchestration rule 'dev-workflow:orchestrating-pieces'"
   grep -qF 'piece-tracking/' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the piece-orchestration rule 'piece-tracking/'"
   grep -qF 'AC of a cancelled issue are deferred' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the piece-orchestration rule 'AC of a cancelled issue are deferred'"
@@ -352,17 +350,12 @@ if [ -f "$INTAKE_SKILL" ]; then
   grep -qF 'the commit Ship pushes' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: missing re-verify on the shipped commit"
   grep -qF '## 8. Ship' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing step 8 Ship"
   grep -qF 'a user checkpoint between each' "$INTAKE_SKILL" && ifail "intaking-work-items/SKILL.md: still claims a checkpoint between every stage"
-  grep -qF "step 6's **Ship**" "$INTAKE_DIR/chain-mattpocock.md" && ifail "intaking-work-items/chain-mattpocock.md: still return to step 6's Ship"
-  grep -qF 'implement-spec' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: Implement stage does not use implement-spec"
-  grep -qF 'intake mode publishes nothing' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: missing intake mode"
-  grep -qF 'takes the fallback' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: missing the fallback"
-  grep -qF 'confirmed seam list' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: implement-spec handoff missing the seam list"
   grep -qF '## 9. Close-out' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing step 9 Close-out"
   grep -qF 'confirmed seam list' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: handoff missing the confirmed seam list"
   grep -qF 'Intake: plan skipped' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the 'Intake: plan skipped' PR line"
   # The guard line is the ONLY superpowers mention in the intake SKILL.md, and it must be exactly this line.
   GUARD_LINE="$(cat <<'GUARD_EOF'
-- Never invoke a `superpowers:*` skill at any step, even if a session hook or a skill's description says it applies. On the 6.3 Skip path (no chain), implement with `dev-workflow:plan-implementation` lanes, treating the settled AC list (active AC only) and the user's go-ahead as the approved plan; on a chain's plan-skip, the chain's own Implement stage runs.
+- Never invoke a `superpowers:*` skill at any step, even if a session hook or a skill's description says it applies. On the Skip path (no chain), implement with `dev-workflow:plan-implementation` lanes, treating the settled AC list (active AC only) and the user's go-ahead as the approved plan; on a chain's plan-skip, the chain's own Implement stage runs.
 GUARD_EOF
 )"
   [ "$(grep -c superpowers "$INTAKE_SKILL")" = 1 ] || ifail "intaking-work-items/SKILL.md: superpowers must appear only on the guard line"
@@ -386,18 +379,82 @@ GUARD_EOF
     [ "$sp_content" = "$GUARD_LINE" ] || sp_hits="$sp_hits$sp_line"$'\n'
   done < <(grep -rnE 'superpowers:|recommend superpowers|superpowers chain|chain-superpowers|to the same standard|brainstorming|writing-plans|subagent-driven|executing-plans|test-driven-development|verification-before-completion|finishing-a-development-branch|requesting-code-review|receiving-code-review|systematic-debugging|using-git-worktrees|dispatching-parallel-agents' "$ROOT/skills" "$ROOT/agents" "$ROOT/README.md" 2>/dev/null)
   [ -z "$sp_hits" ] || ifail "skills/, agents/ or README.md: superpowers reference found: $sp_hits"
-  grep -qF 'Recommend **sdlc-process** whenever it is installed' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: step 6 does not recommend sdlc-process whenever it is installed"
-  grep -qF 'mattpocock never outranks an installed' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the rule that mattpocock never outranks an installed sdlc-process"
-  grep -qF 'sdlc-process / mattpocock / **Skip**' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: chain question is not sdlc-process / mattpocock / Skip"
   grep -qF '`/retro`' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: close-out missing the /retro offer"
-  grep -qF 'skill-retrospective' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: close-out missing the skill-retrospective route"
-  grep -qF 'separate branch and PR' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: retro changes not kept off the ticket PR"
   grep -qF 'Status becomes Delivered only if' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the Delivered rule"
   grep -qF 'context only' "$INTAKE_DIR/verify.md" || ifail "intaking-work-items/verify.md: live read lacks the revision-provenance rule"
-  grep -qF 'review base' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: handoff missing the review base"
-  grep -qF 'In intake mode' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: missing the implement-spec intake-clause check"
-  grep -qF 'a seam not in the table is a stop' "$INTAKE_DIR/chain-mattpocock.md" || ifail "intaking-work-items/chain-mattpocock.md: handoff missing the unanswered-seam stop"
   grep -qF 'person-only' "$INTAKE_DIR/checklist.md" || ifail "intaking-work-items/checklist.md: checklist missing person-only"
+  # Grill-first, single chain, resumable (the mattpocock chain and its choice are gone).
+  [ ! -e "$INTAKE_DIR/chain-mattpocock.md" ] || ifail "intaking-work-items/chain-mattpocock.md: must not exist (single sdlc-process chain)"
+  grep -qiF 'mattpocock' "$INTAKE_SKILL" && ifail "intaking-work-items/SKILL.md: still mentions mattpocock"
+  grep -qF 'sdlc-process:grill-with-docs' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: step 3 does not load sdlc-process:grill-with-docs"
+  grep -qF '**Fallback**' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: step 3 missing the one-question-per-message fallback"
+  grep -qF 'sdlc-process:wayfinder' "$INTAKE_DIR/wayfinder.md" || ifail "intaking-work-items/SKILL.md: missing the wayfinder escalation"
+  grep -qF 'Never call it by default' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: wayfinder escalation not limited to the signals"
+  grep -qF '**Resume status.**' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: step 1 missing stage detection"
+  grep -qF '**Review = tier.**' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the review-tier rule"
+  grep -qF 'dev-workflow:implement-spec' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the implement-spec route"
+  grep -qF 'never ask the user to type either' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the load-tdd-and-code-review-via-Skill rule"
+  grep -qF '## Entry' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the Entry section"
+  grep -qF 'Entry first.' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: step 3 does not route through the sdlc-process entry"
+  grep -qF 'sdlc-process:sdlc-policy-review' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the policy-review checkpoint"
+  grep -qF "local adaptation of the entry table's \"Authorized delivery" "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: implement-spec not named as the local adaptation of the delivery row"
+  grep -qF 'sdlc-process:orchestrator' "$ROOT/skills/implement-spec/SKILL.md" || ifail "implement-spec/SKILL.md: missing the orchestrator load"
+  grep -qF 'verify its report yourself before any merge' "$ROOT/skills/implement-spec/SKILL.md" || ifail "implement-spec/SKILL.md: missing verify-before-merge"
+  # Entry before orchestrator; active map before Ready/Draft; completion predicates; integration branch; independent policy review.
+  grep -qF 'do not invert the order' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: Entry missing 'do not invert the order' (entry then orchestrator)"
+  # Commit-bound records; ordered stages (pin_order is defined later, so order is checked inline by line number).
+  ipos() { grep -nF -m1 -- "$2" "$1" | cut -d: -f1; }
+  iordered() { # iordered <file> <label> <s1> <s2> [<s3>] — first lines strictly ascending
+    io_a="$(ipos "$1" "$3")"; io_b="$(ipos "$1" "$4")"; io_c="${io_b}"; [ -z "${5:-}" ] || io_c="$(ipos "$1" "$5")"
+    { [ -n "$io_a" ] && [ -n "$io_b" ] && [ -n "$io_c" ] && [ "$io_a" -lt "$io_b" ] && [ "$io_b" -le "$io_c" ] && { [ -z "${5:-}" ] || [ "$io_b" -lt "$io_c" ]; }; } || ifail "$2: '$3', '$4'${5:+, '$5'} not found in that order"
+  }
+  grep -qF '**Suggested next:**' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: resume status missing 'Suggested next'"
+  grep -qF 'ONE `AskUserQuestion`' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: resume must ask a single AskUserQuestion"
+  grep -qF 'skipped (user)' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: a deliberate skip must be recorded as 'skipped (user)'"
+  grep -qF 'n.a. (<tier>)' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: tier-based skip must be recorded as 'n.a. (<tier>)'"
+  grep -qF 'skipped (user)' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: Chain artifacts missing the skipped (user) value"
+  grep -qF '`Wayfinding: active` suggests' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the active-map priority"
+  grep -qF '`Wayfinding: hold` asks the hold question first' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the hold priority"
+  grep -qF 'never marks a gate passed' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: resume must never mark a gate passed"
+  grep -qF 'not on branch' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the not-on-branch check"
+  for gone in 'CURRENT only if' 'earliest stage' 'never treated as proof' 're-pass rules'; do
+    grep -qF "$gone" "$INTAKE_SKILL" && ifail "intaking-work-items/SKILL.md: removed text '$gone' is back"
+  done
+  iordered "$INTAKE_SKILL" "intaking-work-items/SKILL.md Review = tier (plan pass, then diff pass)" '(between to-tickets and Implement)' 'after code-review and before Verify' 'PR gate accepts'
+  iordered "$INTAKE_DIR/chain-sdlc-process.md" "intaking-work-items/chain-sdlc-process.md stage 5 records" '`code-review @<sha>`' 'full-tier diff pass @<sha>`: the end of stage 5' 'before Verify'
+  grep -qF 'Wayfinding: hold' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the Wayfinding: hold route"
+  grep -qF 'do not loop on wayfinder' "$INTAKE_DIR/wayfinder.md" || ifail "intaking-work-items/SKILL.md: hold must not loop on wayfinder"
+  grep -qF 'hold — <what' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: Chain artifacts missing the Wayfinding: hold state"
+  grep -qF 'not to grilling' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: reopened rows under an active map must go to wayfinder, not grilling"
+  grep -qF '`full-tier diff pass` record at the PR'"'"'s current head' "$ROOT/skills/opening-pull-requests/SKILL.md" || ifail "opening-pull-requests/SKILL.md: PR gate does not accept the commit-bound Full pass"
+  # Entry-then-orchestrator by POSITION inside the Entry section: swapping the two names fails.
+  ent_a="$(awk '/^## Entry/{f=1} f&&/sdlc-process:sdlc-process/{print NR; exit}' "$INTAKE_DIR/chain-sdlc-process.md")"
+  ent_b="$(awk '/^## Entry/{f=1} f&&/sdlc-process:orchestrator/{print NR; exit}' "$INTAKE_DIR/chain-sdlc-process.md")"
+  { [ -n "$ent_a" ] && [ -n "$ent_b" ] && [ "$ent_a" -lt "$ent_b" ]; } || ifail "intaking-work-items/chain-sdlc-process.md: Entry must load sdlc-process:sdlc-process before sdlc-process:orchestrator"
+  grep -qF 'never return to grilling or chart a second map' "$INTAKE_DIR/wayfinder.md" || ifail "intaking-work-items/SKILL.md: missing the active-map priority rule"
+  grep -qF 'shows no remaining in-scope' "$INTAKE_DIR/wayfinder.md" || ifail "intaking-work-items/SKILL.md: missing the map-completion fog predicate"
+  grep -qF "every decision ticket's resolution has been read" "$INTAKE_DIR/wayfinder.md" || ifail "intaking-work-items/SKILL.md: missing the map-completion resolution predicate"
+  grep -qF 'still pending' "$INTAKE_DIR/wayfinder.md" || ifail "intaking-work-items/SKILL.md: missing the map-completion pending-tickets predicate"
+  grep -qF 'the work branch IS the' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: work branch is not the integration branch in intake mode"
+  grep -qF "use the caller's work branch as the integration branch and create none" "$ROOT/skills/implement-spec/SKILL.md" || ifail "implement-spec/SKILL.md: intake mode must use the caller's work branch as the integration branch"
+  grep -qF 'never a user gate' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: policy review must not be a user gate"
+  grep -qF 'sdlc-process:sdlc-policy-reviewer' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: policy review not assigned to the independent reviewer"
+  grep -qF 'policy-review gates' "$INTAKE_SKILL" && ifail "intaking-work-items/SKILL.md: policy review listed as a user-skippable gate"
+  grep -qF 'sdlc-process:handoff' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: fresh-session handoff must load sdlc-process:handoff"
+  grep -qF 'bounded to the corrected findings' "$ROOT/skills/implement-spec/SKILL.md" || ifail "implement-spec/SKILL.md: missing the post-fix code-review re-run"
+  IS_SKILL="$ROOT/skills/implement-spec/SKILL.md"
+  if [ -f "$IS_SKILL" ]; then
+    is_fm="$(extract_frontmatter "$IS_SKILL")"
+    echo "$is_fm" | grep -qE '^name:[[:space:]]*implement-spec[[:space:]]*$' || ifail "implement-spec/SKILL.md: frontmatter name is not 'implement-spec'"
+    echo "$is_fm" | grep -qF 'disable-model-invocation' && ifail "implement-spec/SKILL.md: must stay agent-callable (no disable-model-invocation)"
+    grep -qF 'isolation: "worktree"' "$IS_SKILL" || ifail "implement-spec/SKILL.md: missing Agent-tool worktree isolation"
+    grep -qF 'Never run `git worktree add` by hand' "$IS_SKILL" || ifail "implement-spec/SKILL.md: missing the no-manual-worktree rule"
+    grep -qF 'if a write, cd or git command is refused, stop and report; never script around the refusal' "$IS_SKILL" || ifail "implement-spec/SKILL.md: missing the stop-on-refusal rule"
+    grep -qF 'In intake mode' "$IS_SKILL" || ifail "implement-spec/SKILL.md: missing the intake-mode clauses"
+    [ -f "$ROOT/skills/implement-spec/LICENSE" ] || ifail "implement-spec/LICENSE: upstream license missing"
+  else
+    ifail "skills/implement-spec/SKILL.md not found"
+  fi
   # Public-repo hygiene: no organisation-specific ticket project or skill
   # names in this skill (they don't resolve from a public checkout).
   ces_hits="$(grep -rniwE 'ces' "$INTAKE_DIR" 2>/dev/null || true)"
@@ -480,7 +537,7 @@ else
   pin_file "$PIECE_MODE" "$PL" '| Steps 0 to 7 |' 'through Verify, attended' "step 3's fast path" 'step 4 still writes the requirements doc'
   pin_file "$ROOT/skills/intaking-work-items/SKILL.md" "intaking-work-items/SKILL.md" 'steps 0 to 7 run'
   # The chain is fixed to sdlc-process; step 6.1's question is not asked.
-  pin_file "$PIECE_MODE" "$PL" 'Fixed to sdlc-process' "Step 6.1's chain question is not asked" '`Chain: sdlc-process`'
+  pin_file "$PIECE_MODE" "$PL" 'Fixed to sdlc-process' "There is no chain choice" '`Chain: sdlc-process`'
   # The review base is the merge-base with the orchestrator branch, not main.
   pin_file "$PIECE_MODE" "$PL" 'merge-base of the piece branch with the base branch, not with `main`'
   # Piece mode wins over the chain's push, PR and work-branch steps.
