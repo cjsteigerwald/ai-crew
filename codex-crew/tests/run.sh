@@ -17,6 +17,10 @@ TMP="$(mktemp -d)"
 # here — those pids go through $TMP/stub_pids instead. This variable carries the
 # ones started directly.
 STUB_PIDS=""
+# --focus-file fixtures that must be DISPOSABLE have to sit directly under the
+# temp root (crew-codex's deletion rule), so they cannot live inside $TMP. Every
+# such directory is listed here and removed by cleanup_suite.
+FOCUS_DIRS=""
 
 cleanup_suite() {
   local status=$?
@@ -31,6 +35,7 @@ cleanup_suite() {
   done
   chmod -R u+rwX "$TMP" 2>/dev/null || true
   rm -rf "$TMP"
+  for p in $FOCUS_DIRS; do rm -rf "$p" 2>/dev/null || true; done
   exit "$status"
 }
 trap cleanup_suite EXIT
@@ -1519,21 +1524,36 @@ check "bare 'help' still forwards as a task prompt" 0 "COMPANION-RAN:task|help" 
 out="$(run_guard task --effort high "do the thing")" && rc=0 || rc=$?
 check "task --effort forwards untouched" 0 "COMPANION-RAN:task|--effort|high|do the thing" "$rc" "$out"
 
-# --focus-file: the focus text comes from a file that is read, then deleted, so
-# the launch can be one plain `crew-codex ...` command (auto-mode allow rules).
+# --focus-file: the focus text comes from a file that is read, then disposed of,
+# so the launch can be one plain `crew-codex ...` command (auto-mode allow rules).
 # review and task forward to the recording fake companion; adversarial-review
 # shares the same parsing function, so its refusals are asserted here too.
-FF="$TMP/focus"; mkdir -p "$FF"
+# A DISPOSABLE handoff (deleted) is a file in a 0700 dir of ours directly under
+# the temp root — what `mktemp -d` makes. Anything else is read and left alone.
+focus_dir() { # new disposable dir, registered for suite cleanup
+  local d
+  d="$(mktemp -d)"
+  FOCUS_DIRS="$FOCUS_DIRS $d"
+  printf '%s' "$d"
+}
+gone() { # $1 = name, $2 = path that must not exist
+  if [[ ! -e "$2" && ! -L "$2" ]]; then echo "PASS: $1"; pass=$((pass + 1)); else echo "FAIL: $1 ($2 still exists)"; fail=$((fail + 1)); fi
+}
+kept() { # $1 = name, $2 = path that must still exist
+  if [[ -e "$2" || -L "$2" ]]; then echo "PASS: $1"; pass=$((pass + 1)); else echo "FAIL: $1 ($2 was deleted)"; fail=$((fail + 1)); fi
+}
+FF="$(focus_dir)"
 printf "it's a \`mandate\` with \$(touch %s/PWNED) and\nnewlines\n" "$FF" > "$FF/ok.txt"
 out="$(run_guard review --base main --focus-file "$FF/ok.txt")" && rc=0 || rc=$?
 check "review --focus-file forwards the file text as one positional" 0 "COMPANION-RAN:review|--base|main|--|it's a \`mandate\` with \$(touch" "$rc" "$out"
-[[ ! -e "$FF/ok.txt" ]] && { echo "PASS: focus file deleted after read"; pass=$((pass + 1)); } || { echo "FAIL: focus file still present after read"; fail=$((fail + 1)); }
-[[ ! -e "$FF/PWNED" ]] && { echo "PASS: focus text was never executed"; pass=$((pass + 1)); } || { echo "FAIL: focus text executed"; fail=$((fail + 1)); }
+gone "focus file deleted after read" "$FF/ok.txt"
+gone "focus text was never executed" "$FF/PWNED"
+check_absent "a disposable handoff prints no left-in-place note" "$out" "left in place"
 
 printf 'plan text' > "$FF/t.txt"
 out="$(run_guard task --background --model m --effort high --focus-file="$FF/t.txt")" && rc=0 || rc=$?
 check "task --focus-file= with --background forwards flags then text" 0 "COMPANION-RAN:task|--background|--model|m|--effort|high|--|plan text" "$rc" "$out"
-[[ ! -e "$FF/t.txt" ]] && { echo "PASS: task focus file deleted"; pass=$((pass + 1)); } || { echo "FAIL: task focus file still present"; fail=$((fail + 1)); }
+gone "task focus file deleted" "$FF/t.txt"
 
 for sub in review adversarial-review task; do
   : > "$INVOKED"
@@ -1545,16 +1565,159 @@ for sub in review adversarial-review task; do
   out="$(run_guard "$sub" --focus-file "$FF/empty.txt")" && rc=0 || rc=$?
   check "$sub --focus-file whitespace-only is refused" 2 "empty or whitespace-only" "$rc" "$out"
   check_no_dispatch "$sub empty focus file did not dispatch" "$INVOKED"
-  [[ ! -e "$FF/empty.txt" ]] && { echo "PASS: $sub refused empty file is still deleted"; pass=$((pass + 1)); } || { echo "FAIL: $sub empty file lingers"; fail=$((fail + 1)); }
+  gone "$sub refused empty file is still deleted" "$FF/empty.txt"
 
   printf 'mandate' > "$FF/both.txt"
   out="$(run_guard "$sub" --focus-file "$FF/both.txt" extra words)" && rc=0 || rc=$?
   check "$sub --focus-file + positional is refused" 2 "cannot be combined with positional" "$rc" "$out"
   check_no_dispatch "$sub conflicting focus did not dispatch" "$INVOKED"
+  gone "$sub refused conflicting file is deleted" "$FF/both.txt"
 
   out="$(run_guard "$sub" --focus-file)" && rc=0 || rc=$?
   check "$sub --focus-file without a value is refused" 2 "without a path" "$rc" "$out"
+  out="$(run_guard "$sub" --focus-file=)" && rc=0 || rc=$?
+  check "$sub --focus-file= (empty) is refused" 2 "without a path" "$rc" "$out"
+  check_no_dispatch "$sub --focus-file= did not dispatch" "$INVOKED"
+
+  # M1: a duplicate flag is refused and BOTH handoffs are still disposed of.
+  printf 'one' > "$FF/d1.txt"; printf 'two' > "$FF/d2.txt"
+  out="$(run_guard "$sub" --focus-file "$FF/d1.txt" --focus-file="$FF/d2.txt")" && rc=0 || rc=$?
+  check "$sub duplicate --focus-file is refused" 2 "given more than once" "$rc" "$out"
+  check_no_dispatch "$sub duplicate --focus-file did not dispatch" "$INVOKED"
+  gone "$sub duplicate: first handoff deleted" "$FF/d1.txt"
+  gone "$sub duplicate: second handoff deleted" "$FF/d2.txt"
+
+  # M1: --help after --focus-file prints usage, exits 0 and still disposes.
+  printf 'mandate' > "$FF/h.txt"
+  out="$(run_guard "$sub" --focus-file "$FF/h.txt" --help)" && rc=0 || rc=$?
+  check "$sub --focus-file f --help prints usage" 0 "crew-codex $sub \[flags\]" "$rc" "$out"
+  check_no_dispatch "$sub --focus-file f --help did not dispatch" "$INVOKED"
+  gone "$sub --help exit deleted the handoff" "$FF/h.txt"
+
+  # H1: a trailing value flag would otherwise take the `--` sentinel as its
+  # value, and the flag-shaped file text would be parsed as flags.
+  for vflag in --model --cwd; do
+    printf -- '--background --write' > "$FF/v.txt"
+    out="$(run_guard "$sub" --focus-file "$FF/v.txt" "$vflag")" && rc=0 || rc=$?
+    check "$sub trailing $vflag is refused" 2 "[-]${vflag#-} was given without a value" "$rc" "$out"
+    check_no_dispatch "$sub trailing $vflag did not dispatch" "$INVOKED"
+    gone "$sub trailing $vflag refusal deleted the handoff" "$FF/v.txt"
+  done
 done
+
+# H1 on the review-only value flags.
+for sub in review adversarial-review; do
+  printf -- '--background' > "$FF/v.txt"
+  out="$(run_guard "$sub" --focus-file "$FF/v.txt" --base)" && rc=0 || rc=$?
+  check "$sub trailing --base is refused" 2 "[-]-base was given without a value" "$rc" "$out"
+  check_no_dispatch "$sub trailing --base did not dispatch" "$INVOKED"
+  # A --focus-file token in a value position is ours: --model stays valueless.
+  printf 'mandate' > "$FF/v.txt"
+  out="$(run_guard "$sub" --model --focus-file "$FF/v.txt")" && rc=0 || rc=$?
+  check "$sub --model --focus-file f is refused, not model='--focus-file'" 2 "[-]-model was given without a value" "$rc" "$out"
+  check_no_dispatch "$sub --model --focus-file did not dispatch" "$INVOKED"
+done
+
+# M2: option recognition is per-subcommand, matching the parser that receives
+# it; a flag valid elsewhere is focus text there, so it is refused.
+for spec in "adversarial-review --prompt-file=extra" "adversarial-review --write" \
+            "adversarial-review --resume-last" "review --write" "review --prompt-file=x" \
+            "task --wait" "task --base=main" "task --scope=branch"; do
+  read -r sub xflag <<<"$spec"
+  printf 'mandate' > "$FF/x.txt"
+  out="$(run_guard "$sub" --focus-file "$FF/x.txt" "$xflag")" && rc=0 || rc=$?
+  check "$sub --focus-file + $xflag is refused as positional" 2 "cannot be combined with positional" "$rc" "$out"
+  check_no_dispatch "$sub + $xflag did not dispatch" "$INVOKED"
+done
+# ...while the companion's short aliases (-m, -C) are flags, not focus text.
+printf 'plan' > "$FF/a.txt"
+out="$(run_guard task -m gpt -C . --focus-file "$FF/a.txt")" && rc=0 || rc=$?
+check "task -m/-C aliases are flags beside --focus-file" 0 "COMPANION-RAN:task|-m|gpt|-C|.|--|plan" "$rc" "$out"
+printf 'focus' > "$FF/a.txt"
+out="$(run_guard review --scope=branch -m gpt --wait --focus-file "$FF/a.txt")" && rc=0 || rc=$?
+check "review inline/short/boolean flags beside --focus-file" 0 "COMPANION-RAN:review|--scope=branch|-m|gpt|--wait|--|focus" "$rc" "$out"
+# review --effort keeps its own, specific refusal rather than "positional".
+printf 'focus' > "$FF/a.txt"
+out="$(run_guard review --effort high --focus-file "$FF/a.txt")" && rc=0 || rc=$?
+check "review --effort + --focus-file gets the dedicated --effort refusal" 2 "review does not accept --effort" "$rc" "$out"
+check_no_dispatch "review --effort + --focus-file did not dispatch" "$INVOKED"
+gone "review --effort refusal deleted the handoff" "$FF/a.txt"
+# A task's --prompt-file is a real flag there, but cannot be combined.
+printf 'plan' > "$FF/a.txt"
+out="$(run_guard task --prompt-file other --focus-file "$FF/a.txt")" && rc=0 || rc=$?
+check "task --prompt-file + --focus-file is refused" 2 "cannot be combined with --prompt-file" "$rc" "$out"
+
+# H2: a file outside a disposable handoff dir is READ but never deleted — not on
+# success, not on refusal.
+NT="$TMP/notes"; mkdir -p "$NT"; chmod 755 "$NT"
+printf 'my notes' > "$NT/notes.md"
+out="$(run_guard review --focus-file "$NT/notes.md" extra)" && rc=0 || rc=$?
+check "non-temp focus file + positional is refused" 2 "cannot be combined with positional" "$rc" "$out"
+kept "refused non-temp focus file is NOT deleted" "$NT/notes.md"
+check "refused non-temp focus file prints a left-in-place note" 2 "left in place" "$rc" "$out"
+out="$(run_guard review --focus-file "$NT/notes.md")" && rc=0 || rc=$?
+check "non-temp focus file is read and dispatched" 0 "COMPANION-RAN:review|--|my notes" "$rc" "$out"
+check "non-temp focus file prints a left-in-place note" 0 "focus file '$NT/notes.md' left in place" "$rc" "$out"
+kept "dispatched non-temp focus file is NOT deleted" "$NT/notes.md"
+# A 0700 dir that is NOT directly under the temp root (here: under $TMP).
+mkdir -p -m 700 "$TMP/deep"; printf 'deep' > "$TMP/deep/f.txt"
+out="$(run_guard task --focus-file "$TMP/deep/f.txt")" && rc=0 || rc=$?
+check "nested 0700 dir: dispatched" 0 "COMPANION-RAN:task|--|deep" "$rc" "$out"
+kept "nested 0700 dir: file NOT deleted" "$TMP/deep/f.txt"
+# A temp-root child whose mode admits group/other.
+G="$(focus_dir)"; chmod 750 "$G"; printf 'g' > "$G/f.txt"
+out="$(run_guard task --focus-file "$G/f.txt")" && rc=0 || rc=$?
+check "0750 temp dir: dispatched" 0 "COMPANION-RAN:task|--|g" "$rc" "$out"
+kept "0750 temp dir: file NOT deleted" "$G/f.txt"
+# A file reached through the repo checkout (never temp).
+out="$(run_guard task --focus-file "$REPO/.claude-plugin/plugin.json" --background)" && rc=0 || rc=$?
+check "repo file as focus: dispatched" 0 "COMPANION-RAN:task|--background|--|{" "$rc" "$out"
+kept "repo file as focus: NOT deleted" "$REPO/.claude-plugin/plugin.json"
+
+# Symlinks: a symlinked focus FILE is never deleted, nor is its target, even in
+# a disposable dir.
+S="$(focus_dir)"; printf 'target text' > "$NT/target.md"
+ln -s "$NT/target.md" "$S/link.txt"
+out="$(run_guard task --focus-file "$S/link.txt")" && rc=0 || rc=$?
+check "symlinked focus file: target text dispatched" 0 "COMPANION-RAN:task|--|target text" "$rc" "$out"
+kept "symlinked focus file: link NOT deleted" "$S/link.txt"
+kept "symlinked focus file: target NOT deleted" "$NT/target.md"
+printf 'disposable target' > "$S/real.txt"; ln -s "$S/real.txt" "$S/link2.txt"
+out="$(run_guard task --focus-file "$S/link2.txt")" && rc=0 || rc=$?
+check "symlink to a disposable file: dispatched" 0 "COMPANION-RAN:task|--|disposable target" "$rc" "$out"
+kept "symlink to a disposable file: target NOT deleted through the link" "$S/real.txt"
+# A symlinked PARENT that leads out of the temp root is judged by where it leads.
+mkdir -p -m 700 "$TMP/priv"; printf 'escaped' > "$TMP/priv/f.txt"
+ln -s "$TMP/priv" "$S/out"
+out="$(run_guard task --focus-file "$S/out/f.txt")" && rc=0 || rc=$?
+check "symlinked parent out of temp: dispatched" 0 "COMPANION-RAN:task|--|escaped" "$rc" "$out"
+kept "symlinked parent out of temp: file NOT deleted" "$TMP/priv/f.txt"
+# ...and one that leads INTO a disposable dir is deleted there (the /tmp ->
+# /private/tmp shape on macOS).
+A="$(focus_dir)"; printf 'aliased' > "$A/f.txt"; ln -s "$A" "$TMP/alias"
+out="$(run_guard task --focus-file "$TMP/alias/f.txt")" && rc=0 || rc=$?
+check "symlinked parent into a disposable dir: dispatched" 0 "COMPANION-RAN:task|--|aliased" "$rc" "$out"
+gone "symlinked parent into a disposable dir: file deleted" "$A/f.txt"
+kept "symlinked parent into a disposable dir: link left" "$TMP/alias"
+# The documented recipe: `mkdir -p -m 700 /tmp/crew-focus-<unique>` qualifies
+# (on macOS /tmp is a symlink to /private/tmp and $TMPDIR is elsewhere).
+if R="$(mktemp -d /tmp/crew-focus-test.XXXXXX 2>/dev/null)"; then
+  FOCUS_DIRS="$FOCUS_DIRS $R"
+  chmod 700 "$R"; printf 'recipe' > "$R/focus.txt"
+  out="$(run_guard adversarial-review --focus-file "$R/focus.txt" --help)" && rc=0 || rc=$?
+  check "/tmp recipe dir: --help exits 0" 0 "FOCUS FILE" "$rc" "$out"
+  gone "/tmp recipe dir: handoff deleted" "$R/focus.txt"
+  kept "/tmp recipe dir: directory itself left" "$R"
+else
+  skip "/tmp recipe dir focus file" "cannot create a directory under /tmp"
+fi
+# The agent's static capability probe must keep matching the binary.
+if grep -q crew_focus_apply "$CREW"; then
+  echo "PASS: codex-adversary capability probe matches crew-codex"; pass=$((pass + 1))
+else
+  echo "FAIL: crew_focus_apply is gone from crew-codex; update codex-adversary's probe"; fail=$((fail + 1))
+fi
+check_contains "codex-adversary uses the static focus-file probe" "$REPO/../dev-workflow/agents/codex-adversary.md" 'grep -q crew_focus_apply "$(command -v crew-codex)"'
 
 # Case 28: bare crew-codex and top-level help print usage, forward nothing
 out="$(run_guard)" && rc=0 || rc=$?
@@ -2299,6 +2462,29 @@ assert d['model'] == 'gpt-5.6-sol', d
 else
   echo "FAIL: sidecar wrong for an --effort review"; fail=$((fail + 1))
 fi
+
+# Case 44b: adversarial-review --focus-file end to end through the driver. The
+# file's text — flag-shaped tokens and shell metacharacters included — must reach
+# the turn as FOCUS verbatim and never as flags (no --background detach, effort
+# still the one on the command line), and the handoff must be gone. Placed after
+# 42-44, which read Case 41's turn and job records.
+FE="$(focus_dir)"
+printf -- '--background --effort low $(touch %s/PWNED) `x`\n' "$FE" > "$FE/focus.txt"
+out="$(run_effort adversarial-review --effort high --model gpt-5.6-sol --focus-file "$FE/focus.txt")" && rc=0 || rc=$?
+check "driver --focus-file dispatch renders the review" 0 "RENDERED Adversarial Review" "$rc" "$out"
+check_no_dispatch "driver --focus-file bypassed the vendor companion" "$INVOKED_E"
+if python3 -c "
+import json, sys
+t = json.load(open('$TMP/effort/turn.json'))
+assert t['effort'] == 'high', t
+assert 'FOCUS=--background --effort low \$(touch $FE/PWNED) \`x\`' in t['prompt'], t['prompt']
+"; then
+  echo "PASS: driver --focus-file text reached the turn as focus, not as flags"; pass=$((pass + 1))
+else
+  echo "FAIL: driver --focus-file focus wrong ($(cat "$TMP/effort/turn.json" 2>/dev/null))"; fail=$((fail + 1))
+fi
+gone "driver --focus-file handoff deleted" "$FE/focus.txt"
+gone "driver --focus-file text never executed" "$FE/PWNED"
 
 # Case 45: every valid effort is accepted and threaded through verbatim.
 for e in none minimal low medium high xhigh; do
@@ -4702,6 +4888,50 @@ if [[ -x /bin/bash ]] && [[ "$(/bin/bash -c 'echo ${BASH_VERSINFO[0]}')" -lt 4 ]
   fi
 else
   skip "bash 3.2 sanitize-archive and reap --brokers" "/bin/bash is absent or not bash 3.x"
+fi
+
+# Case B32f: --focus-file under /bin/bash 3.2 — empty arrays under `set -u`, the
+# EXIT-trap disposal and the permission/owner probe are all 3.2-sensitive.
+if [[ -x /bin/bash ]] && [[ "$(/bin/bash -c 'echo ${BASH_VERSINFO[0]}')" -lt 4 ]]; then
+  run_guard32() {
+    : > "$INVOKED"
+    CLAUDE_CONFIG_DIR="$TMP/guard" CREW_TEST_INVOKED="$INVOKED" /bin/bash "$CREW" "$@" 2>&1
+  }
+  B="$(focus_dir)"
+  printf -- '--background $(touch %s/PWNED)' "$B" > "$B/ok.txt"
+  out="$(run_guard32 task --focus-file "$B/ok.txt")" && rc=0 || rc=$?
+  check "/bin/bash 3.2 task --focus-file dispatches the text as one positional" 0 "COMPANION-RAN:task|--|--background \$(touch" "$rc" "$out"
+  gone "/bin/bash 3.2 handoff deleted" "$B/ok.txt"
+  gone "/bin/bash 3.2 focus text never executed" "$B/PWNED"
+  printf 'x' > "$B/m.txt"
+  out="$(run_guard32 adversarial-review --focus-file "$B/m.txt" --model)" && rc=0 || rc=$?
+  check "/bin/bash 3.2 trailing --model refused" 2 "[-]-model was given without a value" "$rc" "$out"
+  check_no_dispatch "/bin/bash 3.2 trailing --model did not dispatch" "$INVOKED"
+  gone "/bin/bash 3.2 refusal deleted the handoff" "$B/m.txt"
+  printf 'x' > "$B/h.txt"
+  out="$(run_guard32 review --focus-file "$B/h.txt" --help)" && rc=0 || rc=$?
+  check "/bin/bash 3.2 --focus-file f --help prints usage" 0 "crew-codex review \[flags\]" "$rc" "$out"
+  gone "/bin/bash 3.2 --help deleted the handoff" "$B/h.txt"
+  printf 'a' > "$B/d1.txt"; printf 'b' > "$B/d2.txt"
+  out="$(run_guard32 review --focus-file "$B/d1.txt" --focus-file "$B/d2.txt")" && rc=0 || rc=$?
+  check "/bin/bash 3.2 duplicate --focus-file refused" 2 "given more than once" "$rc" "$out"
+  gone "/bin/bash 3.2 duplicate: both handoffs deleted" "$B/d2.txt"
+  out="$(run_guard32 review --focus-file=)" && rc=0 || rc=$?
+  check "/bin/bash 3.2 --focus-file= refused" 2 "without a path" "$rc" "$out"
+  printf 'x' > "$B/p.txt"
+  out="$(run_guard32 adversarial-review --focus-file "$B/p.txt" --prompt-file=extra)" && rc=0 || rc=$?
+  check "/bin/bash 3.2 cross-subcommand flag refused as positional" 2 "cannot be combined with positional" "$rc" "$out"
+  mkdir -p "$TMP/notes32"; chmod 755 "$TMP/notes32"; printf 'keep me' > "$TMP/notes32/n.md"
+  out="$(run_guard32 review --focus-file "$TMP/notes32/n.md")" && rc=0 || rc=$?
+  check "/bin/bash 3.2 non-temp file read and dispatched" 0 "COMPANION-RAN:review|--|keep me" "$rc" "$out"
+  kept "/bin/bash 3.2 non-temp file NOT deleted" "$TMP/notes32/n.md"
+  ln -s "$TMP/notes32/n.md" "$B/link.txt"
+  out="$(run_guard32 review --focus-file "$B/link.txt")" && rc=0 || rc=$?
+  check "/bin/bash 3.2 symlinked focus file dispatched" 0 "COMPANION-RAN:review|--|keep me" "$rc" "$out"
+  kept "/bin/bash 3.2 symlink NOT deleted" "$B/link.txt"
+  kept "/bin/bash 3.2 symlink target NOT deleted" "$TMP/notes32/n.md"
+else
+  skip "bash 3.2 --focus-file" "/bin/bash is absent or not bash 3.x"
 fi
 
 

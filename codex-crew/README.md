@@ -337,6 +337,13 @@ crew-codex task --help|-h                            usage, exit 0, no dispatch
 crew-codex review --effort <e>                        error,  exit 2, no dispatch
 crew-codex adversarial-review --effort <bad>          error,  exit 2, no dispatch
 crew-codex [--help|-h|help]                           top-level usage, exit 0
+crew-codex review|adversarial-review|task --focus-file <path>
+                                                     focus text/prompt read from
+                                                     <path>; exit 2, no dispatch,
+                                                     when missing, empty, given
+                                                     twice, combined with
+                                                     positional text, or a value
+                                                     flag is left valueless
 ```
 
 Scope differs by spelling, deliberately. `--help` is intercepted at any
@@ -350,6 +357,21 @@ than printing usage one position later.
 
 Matching is otherwise exact: focus text may still contain the word `help` or any other
 `--`-prefixed token, and those forward untouched.
+
+**`--focus-file <path>`** keeps a launch to one plain `crew-codex ...` command (no
+`$(cat ...)`, `rm` or assignment), which a prefix allow rule matches under Claude
+Code auto mode. Its text is passed after a `--` sentinel, so flag-shaped content
+is never parsed as flags. "Positional text" is judged with the option table of
+the parser that actually receives that subcommand — the companion's review and
+task tables, and `lib/review-with-effort.mjs` for `adversarial-review` — so a flag
+valid on another subcommand (`--prompt-file` or `--write` on adversarial-review,
+`--wait` on task) counts as positional and is refused. **Deletion rule:** the file
+is deleted (also on a refusal or `--help` exit; never its directory) only when it
+is a disposable handoff — a regular file, not a symlink, that you own, in a
+directory you own with mode `0700` sitting directly under the temp dir (physical
+`${TMPDIR:-/tmp}`, `/tmp` or `/private/tmp`). Any other file is read but left in
+place, with a one-line stderr note, so `--focus-file ~/notes.md` can never
+destroy your notes.
 
 **Per-dispatch reasoning effort on adversarial reviews.** codex-companion
 cannot set reasoning effort on any review: its review parser knows only

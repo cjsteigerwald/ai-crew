@@ -70,9 +70,16 @@ Primary helper — `crew-codex`, on PATH while the plugin is enabled:
 - `crew-codex review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <m>]`
 - `crew-codex adversarial-review [--wait|--background] [--base <ref>] [--scope <...>] [--model <m>] [--effort <none|minimal|low|medium|high|xhigh>] [focus text | --focus-file <path>]`
   **`--focus-file <path>`** (also on `task` and `review`) reads the focus text/prompt
-  from a file, **deletes the file once read** (before the turn starts or detaches,
-  also on refusal; the directory is left), and refuses with exit 2 if the file is
-  missing, empty or whitespace-only, or if positional text is also given. Use it so
+  from a file and refuses with exit 2 (nothing dispatched) if the file is missing,
+  empty or whitespace-only, given twice, combined with positional text (any token
+  that subcommand's parser does not read as its own flag or a flag's value), or if
+  a value flag such as `--model` is left without its value. **Deletion rule:** the
+  file is deleted (before the turn starts or detaches, and also on a refusal or
+  `--help` exit; never its directory) only when it is a disposable handoff — a
+  regular file, not a symlink, that you own, in a directory you own with mode
+  `0700` sitting directly under the temp dir (physical `${TMPDIR:-/tmp}`, `/tmp` or
+  `/private/tmp`), e.g. `mkdir -p -m 700 /tmp/crew-focus-<unique>`. Any other file
+  is read but left in place, with a one-line note on stderr. Use it so
   the launch is one plain `crew-codex ...` command — no `$(cat ...)`, `rm` or
   variable — which a prefix allow rule matches under auto mode and which keeps
   focus text out of the shell.
