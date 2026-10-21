@@ -17,9 +17,6 @@ TMP="$(mktemp -d)"
 # here — those pids go through $TMP/stub_pids instead. This variable carries the
 # ones started directly.
 STUB_PIDS=""
-# --focus-file fixture directories made outside $TMP (the /tmp and $TMPDIR
-# no-delete cases) are listed here and removed by cleanup_suite.
-FOCUS_DIRS=""
 
 cleanup_suite() {
   local status=$?
@@ -34,7 +31,6 @@ cleanup_suite() {
   done
   chmod -R u+rwX "$TMP" 2>/dev/null || true
   rm -rf "$TMP"
-  for p in $FOCUS_DIRS; do rm -rf "$p" 2>/dev/null || true; done
   exit "$status"
 }
 trap cleanup_suite EXIT
@@ -1523,330 +1519,6 @@ check "bare 'help' still forwards as a task prompt" 0 "COMPANION-RAN:task|help" 
 out="$(run_guard task --effort high "do the thing")" && rc=0 || rc=$?
 check "task --effort forwards untouched" 0 "COMPANION-RAN:task|--effort|high|do the thing" "$rc" "$out"
 
-# --focus-file: the focus text comes from a file that is read and folded into argv
-# after a `--` sentinel, so the launch can be one plain `crew-codex ...` command
-# (auto-mode allow rules). review and task forward to the recording fake
-# companion; adversarial-review shares the same parsing function, so its
-# refusals are asserted here too.
-# DELETION RULE: a file is deleted (just before dispatch, never on a refusal or
-# --help exit) only when it sits directly in a directory made by
-# `crew-codex focus-dir` — ours, 0700, marker present. Everything else, /tmp and
-# $TMPDIR included, is read and kept. Fixture focus dirs are made by the binary
-# itself, under $TMP (TMPDIR plays no part in the rule, so where they sit does
-# not matter), and registered for suite cleanup.
-focus_dir() { # new `crew-codex focus-dir` under $TMP
-  local d
-  d="$(TMPDIR="$TMP" bash "$CREW" focus-dir)" || return 1
-  FOCUS_DIRS="$FOCUS_DIRS $d"
-  printf '%s' "$d"
-}
-gone() { # $1 = name, $2 = path that must not exist
-  if [[ ! -e "$2" && ! -L "$2" ]]; then echo "PASS: $1"; pass=$((pass + 1)); else echo "FAIL: $1 ($2 still exists)"; fail=$((fail + 1)); fi
-}
-kept() { # $1 = name, $2 = path that must still exist
-  if [[ -e "$2" || -L "$2" ]]; then echo "PASS: $1"; pass=$((pass + 1)); else echo "FAIL: $1 ($2 was deleted)"; fail=$((fail + 1)); fi
-}
-mode_of() { stat -c '%a' -- "$1" 2>/dev/null || stat -f '%Lp' -- "$1"; }
-
-# focus-dir: a fresh private directory, marked, unpredictable, path on stdout.
-FDT="$TMP/fd-tmpdir"; mkdir -p "$FDT"
-out="$(TMPDIR="$FDT" bash "$CREW" focus-dir)" && rc=0 || rc=$?
-FD1="$out"; FOCUS_DIRS="$FOCUS_DIRS $FD1"
-check "focus-dir exits 0 and prints a crew-focus path" 0 "/crew-focus\." "$rc" "$out"
-if [[ -d "$FD1" && ! -L "$FD1" && "$(mode_of "$FD1")" == "700" ]]; then
-  echo "PASS: focus-dir directory is a real dir with mode 700"; pass=$((pass + 1))
-else
-  echo "FAIL: focus-dir directory wrong ($FD1, mode $(mode_of "$FD1" 2>/dev/null))"; fail=$((fail + 1))
-fi
-if [[ -f "$FD1/.crew-codex-focus-dir" && ! -L "$FD1/.crew-codex-focus-dir" ]] \
-   && [[ "$(head -n 1 "$FD1/.crew-codex-focus-dir")" == "crew-codex focus-dir v1" ]]; then
-  echo "PASS: focus-dir writes the marker file"; pass=$((pass + 1))
-else
-  echo "FAIL: focus-dir marker missing or wrong in $FD1"; fail=$((fail + 1))
-fi
-if [[ "$FD1" == "$(cd -P "$FD1" && pwd -P)" && "$FD1" == /* ]]; then
-  echo "PASS: focus-dir prints an absolute physical path"; pass=$((pass + 1))
-else
-  echo "FAIL: focus-dir path not physical ($FD1)"; fail=$((fail + 1))
-fi
-FD2="$(TMPDIR="$FDT" bash "$CREW" focus-dir)"; FOCUS_DIRS="$FOCUS_DIRS $FD2"
-if [[ -n "$FD2" && "$FD2" != "$FD1" && -d "$FD2" ]]; then
-  echo "PASS: focus-dir is unique per call"; pass=$((pass + 1))
-else
-  echo "FAIL: focus-dir returned the same or no dir twice ($FD1 / $FD2)"; fail=$((fail + 1))
-fi
-n_before="$(ls -A "$FDT" | wc -l | tr -d ' ')"
-out="$(TMPDIR="$FDT" bash "$CREW" focus-dir --help)" && rc=0 || rc=$?
-check "focus-dir --help prints usage" 0 "crew-codex focus-dir" "$rc" "$out"
-out="$(TMPDIR="$FDT" bash "$CREW" focus-dir extra 2>&1)" && rc=0 || rc=$?
-check "focus-dir with an argument is refused" 2 "takes no arguments" "$rc" "$out"
-if [[ "$(ls -A "$FDT" | wc -l | tr -d ' ')" == "$n_before" ]]; then
-  echo "PASS: focus-dir --help / refusal created nothing"; pass=$((pass + 1))
-else
-  echo "FAIL: focus-dir --help or refusal created a directory"; fail=$((fail + 1))
-fi
-out="$(run_guard --help)" && rc=0 || rc=$?
-check "top-level usage lists focus-dir" 0 "focus-dir " "$rc" "$out"
-
-# Deletion in a marker dir: the file goes on dispatch, the dir goes with it once
-# only the marker is left.
-M="$(focus_dir)"
-printf "it's a \`mandate\` with \$(touch %s/PWNED) and\nnewlines\n" "$M" > "$M/ok.txt"
-out="$(run_guard review --base main --focus-file "$M/ok.txt")" && rc=0 || rc=$?
-check "review --focus-file forwards the file text as one positional" 0 "COMPANION-RAN:review|--base|main|--|it's a \`mandate\` with \$(touch" "$rc" "$out"
-gone "marker dir: focus file deleted after dispatch" "$M/ok.txt"
-gone "marker dir: emptied directory removed with its marker" "$M"
-gone "focus text was never executed" "$M/PWNED"
-check_absent "a disposable handoff prints no left-in-place note" "$out" "left in place"
-
-# Shared fixture dir for the cases below. The extra `keep` file stops a
-# successful dispatch from removing the directory between cases.
-FF="$(focus_dir)"; : > "$FF/keep"
-printf 'plan text' > "$FF/t.txt"
-out="$(run_guard task --background --model m --effort high --focus-file="$FF/t.txt")" && rc=0 || rc=$?
-check "task --focus-file= with --background forwards flags then text" 0 "COMPANION-RAN:task|--background|--model|m|--effort|high|--|plan text" "$rc" "$out"
-gone "task focus file deleted" "$FF/t.txt"
-kept "marker dir holding other files is NOT removed" "$FF/keep"
-
-for sub in review adversarial-review task; do
-  : > "$INVOKED"
-  out="$(run_guard "$sub" --focus-file "$FF/missing.txt")" && rc=0 || rc=$?
-  check "$sub --focus-file missing is refused" 2 "does not exist" "$rc" "$out"
-  check_no_dispatch "$sub missing focus file did not dispatch" "$INVOKED"
-
-  printf '  \n\t\n' > "$FF/empty.txt"
-  out="$(run_guard "$sub" --focus-file "$FF/empty.txt")" && rc=0 || rc=$?
-  check "$sub --focus-file whitespace-only is refused" 2 "empty or whitespace-only" "$rc" "$out"
-  check_no_dispatch "$sub empty focus file did not dispatch" "$INVOKED"
-  kept "$sub refused empty file is NOT deleted (early exit)" "$FF/empty.txt"
-
-  printf 'mandate' > "$FF/both.txt"
-  out="$(run_guard "$sub" --focus-file "$FF/both.txt" extra words)" && rc=0 || rc=$?
-  check "$sub --focus-file + positional is refused" 2 "cannot be combined with positional" "$rc" "$out"
-  check_no_dispatch "$sub conflicting focus did not dispatch" "$INVOKED"
-  kept "$sub refused conflicting file is NOT deleted" "$FF/both.txt"
-
-  out="$(run_guard "$sub" --focus-file)" && rc=0 || rc=$?
-  check "$sub --focus-file without a value is refused" 2 "without a path" "$rc" "$out"
-  out="$(run_guard "$sub" --focus-file=)" && rc=0 || rc=$?
-  check "$sub --focus-file= (empty) is refused" 2 "without a path" "$rc" "$out"
-  check_no_dispatch "$sub --focus-file= did not dispatch" "$INVOKED"
-
-  printf 'one' > "$FF/d1.txt"; printf 'two' > "$FF/d2.txt"
-  out="$(run_guard "$sub" --focus-file "$FF/d1.txt" --focus-file="$FF/d2.txt")" && rc=0 || rc=$?
-  check "$sub duplicate --focus-file is refused" 2 "given more than once" "$rc" "$out"
-  check_no_dispatch "$sub duplicate --focus-file did not dispatch" "$INVOKED"
-  kept "$sub duplicate: first handoff NOT deleted" "$FF/d1.txt"
-  kept "$sub duplicate: second handoff NOT deleted" "$FF/d2.txt"
-
-  # --help never deletes anything, even a disposable handoff.
-  printf 'mandate' > "$FF/h.txt"
-  out="$(run_guard "$sub" --focus-file "$FF/h.txt" --help)" && rc=0 || rc=$?
-  check "$sub --focus-file f --help prints usage" 0 "crew-codex $sub \[flags\]" "$rc" "$out"
-  check_no_dispatch "$sub --focus-file f --help did not dispatch" "$INVOKED"
-  kept "$sub --help exit did NOT delete the marker-dir handoff" "$FF/h.txt"
-
-  # A trailing value flag would otherwise take the `--` sentinel as its value,
-  # and the flag-shaped file text would be parsed as flags.
-  for vflag in --model --cwd; do
-    printf -- '--background --write' > "$FF/v.txt"
-    out="$(run_guard "$sub" --focus-file "$FF/v.txt" "$vflag")" && rc=0 || rc=$?
-    check "$sub trailing $vflag is refused" 2 "[-]${vflag#-} was given without a value" "$rc" "$out"
-    check_no_dispatch "$sub trailing $vflag did not dispatch" "$INVOKED"
-    kept "$sub trailing $vflag refusal did NOT delete the handoff" "$FF/v.txt"
-  done
-
-  # Finding 3: every spelling of a prompt file the downstream parser accepts.
-  # On task it is the prompt-file option (refused: the companion would prefer it
-  # and drop the mandate); elsewhere it is positional text (refused as such).
-  for pspec in "--prompt-file x" "--prompt-file=x" "-prompt-file x" "-prompt-file=x"; do
-    printf 'mandate' > "$FF/p.txt"
-    # shellcheck disable=SC2086
-    out="$(run_guard "$sub" $pspec --focus-file "$FF/p.txt")" && rc=0 || rc=$?
-    check "$sub '$pspec' + --focus-file is refused" 2 "cannot be combined with" "$rc" "$out"
-    check_no_dispatch "$sub '$pspec' + --focus-file did not dispatch" "$INVOKED"
-    out="$(run_guard "$sub" --focus-file "$FF/p.txt" $pspec)" && rc=0 || rc=$?
-    check "$sub --focus-file + '$pspec' (after) is refused" 2 "cannot be combined with" "$rc" "$out"
-  done
-done
-for pspec in "--prompt-file x" "--prompt-file=x" "-prompt-file x"; do
-  printf 'mandate' > "$FF/p.txt"
-  # shellcheck disable=SC2086
-  out="$(run_guard task $pspec --focus-file "$FF/p.txt")" && rc=0 || rc=$?
-  check "task '$pspec' is caught by the prompt-file guard" 2 "cannot be combined with --prompt-file" "$rc" "$out"
-done
-
-# Finding 1: a `--` consumed as a value-taking option's VALUE is not the
-# sentinel and must survive the rewrite; only the real sentinel is dropped. The
-# flag-shaped file text must arrive as ONE positional after a real `--`.
-printf -- '--model=x' > "$FF/s.txt"
-out="$(run_guard review --focus-file "$FF/s.txt" --model --)" && rc=0 || rc=$?
-check "review --focus-file f --model -- keeps the value '--' and the text positional" 0 "COMPANION-RAN:review|--model|--|--|--model=x$" "$rc" "$out"
-gone "review value-'--' case: handoff deleted on dispatch" "$FF/s.txt"
-printf -- '--model=x' > "$FF/s.txt"
-out="$(run_guard task --focus-file "$FF/s.txt" --model --)" && rc=0 || rc=$?
-check "task --focus-file f --model -- keeps the value '--' and the text positional" 0 "COMPANION-RAN:task|--model|--|--|--model=x$" "$rc" "$out"
-printf -- '--write --background' > "$FF/s.txt"
-out="$(run_guard task --model -- --focus-file "$FF/s.txt" --)" && rc=0 || rc=$?
-check "task --model -- --focus-file f --: value kept, real sentinel replaced" 0 "COMPANION-RAN:task|--model|--|--|--write --background$" "$rc" "$out"
-printf -- '--base=evil' > "$FF/s.txt"
-out="$(run_guard review --focus-file "$FF/s.txt" --)" && rc=0 || rc=$?
-check "review --focus-file f -- (real sentinel only) is not doubled" 0 "COMPANION-RAN:review|--|--base=evil$" "$rc" "$out"
-printf -- '--cwd=/ --model=x' > "$FF/s.txt"
-out="$(run_guard review --cwd -- --scope -- --focus-file "$FF/s.txt")" && rc=0 || rc=$?
-check "review with two value-'--' options keeps both values" 0 "COMPANION-RAN:review|--cwd|--|--scope|--|--|--cwd=/ --model=x$" "$rc" "$out"
-
-# The review-only value flags.
-for sub in review adversarial-review; do
-  printf -- '--background' > "$FF/v.txt"
-  out="$(run_guard "$sub" --focus-file "$FF/v.txt" --base)" && rc=0 || rc=$?
-  check "$sub trailing --base is refused" 2 "[-]-base was given without a value" "$rc" "$out"
-  check_no_dispatch "$sub trailing --base did not dispatch" "$INVOKED"
-  # A --focus-file token in a value position is ours: --model stays valueless.
-  printf 'mandate' > "$FF/v.txt"
-  out="$(run_guard "$sub" --model --focus-file "$FF/v.txt")" && rc=0 || rc=$?
-  check "$sub --model --focus-file f is refused, not model='--focus-file'" 2 "[-]-model was given without a value" "$rc" "$out"
-  check_no_dispatch "$sub --model --focus-file did not dispatch" "$INVOKED"
-done
-
-# Option recognition is per-subcommand, matching the parser that receives it;
-# a flag valid elsewhere is focus text there, so it is refused.
-for spec in "adversarial-review --prompt-file=extra" "adversarial-review --write" \
-            "adversarial-review --resume-last" "review --write" "review --prompt-file=x" \
-            "task --wait" "task --base=main" "task --scope=branch"; do
-  read -r sub xflag <<<"$spec"
-  printf 'mandate' > "$FF/x.txt"
-  out="$(run_guard "$sub" --focus-file "$FF/x.txt" "$xflag")" && rc=0 || rc=$?
-  check "$sub --focus-file + $xflag is refused as positional" 2 "cannot be combined with positional" "$rc" "$out"
-  check_no_dispatch "$sub + $xflag did not dispatch" "$INVOKED"
-done
-# ...while the companion's short aliases (-m, -C) are flags, not focus text.
-printf 'plan' > "$FF/a.txt"
-out="$(run_guard task -m gpt -C . --focus-file "$FF/a.txt")" && rc=0 || rc=$?
-check "task -m/-C aliases are flags beside --focus-file" 0 "COMPANION-RAN:task|-m|gpt|-C|.|--|plan" "$rc" "$out"
-printf 'focus' > "$FF/a.txt"
-out="$(run_guard review --scope=branch -m gpt --wait --focus-file "$FF/a.txt")" && rc=0 || rc=$?
-check "review inline/short/boolean flags beside --focus-file" 0 "COMPANION-RAN:review|--scope=branch|-m|gpt|--wait|--|focus" "$rc" "$out"
-# review --effort keeps its own, specific refusal rather than "positional".
-printf 'focus' > "$FF/a.txt"
-out="$(run_guard review --effort high --focus-file "$FF/a.txt")" && rc=0 || rc=$?
-check "review --effort + --focus-file gets the dedicated --effort refusal" 2 "review does not accept --effort" "$rc" "$out"
-check_no_dispatch "review --effort + --focus-file did not dispatch" "$INVOKED"
-kept "review --effort refusal did NOT delete the handoff" "$FF/a.txt"
-
-# Finding 2: TMPDIR is the caller's, so it decides nothing. The old rule deleted
-# a file in a 0700 dir directly under $TMPDIR; with TMPDIR pointed at a fake
-# home, that was the user's ~/.ssh/config.
-FH="$TMP/fakehome"; mkdir -p -m 700 "$FH/.ssh"; chmod 700 "$FH/.ssh"
-printf 'Host *\n  User me\n' > "$FH/.ssh/config"
-out="$(TMPDIR="$FH" run_guard review --focus-file "$FH/.ssh/config" --help)" && rc=0 || rc=$?
-check "TMPDIR=\$HOME-like --help exits 0" 0 "crew-codex review \[flags\]" "$rc" "$out"
-kept "TMPDIR=\$HOME-like --help: ~/.ssh/config NOT deleted" "$FH/.ssh/config"
-out="$(TMPDIR="$FH" run_guard review --focus-file "$FH/.ssh/config")" && rc=0 || rc=$?
-check "TMPDIR=\$HOME-like dispatch reads the file" 0 "COMPANION-RAN:review|--|Host" "$rc" "$out"
-check "TMPDIR=\$HOME-like dispatch notes the file was left" 0 "left in place" "$rc" "$out"
-kept "TMPDIR=\$HOME-like dispatch: ~/.ssh/config NOT deleted" "$FH/.ssh/config"
-# A 0700 dir of ours directly under the REAL $TMPDIR (the old disposable shape).
-TD="$(mktemp -d)"; FOCUS_DIRS="$FOCUS_DIRS $TD"; chmod 700 "$TD"; printf 'tmpdir text' > "$TD/f.txt"
-out="$(run_guard task --focus-file "$TD/f.txt")" && rc=0 || rc=$?
-check "\$TMPDIR 0700 dir without marker: dispatched" 0 "COMPANION-RAN:task|--|tmpdir text" "$rc" "$out"
-kept "\$TMPDIR 0700 dir without marker: file NOT deleted" "$TD/f.txt"
-# The old /tmp recipe: `mkdir -p -m 700 /tmp/crew-focus-<unique>`.
-if R="$(mktemp -d /tmp/crew-focus-test.XXXXXX 2>/dev/null)"; then
-  FOCUS_DIRS="$FOCUS_DIRS $R"
-  chmod 700 "$R"; printf 'recipe' > "$R/focus.txt"
-  out="$(run_guard task --focus-file "$R/focus.txt")" && rc=0 || rc=$?
-  check "/tmp 0700 dir without marker: dispatched" 0 "COMPANION-RAN:task|--|recipe" "$rc" "$out"
-  kept "/tmp 0700 dir without marker: file NOT deleted" "$R/focus.txt"
-  printf 'loose' > "$R/../crew-focus-loose-$$.txt" 2>/dev/null && {
-    out="$(run_guard task --focus-file "/tmp/crew-focus-loose-$$.txt")" && rc=0 || rc=$?
-    kept "/tmp file directly in /tmp: NOT deleted" "/tmp/crew-focus-loose-$$.txt"
-    rm -f "/tmp/crew-focus-loose-$$.txt"
-  }
-else
-  skip "/tmp focus file" "cannot create a directory under /tmp"
-fi
-# A file outside any temp dir, and the repo checkout itself.
-NT="$TMP/notes"; mkdir -p "$NT"; chmod 755 "$NT"
-printf 'my notes' > "$NT/notes.md"
-out="$(run_guard review --focus-file "$NT/notes.md" extra)" && rc=0 || rc=$?
-check "plain focus file + positional is refused" 2 "cannot be combined with positional" "$rc" "$out"
-kept "refused plain focus file is NOT deleted" "$NT/notes.md"
-out="$(run_guard review --focus-file "$NT/notes.md")" && rc=0 || rc=$?
-check "plain focus file is read and dispatched" 0 "COMPANION-RAN:review|--|my notes" "$rc" "$out"
-check "plain focus file prints a left-in-place note" 0 "focus file '$NT/notes.md' left in place" "$rc" "$out"
-kept "dispatched plain focus file is NOT deleted" "$NT/notes.md"
-out="$(run_guard task --focus-file "$REPO/.claude-plugin/plugin.json" --background)" && rc=0 || rc=$?
-check "repo file as focus: dispatched" 0 "COMPANION-RAN:task|--background|--|{" "$rc" "$out"
-kept "repo file as focus: NOT deleted" "$REPO/.claude-plugin/plugin.json"
-
-# Marker-dir look-alikes are never trusted.
-NM="$TMP/nomarker"; mkdir -p -m 700 "$NM"; chmod 700 "$NM"; printf 'nm' > "$NM/f.txt"
-out="$(run_guard task --focus-file "$NM/f.txt")" && rc=0 || rc=$?
-check "dir lacking the marker: dispatched" 0 "COMPANION-RAN:task|--|nm" "$rc" "$out"
-kept "dir lacking the marker: file NOT deleted" "$NM/f.txt"
-BM="$TMP/badmarker"; mkdir -p -m 700 "$BM"; chmod 700 "$BM"
-printf 'something else\n' > "$BM/.crew-codex-focus-dir"; printf 'bm' > "$BM/f.txt"
-out="$(run_guard task --focus-file "$BM/f.txt")" && rc=0 || rc=$?
-kept "dir whose marker has the wrong text: file NOT deleted" "$BM/f.txt"
-LM="$TMP/linkmarker"; mkdir -p -m 700 "$LM"; chmod 700 "$LM"
-ln -s "$FF/.crew-codex-focus-dir" "$LM/.crew-codex-focus-dir"; printf 'lm' > "$LM/f.txt"
-out="$(run_guard task --focus-file "$LM/f.txt")" && rc=0 || rc=$?
-kept "dir whose marker is a symlink: file NOT deleted" "$LM/f.txt"
-W="$(focus_dir)"; chmod 750 "$W"; printf 'w' > "$W/f.txt"
-out="$(run_guard task --focus-file "$W/f.txt")" && rc=0 || rc=$?
-check "marker dir with mode 0750: dispatched" 0 "COMPANION-RAN:task|--|w" "$rc" "$out"
-kept "marker dir with mode 0750: file NOT deleted" "$W/f.txt"
-SUB="$(focus_dir)"; mkdir -m 700 "$SUB/inner"; printf 'nested' > "$SUB/inner/f.txt"
-out="$(run_guard task --focus-file "$SUB/inner/f.txt")" && rc=0 || rc=$?
-kept "file in a subdir of a marker dir (not directly inside): NOT deleted" "$SUB/inner/f.txt"
-out="$(run_guard task --focus-file "$FF/.crew-codex-focus-dir")" && rc=0 || rc=$?
-kept "the marker itself as --focus-file: NOT deleted" "$FF/.crew-codex-focus-dir"
-
-# Symlinks: a symlinked focus FILE is never deleted, nor is its target, even in
-# a marker dir.
-S="$(focus_dir)"; : > "$S/keep"; printf 'target text' > "$NT/target.md"
-ln -s "$NT/target.md" "$S/link.txt"
-out="$(run_guard task --focus-file "$S/link.txt")" && rc=0 || rc=$?
-check "symlink in marker dir: target text dispatched" 0 "COMPANION-RAN:task|--|target text" "$rc" "$out"
-kept "symlink in marker dir: link NOT deleted" "$S/link.txt"
-kept "symlink in marker dir: target NOT deleted" "$NT/target.md"
-printf 'disposable target' > "$S/real.txt"; ln -s "$S/real.txt" "$S/link2.txt"
-out="$(run_guard task --focus-file "$S/link2.txt")" && rc=0 || rc=$?
-check "symlink to a marker-dir file: dispatched" 0 "COMPANION-RAN:task|--|disposable target" "$rc" "$out"
-kept "symlink to a marker-dir file: target NOT deleted through the link" "$S/real.txt"
-kept "symlink to a marker-dir file: link NOT deleted" "$S/link2.txt"
-# A symlinked PARENT is judged by where it leads: out to a plain dir -> kept...
-mkdir -p -m 700 "$TMP/priv"; printf 'escaped' > "$TMP/priv/f.txt"
-ln -s "$TMP/priv" "$S/out"
-out="$(run_guard task --focus-file "$S/out/f.txt")" && rc=0 || rc=$?
-check "symlinked parent out of a marker dir: dispatched" 0 "COMPANION-RAN:task|--|escaped" "$rc" "$out"
-kept "symlinked parent out of a marker dir: file NOT deleted" "$TMP/priv/f.txt"
-# ...into a real marker dir -> deleted there (the /tmp -> /private/tmp shape).
-A="$(focus_dir)"; printf 'aliased' > "$A/f.txt"; ln -s "$A" "$TMP/alias"
-out="$(run_guard task --focus-file "$TMP/alias/f.txt")" && rc=0 || rc=$?
-check "symlinked parent into a marker dir: dispatched" 0 "COMPANION-RAN:task|--|aliased" "$rc" "$out"
-gone "symlinked parent into a marker dir: file deleted" "$A/f.txt"
-kept "symlinked parent into a marker dir: link left" "$TMP/alias"
-
-# The agent's static capability probe must keep matching the binary, and the
-# recipe must use focus-dir, a fresh origin/main and no hand-made /tmp dir.
-if grep -q crew_focus_apply "$CREW" && grep -q crew_focus_dir_create "$CREW"; then
-  echo "PASS: codex-adversary capability probes match crew-codex"; pass=$((pass + 1))
-else
-  echo "FAIL: crew_focus_apply/crew_focus_dir_create gone from crew-codex; update codex-adversary's probe"; fail=$((fail + 1))
-fi
-ADV_MD="$REPO/../dev-workflow/agents/codex-adversary.md"
-check_contains "codex-adversary uses the static focus-file probe" "$ADV_MD" 'grep -q crew_focus_dir_create "$(command -v crew-codex)"'
-check_contains "codex-adversary creates the handoff dir with crew-codex focus-dir" "$ADV_MD" 'crew-codex focus-dir'
-check_contains "codex-adversary fetches before reviewing" "$ADV_MD" 'git fetch origin'
-check_contains "codex-adversary launch reviews against origin/main" "$ADV_MD" 'crew-codex adversarial-review --background --base origin/main --model gpt-6-astra --effort <level> --focus-file <dir>/focus.txt'
-if grep -q 'mkdir -p -m 700' "$ADV_MD" || grep -q -- '--base main ' "$ADV_MD"; then
-  echo "FAIL: codex-adversary still carries the mkdir recipe or --base main"; fail=$((fail + 1))
-else
-  echo "PASS: codex-adversary dropped the mkdir recipe and --base main"; pass=$((pass + 1))
-fi
-
 # Case 28: bare crew-codex and top-level help print usage, forward nothing
 out="$(run_guard)" && rc=0 || rc=$?
 check "bare crew-codex exits 0" 0 "Subcommands crew-codex handles itself" "$rc" "$out"
@@ -2590,29 +2262,6 @@ assert d['model'] == 'gpt-5.6-sol', d
 else
   echo "FAIL: sidecar wrong for an --effort review"; fail=$((fail + 1))
 fi
-
-# Case 44b: adversarial-review --focus-file end to end through the driver. The
-# file's text — flag-shaped tokens and shell metacharacters included — must reach
-# the turn as FOCUS verbatim and never as flags (no --background detach, effort
-# still the one on the command line), and the handoff must be gone. Placed after
-# 42-44, which read Case 41's turn and job records.
-FE="$(focus_dir)"
-printf -- '--background --effort low $(touch %s/PWNED) `x`\n' "$FE" > "$FE/focus.txt"
-out="$(run_effort adversarial-review --effort high --model gpt-5.6-sol --focus-file "$FE/focus.txt")" && rc=0 || rc=$?
-check "driver --focus-file dispatch renders the review" 0 "RENDERED Adversarial Review" "$rc" "$out"
-check_no_dispatch "driver --focus-file bypassed the vendor companion" "$INVOKED_E"
-if python3 -c "
-import json, sys
-t = json.load(open('$TMP/effort/turn.json'))
-assert t['effort'] == 'high', t
-assert 'FOCUS=--background --effort low \$(touch $FE/PWNED) \`x\`' in t['prompt'], t['prompt']
-"; then
-  echo "PASS: driver --focus-file text reached the turn as focus, not as flags"; pass=$((pass + 1))
-else
-  echo "FAIL: driver --focus-file focus wrong ($(cat "$TMP/effort/turn.json" 2>/dev/null))"; fail=$((fail + 1))
-fi
-gone "driver --focus-file handoff deleted" "$FE/focus.txt"
-gone "driver --focus-file text never executed" "$FE/PWNED"
 
 # Case 45: every valid effort is accepted and threaded through verbatim.
 for e in none minimal low medium high xhigh; do
@@ -4266,50 +3915,6 @@ else
 fi
 check_no_dispatch "background dispatch bypassed the vendor companion" "$INVOKED_E"
 
-# Case 50b: --focus-file through a REAL --background detach on the driver. The
-# text must survive into the detached worker (it is handed the text in argv and
-# the job record, never the path), the marker-dir handoff must be gone by the
-# time the parent returns, and focus prose that mentions "--background" must not
-# be what made the launch detach.
-FBG="$(focus_dir)"
-printf -- 'bg mandate --effort low --background $(touch %s/PWNED)\n' "$FBG" > "$FBG/focus.txt"
-: > "$INVOKED_E"
-rm -f "$TMP/effort/turn.json"
-out="$(CLAUDE_CONFIG_DIR="$TMP/effort" CREW_TEST_INVOKED="$INVOKED_E" \
-  CREW_TEST_TURN_RECORD="$TMP/effort/turn.json" CREW_TEST_STATE_DIR="$STATE_E" \
-  CREW_TEST_JOB_SUFFIX="bgfocus" CREW_CODEX_ARCHIVE_DIR="$ARC_E" \
-  CODEX_HOME="$TMP/effort/codex-home" CREW_CODEX_RETRY_DELAYS="0" \
-  bash "$CREW" adversarial-review --background --effort high --focus-file "$FBG/focus.txt" 2>&1)" && rc=0 || rc=$?
-check "background --focus-file returns a job id" 0 "started in the background as review-stub-bgfocus" "$rc" "$out"
-gone "background --focus-file: handoff deleted before the parent returned" "$FBG/focus.txt"
-gone "background --focus-file: emptied marker dir removed" "$FBG"
-waited=0
-while [[ $waited -lt 30 ]]; do
-  if [[ -f "$TMP/effort/turn.json" ]]; then break; fi
-  sleep 1; waited=$((waited + 1))
-done
-if python3 -c "
-import json
-t = json.load(open('$TMP/effort/turn.json'))
-assert t['effort'] == 'high', t
-assert 'FOCUS=bg mandate --effort low --background \$(touch $FBG/PWNED)' in t['prompt'], t['prompt']
-j = json.load(open('$STATE_E/review-stub-bgfocus.json'))
-assert j['status'] == 'completed', j
-" 2>/dev/null; then
-  echo "PASS: detached worker received the focus-file text as focus (${waited}s)"; pass=$((pass + 1))
-else
-  echo "FAIL: detached worker lost the focus-file text (${waited}s; turn: $(cat "$TMP/effort/turn.json" 2>/dev/null))"; fail=$((fail + 1))
-fi
-gone "background --focus-file text never executed" "$FBG/PWNED"
-# Foreground with "--background" only inside the focus TEXT: no detach.
-FFG="$(focus_dir)"
-printf -- 'please do not --background this\n' > "$FFG/focus.txt"
-rm -f "$TMP/effort/turn.json"
-out="$(run_effort adversarial-review --effort high --focus-file "$FFG/focus.txt")" && rc=0 || rc=$?
-check "focus text mentioning --background stays foreground" 0 "RENDERED Adversarial Review" "$rc" "$out"
-check_absent "focus text mentioning --background did not detach" "$out" "started in the background"
-gone "foreground --focus-file handoff deleted" "$FFG/focus.txt"
-
 
 # ============================================================================
 # Ported from upstream sidkik/claude-plugins v0.4.3..v0.6.1 (commit 965b419).
@@ -5062,69 +4667,188 @@ else
   skip "bash 3.2 sanitize-archive and reap --brokers" "/bin/bash is absent or not bash 3.x"
 fi
 
-# Case B32f: --focus-file under /bin/bash 3.2 — empty arrays under `set -u`, the
-# dispatch-time disposal and the permission/owner/marker probe are all
-# 3.2-sensitive.
-if [[ -x /bin/bash ]] && [[ "$(/bin/bash -c 'echo ${BASH_VERSINFO[0]}')" -lt 4 ]]; then
-  run_guard32() {
-    : > "$INVOKED"
-    CLAUDE_CONFIG_DIR="$TMP/guard" CREW_TEST_INVOKED="$INVOKED" /bin/bash "$CREW" "$@" 2>&1
+
+# --- crew-adversary-review: file-based focus launcher ------------------------
+# The wrapper resolves crew-codex as its SIBLING, so the fixture copies it into
+# a private bin dir next to a fake crew-codex that records argv NUL-separated.
+ADV_BIN="$TMP/adv/bin"
+mkdir -p "$ADV_BIN"
+cp "$HERE/../bin/crew-adversary-review" "$ADV_BIN/crew-adversary-review"
+cat > "$ADV_BIN/crew-codex" <<'ADVEOF'
+#!/usr/bin/env bash
+: > "$ADV_ARGV"
+for a in "$@"; do printf '%s\0' "$a" >> "$ADV_ARGV"; done
+echo "FAKE-CREW-CODEX-RAN"
+ADVEOF
+chmod +x "$ADV_BIN/crew-adversary-review" "$ADV_BIN/crew-codex"
+ADV_ARGV="$TMP/adv/argv"
+export ADV_ARGV
+
+# A work tree with a local bare origin, so `git fetch origin` is real.
+git init -q --bare "$TMP/adv/origin.git"
+git init -q "$TMP/adv/wt"
+git -C "$TMP/adv/wt" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$TMP/adv/wt" remote add origin "$TMP/adv/origin.git"
+ADV_WT="$TMP/adv/wt"
+mkdir -p "$TMP/adv/notgit"
+
+# Fetch recorder: a git shim on PATH that logs fetches, then defers to real git.
+REAL_GIT="$(command -v git)"
+mkdir -p "$TMP/adv/shim"
+cat > "$TMP/adv/shim/git" <<ADVEOF
+#!/usr/bin/env bash
+case " \$* " in *" fetch origin"*) echo "\$*" >> "$TMP/adv/fetch.log" ;; esac
+exec "$REAL_GIT" "\$@"
+ADVEOF
+chmod +x "$TMP/adv/shim/git"
+
+# adv_run <shell> <args...>: run the wrapper, resetting the recorders first.
+adv_run() {
+  local sh="$1"; shift
+  : > "$ADV_ARGV"; : > "$TMP/adv/fetch.log"
+  PATH="$TMP/adv/shim:$PATH" "$sh" "$ADV_BIN/crew-adversary-review" "$@" 2>&1
+}
+adv_argc() { tr -cd '\0' < "$ADV_ARGV" | wc -c | tr -d ' '; }
+adv_last() { python3 -c "import sys; print(open(sys.argv[1],'rb').read().split(b'\0')[-2].decode(), end='')" "$ADV_ARGV"; }
+adv_head() { python3 -c "import sys; print('|'.join(x.decode() for x in open(sys.argv[1],'rb').read().split(b'\0')[:-2]), end='')" "$ADV_ARGV"; }
+
+adv_check_same() {  # name expected actual
+  if [[ "$2" == "$3" ]]; then echo "PASS: $1"; pass=$((pass + 1))
+  else echo "FAIL: $1 (want: [$2] got: [$3])"; fail=$((fail + 1)); fi
+}
+
+ADV_FOCUS="$TMP/adv/focus.txt"
+printf 'Review this change adversarially.\n' > "$ADV_FOCUS"
+adv_sum() { cksum < "$ADV_FOCUS"; }
+ADV_SUM="$(adv_sum)"
+
+for ADV_SH in bash /bin/bash; do
+  if [[ "$ADV_SH" == "/bin/bash" ]]; then
+    { [[ -x /bin/bash ]] && [[ "$(/bin/bash -c 'echo ${BASH_VERSINFO[0]}')" -lt 4 ]]; } \
+      || { skip "crew-adversary-review under bash 3.2" "/bin/bash is absent or not bash 3.x"; continue; }
+    L="/bin/bash 3.2 crew-adversary-review"
+  else
+    L="crew-adversary-review"
+  fi
+
+  # Happy path: exact argv, fetch called.
+  out="$(adv_run "$ADV_SH" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --model m1 --effort high)" && rc=0 || rc=$?
+  check "$L happy path exits 0" 0 "FAKE-CREW-CODEX-RAN" "$rc" "$out"
+  adv_check_same "$L happy path argv" \
+    "adversarial-review|--cwd|$ADV_WT|--base|origin/main|--model|m1|--effort|high|--wait|--" "$(adv_head)"
+  adv_check_same "$L happy path focus text is the last argv" "Review this change adversarially." "$(adv_last)"
+  adv_check_same "$L ran git fetch origin" "-C $ADV_WT fetch origin" "$(cat "$TMP/adv/fetch.log")"
+
+  # Defaults + --base override.
+  out="$(adv_run "$ADV_SH" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS")" && rc=0 || rc=$?
+  adv_check_same "$L defaults (origin/main, gpt-6-astra, medium)" \
+    "adversarial-review|--cwd|$ADV_WT|--base|origin/main|--model|gpt-6-astra|--effort|medium|--wait|--" "$(adv_head)"
+  out="$(adv_run "$ADV_SH" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --base origin/dev)" && rc=0 || rc=$?
+  adv_check_same "$L --base override" \
+    "adversarial-review|--cwd|$ADV_WT|--base|origin/dev|--model|gpt-6-astra|--effort|medium|--wait|--" "$(adv_head)"
+
+  # Hostile focus text reaches argv verbatim as exactly one trailing argument.
+  for hostile in '--model=x' '--background' '-- --base=evil' '--effort high'; do
+    printf '%s' "$hostile" > "$TMP/adv/hostile.txt"
+    out="$(adv_run "$ADV_SH" --cwd "$ADV_WT" --focus-file "$TMP/adv/hostile.txt")" && rc=0 || rc=$?
+    adv_check_same "$L focus text '$hostile' verbatim" "$hostile" "$(adv_last)"
+    adv_check_same "$L focus text '$hostile' is one argument (argc 12)" "12" "$(adv_argc)"
+  done
+  cat > "$TMP/adv/multi.txt" <<'ADVEOF'
+Line "one" with 'quotes'
+$(touch /tmp/should-not-exist-adv) `touch /tmp/should-not-exist-adv` $HOME ${PATH}
+--background
+ADVEOF
+  out="$(adv_run "$ADV_SH" --cwd "$ADV_WT" --focus-file "$TMP/adv/multi.txt")" && rc=0 || rc=$?
+  adv_check_same "$L multi-line focus text verbatim" "$(cat "$TMP/adv/multi.txt")" "$(adv_last)"
+  adv_check_same "$L multi-line focus text is one argument" "12" "$(adv_argc)"
+  if [[ ! -e /tmp/should-not-exist-adv ]]; then echo "PASS: $L focus text was never shell-evaluated"; pass=$((pass + 1))
+  else echo "FAIL: $L focus text was shell-evaluated"; fail=$((fail + 1)); rm -f /tmp/should-not-exist-adv; fi
+
+  # Refusals: exit 2, crew-codex never invoked, stderr names the wrapper.
+  adv_refuse() {  # name, then args
+    local name="$1"; shift
+    out="$(adv_run "$ADV_SH" "$@")" && rc=0 || rc=$?
+    check "$L refuses $name" 2 "crew-adversary-review:" "$rc" "$out"
+    adv_check_same "$L $name did not invoke crew-codex" "0" "$(adv_argc)"
   }
-  B="$(focus_dir)"; : > "$B/keep"
-  printf -- '--background $(touch %s/PWNED)' "$B" > "$B/ok.txt"
-  out="$(run_guard32 task --focus-file "$B/ok.txt")" && rc=0 || rc=$?
-  check "/bin/bash 3.2 task --focus-file dispatches the text as one positional" 0 "COMPANION-RAN:task|--|--background \$(touch" "$rc" "$out"
-  gone "/bin/bash 3.2 handoff deleted" "$B/ok.txt"
-  gone "/bin/bash 3.2 focus text never executed" "$B/PWNED"
-  printf 'x' > "$B/m.txt"
-  out="$(run_guard32 adversarial-review --focus-file "$B/m.txt" --model)" && rc=0 || rc=$?
-  check "/bin/bash 3.2 trailing --model refused" 2 "[-]-model was given without a value" "$rc" "$out"
-  check_no_dispatch "/bin/bash 3.2 trailing --model did not dispatch" "$INVOKED"
-  kept "/bin/bash 3.2 refusal did NOT delete the handoff" "$B/m.txt"
-  printf 'x' > "$B/h.txt"
-  out="$(run_guard32 review --focus-file "$B/h.txt" --help)" && rc=0 || rc=$?
-  check "/bin/bash 3.2 --focus-file f --help prints usage" 0 "crew-codex review \[flags\]" "$rc" "$out"
-  kept "/bin/bash 3.2 --help did NOT delete the handoff" "$B/h.txt"
-  printf 'a' > "$B/d1.txt"; printf 'b' > "$B/d2.txt"
-  out="$(run_guard32 review --focus-file "$B/d1.txt" --focus-file "$B/d2.txt")" && rc=0 || rc=$?
-  check "/bin/bash 3.2 duplicate --focus-file refused" 2 "given more than once" "$rc" "$out"
-  kept "/bin/bash 3.2 duplicate: handoffs NOT deleted" "$B/d2.txt"
-  out="$(run_guard32 review --focus-file=)" && rc=0 || rc=$?
-  check "/bin/bash 3.2 --focus-file= refused" 2 "without a path" "$rc" "$out"
-  printf 'x' > "$B/p.txt"
-  out="$(run_guard32 adversarial-review --focus-file "$B/p.txt" --prompt-file=extra)" && rc=0 || rc=$?
-  check "/bin/bash 3.2 cross-subcommand flag refused as positional" 2 "cannot be combined with positional" "$rc" "$out"
-  mkdir -p "$TMP/notes32"; chmod 755 "$TMP/notes32"; printf 'keep me' > "$TMP/notes32/n.md"
-  out="$(run_guard32 review --focus-file "$TMP/notes32/n.md")" && rc=0 || rc=$?
-  check "/bin/bash 3.2 non-temp file read and dispatched" 0 "COMPANION-RAN:review|--|keep me" "$rc" "$out"
-  kept "/bin/bash 3.2 non-temp file NOT deleted" "$TMP/notes32/n.md"
-  ln -s "$TMP/notes32/n.md" "$B/link.txt"
-  out="$(run_guard32 review --focus-file "$B/link.txt")" && rc=0 || rc=$?
-  check "/bin/bash 3.2 symlinked focus file dispatched" 0 "COMPANION-RAN:review|--|keep me" "$rc" "$out"
-  kept "/bin/bash 3.2 symlink NOT deleted" "$B/link.txt"
-  kept "/bin/bash 3.2 symlink target NOT deleted" "$TMP/notes32/n.md"
-  # Marker-dir rule and the three findings under 3.2.
-  FD32="$(TMPDIR="$TMP" /bin/bash "$CREW" focus-dir)"; FOCUS_DIRS="$FOCUS_DIRS $FD32"
-  check "/bin/bash 3.2 focus-dir creates a marker dir" 0 "crew-codex focus-dir v1" 0 "$(cat "$FD32/.crew-codex-focus-dir" 2>/dev/null)"
-  : > "$FD32/keep"
-  printf -- '--model=x' > "$FD32/s.txt"
-  out="$(run_guard32 review --focus-file "$FD32/s.txt" --model --)" && rc=0 || rc=$?
-  check "/bin/bash 3.2 value '--' kept, text positional" 0 "COMPANION-RAN:review|--model|--|--|--model=x$" "$rc" "$out"
-  gone "/bin/bash 3.2 marker-dir handoff deleted on dispatch" "$FD32/s.txt"
-  printf 'x' > "$FD32/p.txt"
-  out="$(run_guard32 task -prompt-file other --focus-file "$FD32/p.txt")" && rc=0 || rc=$?
-  check "/bin/bash 3.2 -prompt-file refused" 2 "cannot be combined with --prompt-file" "$rc" "$out"
-  kept "/bin/bash 3.2 refusal kept the handoff" "$FD32/p.txt"
-  mkdir -p -m 700 "$TMP/fh32/.ssh"; chmod 700 "$TMP/fh32/.ssh"; printf 'cfg' > "$TMP/fh32/.ssh/config"
-  out="$(TMPDIR="$TMP/fh32" run_guard32 review --focus-file "$TMP/fh32/.ssh/config" --help)" && rc=0 || rc=$?
-  kept "/bin/bash 3.2 TMPDIR=\$HOME-like --help kept ~/.ssh/config" "$TMP/fh32/.ssh/config"
-  out="$(TMPDIR="$TMP/fh32" run_guard32 review --focus-file "$TMP/fh32/.ssh/config")" && rc=0 || rc=$?
-  check "/bin/bash 3.2 TMPDIR=\$HOME-like dispatch" 0 "COMPANION-RAN:review|--|cfg" "$rc" "$out"
-  kept "/bin/bash 3.2 TMPDIR=\$HOME-like dispatch kept ~/.ssh/config" "$TMP/fh32/.ssh/config"
+  adv_refuse "unknown flag" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --verbose
+  adv_refuse "--model=x form" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --model=x
+  adv_refuse "-cwd" -cwd "$ADV_WT" --focus-file "$ADV_FOCUS"
+  adv_refuse "positional" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" extra
+  adv_refuse "bare --" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --
+  adv_refuse "-- with text" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" -- focus
+  adv_refuse "duplicate option" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --model a --model b
+  adv_refuse "duplicate --cwd" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --cwd "$ADV_WT"
+  adv_refuse "missing value" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --model
+  adv_refuse "value starting with -" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --model --base
+  adv_refuse "--background" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --background
+  adv_refuse "--wait" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" --wait
+  adv_refuse "missing --cwd" --focus-file "$ADV_FOCUS"
+  adv_refuse "missing --focus-file" --cwd "$ADV_WT"
+  adv_refuse "no arguments"
+  adv_refuse "nonexistent focus file" --cwd "$ADV_WT" --focus-file "$TMP/adv/nope.txt"
+  adv_refuse "directory as focus file" --cwd "$ADV_WT" --focus-file "$TMP/adv"
+  : > "$TMP/adv/empty.txt"; printf ' \n\t\n' > "$TMP/adv/blank.txt"
+  adv_refuse "empty focus file" --cwd "$ADV_WT" --focus-file "$TMP/adv/empty.txt"
+  adv_refuse "whitespace-only focus file" --cwd "$ADV_WT" --focus-file "$TMP/adv/blank.txt"
+  head -c 65537 /dev/zero | tr '\0' 'a' > "$TMP/adv/big.txt"
+  adv_refuse "oversize focus file" --cwd "$ADV_WT" --focus-file "$TMP/adv/big.txt"
+  adv_refuse "cwd not a git repo" --cwd "$TMP/adv/notgit" --focus-file "$ADV_FOCUS"
+  adv_refuse "cwd not a directory" --cwd "$ADV_FOCUS" --focus-file "$ADV_FOCUS"
+  # Exactly at the cap is accepted.
+  head -c 65536 /dev/zero | tr '\0' 'a' > "$TMP/adv/cap.txt"
+  out="$(adv_run "$ADV_SH" --cwd "$ADV_WT" --focus-file "$TMP/adv/cap.txt")" && rc=0 || rc=$?
+  check "$L accepts a focus file exactly at the 64 KiB cap" 0 "FAKE-CREW-CODEX-RAN" "$rc" "$out"
+
+  # A focus file reached through a symlink is read (never written).
+  ln -sf "$ADV_FOCUS" "$TMP/adv/focus.link"
+  out="$(adv_run "$ADV_SH" --cwd "$ADV_WT" --focus-file "$TMP/adv/focus.link")" && rc=0 || rc=$?
+  check "$L reads a focus file through a symlink" 0 "FAKE-CREW-CODEX-RAN" "$rc" "$out"
+
+  # --help: usage, exit 0, nothing dispatched.
+  out="$(adv_run "$ADV_SH" --help)" && rc=0 || rc=$?
+  check "$L --help prints usage" 0 "Usage: crew-adversary-review" "$rc" "$out"
+  adv_check_same "$L --help did not invoke crew-codex" "0" "$(adv_argc)"
+
+  # The focus file is untouched after success, refusal and --help.
+  adv_check_same "$L focus file intact after success/refusal/--help" "$ADV_SUM" "$(adv_sum)"
+
+  # Fetch failure: non-zero, crew-codex not invoked.
+  rm -rf "$TMP/adv/wt-nofetch"
+  git init -q "$TMP/adv/wt-nofetch"
+  git -C "$TMP/adv/wt-nofetch" remote add origin "$TMP/adv/does-not-exist.git"
+  out="$(adv_run "$ADV_SH" --cwd "$TMP/adv/wt-nofetch" --focus-file "$ADV_FOCUS")" && rc=0 || rc=$?
+  check "$L fetch failure exits non-zero and says so" 1 "git fetch origin' failed" "$rc" "$out"
+  adv_check_same "$L fetch failure did not invoke crew-codex" "0" "$(adv_argc)"
+  adv_check_same "$L focus file intact after fetch failure" "$ADV_SUM" "$(adv_sum)"
+done
+
+# Sibling resolution: through a symlink, the wrapper still uses the crew-codex
+# next to the real script, not one earlier on PATH.
+mkdir -p "$TMP/adv/linkdir" "$TMP/adv/otherbin"
+ln -sf "$ADV_BIN/crew-adversary-review" "$TMP/adv/linkdir/crew-adversary-review"
+printf '#!/usr/bin/env bash\necho WRONG-CREW-CODEX\n' > "$TMP/adv/otherbin/crew-codex"; chmod +x "$TMP/adv/otherbin/crew-codex"
+: > "$ADV_ARGV"
+out="$(PATH="$TMP/adv/otherbin:$PATH" "$TMP/adv/linkdir/crew-adversary-review" --cwd "$ADV_WT" --focus-file "$ADV_FOCUS" 2>&1)" && rc=0 || rc=$?
+check "crew-adversary-review via symlink uses the sibling crew-codex" 0 "FAKE-CREW-CODEX-RAN" "$rc" "$out"
+
+if [[ -x "$HERE/../bin/crew-adversary-review" ]]; then
+  echo "PASS: crew-adversary-review is executable"; pass=$((pass + 1))
 else
-  skip "bash 3.2 --focus-file" "/bin/bash is absent or not bash 3.x"
+  echo "FAIL: crew-adversary-review is not executable"; fail=$((fail + 1))
 fi
 
+# Recipe assertions on the dispatcher agent. The plain-CLI fallback (step 2)
+# legitimately keeps FOCUS="$(cat ...)", so the no-$(cat rule covers the driver
+# route only: everything before the "Pinned plain Codex CLI" heading.
+ADV_AGENT="$HERE/../../dev-workflow/agents/codex-adversary.md"
+if grep -q -- 'crew-adversary-review --cwd' "$ADV_AGENT"; then echo "PASS: codex-adversary recipe uses crew-adversary-review"; pass=$((pass + 1)); else echo "FAIL: codex-adversary recipe does not use crew-adversary-review"; fail=$((fail + 1)); fi
+if grep -qF 'Bash(crew-adversary-review:*)' "$ADV_AGENT"; then echo "PASS: codex-adversary recipe documents the allow rule"; pass=$((pass + 1)); else echo "FAIL: codex-adversary recipe lacks the allow rule"; fail=$((fail + 1)); fi
+if sed '/^2\. \*\*Pinned plain Codex CLI/,$d' "$ADV_AGENT" | grep -qF '$(cat'; then echo "FAIL: codex-adversary driver route still contains '\$(cat'"; fail=$((fail + 1)); else echo "PASS: codex-adversary driver route has no '\$(cat'"; pass=$((pass + 1)); fi
+for banned in 'focus-dir' 'mkdir -p -m 700' '--base main ' 'crew_focus' 'marker' '--focus-file <dir>'; do
+  if grep -qF -- "$banned" "$ADV_AGENT"; then echo "FAIL: codex-adversary recipe still contains '$banned'"; fail=$((fail + 1)); else echo "PASS: codex-adversary recipe has no '$banned'"; pass=$((pass + 1)); fi
+done
 
 echo
 echo "$pass passed, $fail failed, $skipped skipped"

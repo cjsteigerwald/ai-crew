@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# crew-adversary-review — one plain command that launches an adversarial review
+# whose focus text lives in a file.
+#
+# Why this exists: a Claude Code auto-mode allow rule such as
+# `Bash(crew-adversary-review:*)` can only match a plain command. Building the
+# focus text inline (`"$(cat file)"`, mktemp, redirects) makes the call compound
+# and it never matches. This wrapper takes the file path, validates it, and
+# hands the text to crew-codex as ONE argument after a `--` sentinel, so nothing
+# in the text can be parsed as an option (crew-codex and its review driver both
+# treat every token after `--` as literal focus text).
+#
+# It never writes, moves or deletes any file, and never runs in the background.
+# Must run under macOS /bin/bash 3.2: no bash-4 constructs.
+set -euo pipefail
+
+MAX_FOCUS_BYTES=65536
+
+usage() {
+  cat <<'USAGE'
+Usage: crew-adversary-review --cwd <dir> --focus-file <path> [--base <ref>] [--model <m>] [--effort <e>]
+
+Runs `git fetch origin` in <dir>, then a foreground (--wait) crew-codex
+adversarial review whose focus text is the contents of <path>.
+
+  --cwd <dir>          git work tree to review (required)
+  --focus-file <path>  readable, non-empty regular file, at most 64 KiB (required)
+  --base <ref>         diff base (default: origin/main)
+  --model <m>          model (default: gpt-6-astra)
+  --effort <e>         reasoning effort (default: medium)
+
+Only these long options, each as a separate `--opt value` pair. The file is
+only read: never written, moved or deleted.
+USAGE
+}
+
+die() {
+  echo "crew-adversary-review: $*" >&2
+  exit 2
+}
+
+if [[ $# -eq 1 && "$1" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+cwd="" focus_file="" base="" model="" effort=""
+have_cwd=0 have_focus=0 have_base=0 have_model=0 have_effort=0
+
+while [[ $# -gt 0 ]]; do
+  opt="$1"
+  case "$opt" in
+    --cwd|--focus-file|--base|--model|--effort) ;;
+    --background) die "--background is not supported: this wrapper always runs in the foreground (--wait)" ;;
+    --help) die "--help must be the only argument" ;;
+    *) die "unexpected argument '$opt' (see --help)" ;;
+  esac
+  [[ $# -ge 2 ]] || die "$opt needs a value"
+  val="$2"
+  [[ -n "$val" ]] || die "$opt needs a non-empty value"
+  [[ "$val" != -* ]] || die "$opt value '$val' starts with '-'"
+  case "$opt" in
+    --cwd)        [[ $have_cwd -eq 0 ]]    || die "duplicate --cwd";        cwd="$val";        have_cwd=1 ;;
+    --focus-file) [[ $have_focus -eq 0 ]]  || die "duplicate --focus-file"; focus_file="$val"; have_focus=1 ;;
+    --base)       [[ $have_base -eq 0 ]]   || die "duplicate --base";       base="$val";       have_base=1 ;;
+    --model)      [[ $have_model -eq 0 ]]  || die "duplicate --model";      model="$val";      have_model=1 ;;
+    --effort)     [[ $have_effort -eq 0 ]] || die "duplicate --effort";     effort="$val";     have_effort=1 ;;
+  esac
+  shift 2
+done
+
+[[ $have_cwd -eq 1 ]] || die "--cwd is required"
+[[ $have_focus -eq 1 ]] || die "--focus-file is required"
+[[ -n "$base" ]] || base="origin/main"
+[[ -n "$model" ]] || model="gpt-6-astra"
+[[ -n "$effort" ]] || effort="medium"
+
+[[ -d "$cwd" ]] || die "--cwd '$cwd' is not a directory"
+[[ "$(git -C "$cwd" rev-parse --is-inside-work-tree 2>/dev/null || true)" == "true" ]] \
+  || die "--cwd '$cwd' is not a git work tree"
+
+[[ -f "$focus_file" ]] || die "--focus-file '$focus_file' is not a regular file"
+[[ -r "$focus_file" ]] || die "--focus-file '$focus_file' is not readable"
+size="$(wc -c < "$focus_file" | tr -d ' ')"
+[[ "$size" -le "$MAX_FOCUS_BYTES" ]] || die "--focus-file is $size bytes; the cap is $MAX_FOCUS_BYTES"
+
+# $(cat) strips trailing newlines, which is fine for prose. The text only ever
+# travels as one argv slot.
+focus_text="$(cat "$focus_file")"
+trimmed="${focus_text//[[:space:]]/}"
+[[ -n "$trimmed" ]] || die "--focus-file is empty (whitespace only)"
+
+# Resolve the sibling crew-codex, following symlinks portably (no readlink -f).
+self="$0"
+while [[ -L "$self" ]]; do
+  link="$(readlink "$self")"
+  case "$link" in
+    /*) self="$link" ;;
+    *)  self="$(dirname "$self")/$link" ;;
+  esac
+done
+crew_codex="$(cd "$(dirname "$self")" && pwd)/crew-codex"
+[[ -x "$crew_codex" ]] || die "sibling crew-codex not found or not executable at $crew_codex"
+
+if ! git -C "$cwd" fetch origin; then
+  echo "crew-adversary-review: 'git fetch origin' failed in $cwd; refusing to review a possibly stale base" >&2
+  exit 1
+fi
+
+exec "$crew_codex" adversarial-review --cwd "$cwd" --base "$base" --model "$model" --effort "$effort" --wait -- "$focus_text"

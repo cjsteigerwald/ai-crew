@@ -66,25 +66,9 @@ retracted or revised, not preserved by weakening the test.
 
 Primary helper — `crew-codex`, on PATH while the plugin is enabled:
 
-- `crew-codex task [--background] [--write] [--resume-last] [--model <m>] [--effort <none|minimal|low|medium|high|xhigh>] ["<prompt>" | --focus-file <path>]`
+- `crew-codex task [--background] [--write] [--resume-last] [--model <m>] [--effort <none|minimal|low|medium|high|xhigh>] "<prompt>"`
 - `crew-codex review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <m>]`
-- `crew-codex adversarial-review [--wait|--background] [--base <ref>] [--scope <...>] [--model <m>] [--effort <none|minimal|low|medium|high|xhigh>] [focus text | --focus-file <path>]`
-  **`--focus-file <path>`** (also on `task` and `review`) reads the focus text/prompt
-  from a file and refuses with exit 2 (nothing dispatched) if the file is missing,
-  empty or whitespace-only, given twice, combined with positional text (any token
-  that subcommand's parser does not read as its own flag or a flag's value), or if
-  a value flag such as `--model` is left without its value, or with a prompt file
-  in any spelling. **Deletion rule:** create the handoff directory with
-  `crew-codex focus-dir` (prints a fresh `0700` marked directory) and write the file
-  directly inside it; that file — a regular file you own, not a symlink — is
-  deleted just before the turn starts or detaches, and the directory with it.
-  A refusal or `--help` exit deletes nothing. Any other file, in `/tmp` or
-  `$TMPDIR` too, is read but left in place, with a one-line note on stderr.
-  Under auto mode `crew-codex focus-dir` needs its own prefix allow rule, e.g.
-  `Bash(crew-codex focus-dir:*)`. Use it so
-  the launch is one plain `crew-codex ...` command — no `$(cat ...)`, `rm` or
-  variable — which a prefix allow rule matches under auto mode and which keeps
-  focus text out of the shell.
+- `crew-codex adversarial-review [--wait|--background] [--base <ref>] [--scope <...>] [--model <m>] [--effort <none|minimal|low|medium|high|xhigh>] [focus text]`
   **`--effort` is honored on `adversarial-review` only.** codex-companion still
   cannot set reasoning effort on any review path, so `crew-codex` runs EVERY
   `adversarial-review` through its own driver, `lib/review-with-effort.mjs`,
@@ -101,7 +85,6 @@ Primary helper — `crew-codex`, on PATH while the plugin is enabled:
   It never silently falls back to the vendor path, because that would run the
   review at an effort you did not ask for while reporting success. Update
   codex-crew, or pin the codex plugin to a version the driver supports.
-- `crew-codex focus-dir` — create a private (`0700`, unpredictable) marked directory for one `--focus-file` handoff and print its path
 - **Effort is the caller's.** The turn runs at exactly the `--effort` given.
   With no `--effort` at all, `adversarial-review` still goes through the
   driver and runs at `medium`, sent explicitly — never at the codex config's

@@ -337,17 +337,6 @@ crew-codex task --help|-h                            usage, exit 0, no dispatch
 crew-codex review --effort <e>                        error,  exit 2, no dispatch
 crew-codex adversarial-review --effort <bad>          error,  exit 2, no dispatch
 crew-codex [--help|-h|help]                           top-level usage, exit 0
-crew-codex review|adversarial-review|task --focus-file <path>
-                                                     focus text/prompt read from
-                                                     <path>; exit 2, no dispatch,
-                                                     when missing, empty, given
-                                                     twice, combined with
-                                                     positional text or a prompt
-                                                     file, or a value flag is
-                                                     left valueless
-crew-codex focus-dir                                 private marked dir for one
-                                                     --focus-file handoff; path
-                                                     on stdout
 ```
 
 Scope differs by spelling, deliberately. `--help` is intercepted at any
@@ -361,32 +350,6 @@ than printing usage one position later.
 
 Matching is otherwise exact: focus text may still contain the word `help` or any other
 `--`-prefixed token, and those forward untouched.
-
-**`--focus-file <path>`** keeps a launch to one plain `crew-codex ...` command (no
-`$(cat ...)`, `rm` or assignment), which a prefix allow rule matches under Claude
-Code auto mode. Its text is passed after a `--` sentinel, so flag-shaped content
-is never parsed as flags. "Positional text" is judged with the option table of
-the parser that actually receives that subcommand — the companion's review and
-task tables, and `lib/review-with-effort.mjs` for `adversarial-review` — so a flag
-valid on another subcommand (`--prompt-file` or `--write` on adversarial-review,
-`--wait` on task) counts as positional and is refused, and a prompt file in any
-spelling the companion accepts (`--prompt-file x`, `--prompt-file=x`,
-`-prompt-file x`) cannot be combined with `--focus-file`. Only the real `--`
-sentinel is replaced; a `--` taken as an option's value (`--model --`) stays.
-
-**Deletion rule — `crew-codex focus-dir`.** `crew-codex focus-dir` creates a fresh
-directory (`mktemp -d` under `${TMPDIR:-/tmp}`, unpredictable name, mode `0700`)
-holding a marker file, and prints its physical path. A focus file is deleted only
-when it is a regular file you own (not a symlink) directly inside such a
-directory — resolved physically, owned by you, mode exactly `0700`, marker
-present. Deletion happens just before dispatch (before the turn starts or
-`--background` detaches; the text is already in argv, so the job never re-reads
-the file), and the directory goes with it once only the marker is left. A
-refusal or `--help` exit deletes nothing. Any other file — in `/tmp` or
-`$TMPDIR` too, whatever `TMPDIR` is set to — is read but left in place, with a
-one-line stderr note, so `--focus-file ~/notes.md` can never destroy your notes.
-Under auto mode give `focus-dir` its own prefix allow rule, e.g.
-`Bash(crew-codex focus-dir:*)`, beside the `adversarial-review` / `task` ones.
 
 **Per-dispatch reasoning effort on adversarial reviews.** codex-companion
 cannot set reasoning effort on any review: its review parser knows only
@@ -570,6 +533,25 @@ admission-time rejection, so no partial work exists to double-apply. Retries
 are announced on stderr, never silent. Any other failure passes through
 untouched on the first attempt, and there is no automatic tier fallback —
 substituting a cheaper model is an orchestrator decision, made in the open.
+
+## `crew-adversary-review`
+
+`bin/crew-adversary-review` (on PATH beside `crew-codex`) launches a foreground
+adversarial review whose focus text is read from a file, as ONE plain command
+that an auto-mode allow rule `Bash(crew-adversary-review:*)` can match:
+
+```
+crew-adversary-review --cwd <dir> --focus-file <path> [--base <ref>] [--model <m>] [--effort <e>]
+```
+
+Defaults: `--base origin/main`, `--model gpt-6-astra`, `--effort medium`. It
+accepts only those long options as separate `--opt value` pairs (anything else
+exits 2), checks `<dir>` is a git work tree and the file is a non-empty regular
+file of at most 64 KiB, runs `git fetch origin` (failure exits 1), then execs the
+sibling `crew-codex adversarial-review ... --wait -- "<text>"`. The text follows
+a `--` sentinel, so nothing in it can be read as an option. The script only
+reads the file; it never writes, moves or deletes anything, and never
+backgrounds the review.
 
 ## Tests
 
