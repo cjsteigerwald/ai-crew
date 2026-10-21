@@ -4898,6 +4898,11 @@ if grep -q 'crew-codex await <job-id>' "$ADV_AGENT"; then echo "PASS: codex-adve
 # The launch section (before the job-id/await steps) must not describe a
 # foreground Bash timeout; the await loop itself legitimately sets one.
 if sed -n '/Driver path command/,/Grab the/p' "$ADV_AGENT" | grep -q 'timeout: 600000'; then echo "FAIL: codex-adversary launch section still has foreground timeout wording"; fail=$((fail + 1)); else echo "PASS: codex-adversary launch section has no foreground timeout wording"; pass=$((pass + 1)); fi
+for banned in 'rm -rf' 'CLAUDE_JOB_DIR'; do
+  if grep -qF -- "$banned" "$ADV_AGENT"; then echo "FAIL: codex-adversary recipe contains '$banned'"; fail=$((fail + 1)); else echo "PASS: codex-adversary recipe has no '$banned'"; pass=$((pass + 1)); fi
+done
+if grep -qF 'mktemp -d' "$ADV_AGENT"; then echo "PASS: codex-adversary recipe uses mktemp -d"; pass=$((pass + 1)); else echo "FAIL: codex-adversary recipe lacks mktemp -d"; fail=$((fail + 1)); fi
+if grep -qF 'rm "$D/focus.txt"' "$ADV_AGENT" && grep -qF 'rmdir "$D"' "$ADV_AGENT"; then echo "PASS: codex-adversary fallback deletes only focus.txt then rmdir"; pass=$((pass + 1)); else echo "FAIL: codex-adversary fallback cleanup is not focus.txt + rmdir"; fail=$((fail + 1)); fi
 for banned in 'focus-dir' 'mkdir -p -m 700' '--base main ' 'crew_focus' 'marker' '--focus-file <dir>'; do
   if grep -qF -- "$banned" "$ADV_AGENT"; then echo "FAIL: codex-adversary recipe still contains '$banned'"; fail=$((fail + 1)); else echo "PASS: codex-adversary recipe has no '$banned'"; pass=$((pass + 1)); fi
 done

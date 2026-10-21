@@ -6,11 +6,11 @@
 # `Bash(crew-adversary-review:*)` can only match a plain command. Building the
 # focus text inline (`"$(cat file)"`, mktemp, redirects) makes the call compound
 # and it never matches. This wrapper takes the file path, validates it, and
-# hands the text to crew-codex as ONE argument after a `--` sentinel, so nothing
-# in the text can be parsed as an option (crew-codex and its review driver both
-# treat every token after `--` as literal focus text).
+# hands the text to crew-codex as ONE argv element after a `--` sentinel, which
+# crew-codex's option parsers and the review driver treat as literal focus text.
 #
-# It never writes, moves or deletes any file. By default the review runs in the
+# It never writes, moves or deletes any file; its only mutation is
+# `git fetch origin` in <dir>. By default the review runs in the
 # foreground (--wait); with `--background` crew-codex detaches the job and
 # prints a job id (supervise it with `crew-codex await <job-id>`). The focus
 # text is passed on argv before the job detaches, so the file is not needed
@@ -36,7 +36,8 @@ focus text is the contents of <path>. Foreground (--wait) by default.
 
 Only these long options, each as a separate `--opt value` pair (`--background`
 takes no value). The file is
-only read: never written, moved or deleted.
+only read: never written, moved or deleted. The only mutation is
+`git fetch origin` in <dir>.
 USAGE
 }
 

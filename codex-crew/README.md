@@ -550,10 +550,15 @@ exits 2), checks `<dir>` is a git work tree and the file is a non-empty regular
 file of at most 64 KiB, runs `git fetch origin` (failure exits 1), then execs the
 sibling `crew-codex adversarial-review ... --wait -- "<text>"` (`--background`
 instead of `--wait` when `--background` is given: the job detaches, prints a job
-id, and is supervised with `crew-codex await <job-id>`). The text follows
-a `--` sentinel, so nothing in it can be read as an option. The script only
-reads the file; it never writes, moves or deletes anything. The text is on argv
-before the job detaches, so the file is not needed after the launch returns.
+id, and is supervised with `crew-codex await <job-id>`). The text is one argv
+element after a `--` sentinel, which crew-codex's option parsers and the review
+driver treat as literal focus text. The script only reads the file; it never
+writes, moves or deletes any file, and its only mutation is `git fetch origin`
+in `<dir>`. The text is on argv before the job detaches, so the file is not
+needed after the launch returns. Note: in foreground (`--wait`) mode, crew-codex's
+launch-lock and broker-teardown heuristic matches a bare `--background` token
+anywhere in argv, `--` or not, so it can misfire if the focus text contains that
+token; that is why the recipe always uses `--background`.
 
 ## Tests
 
