@@ -4903,7 +4903,8 @@ for banned in '$(command -v' '>/dev/null' '2>&1'; do
   if grep -qF -- "$banned" <<<"$ADV_DRIVER_ROUTE"; then echo "FAIL: codex-adversary driver route contains '$banned'"; fail=$((fail + 1)); else echo "PASS: codex-adversary driver route has no '$banned'"; pass=$((pass + 1)); fi
 done
 if grep -qF 'Run `command -v crew-codex` on its own' <<<"$ADV_DRIVER_ROUTE"; then echo "PASS: codex-adversary driver route has a plain command -v step"; pass=$((pass + 1)); else echo "FAIL: codex-adversary driver route lacks a plain command -v step"; fail=$((fail + 1)); fi
-if grep -F 'crew-codex reap --dry-run' <<<"$ADV_DRIVER_ROUTE" | grep -vqE 'reap --dry-run[^`]*(>|2>&1)' && ! grep -qE 'reap --dry-run *(>|2>)' <<<"$ADV_DRIVER_ROUTE"; then echo "PASS: codex-adversary reap probe is a plain call"; pass=$((pass + 1)); else echo "FAIL: codex-adversary reap probe has a redirect"; fail=$((fail + 1)); fi
+if grep -F 'crew-codex reap --dry-run' <<<"$ADV_DRIVER_ROUTE" | grep -vqE 'reap --dry-run[^`]*(>|2>|\||&&|;)' && ! grep -qE 'reap --dry-run *(>|2>|\||&&|;)' <<<"$ADV_DRIVER_ROUTE"; then echo "PASS: codex-adversary reap probe is a plain call"; pass=$((pass + 1)); else echo "FAIL: codex-adversary reap probe has a redirect, pipe or chain"; fail=$((fail + 1)); fi
+if ! grep -q 'readlink' <<<"$ADV_DRIVER_ROUTE"; then echo "PASS: codex-adversary probe does not follow symlinks"; pass=$((pass + 1)); else echo "FAIL: codex-adversary probe follows symlinks (readlink)"; fail=$((fail + 1)); fi
 for banned in 'rm -rf' 'CLAUDE_JOB_DIR'; do
   if grep -qF -- "$banned" "$ADV_AGENT"; then echo "FAIL: codex-adversary recipe contains '$banned'"; fail=$((fail + 1)); else echo "PASS: codex-adversary recipe has no '$banned'"; pass=$((pass + 1)); fi
 done
