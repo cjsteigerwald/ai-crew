@@ -411,7 +411,7 @@ GUARD_EOF
   grep -qF '**Suggested next:**' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: resume status missing 'Suggested next'"
   grep -qF 'ONE `AskUserQuestion`' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: resume must ask a single AskUserQuestion"
   grep -qF 'skipped (user)' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: a deliberate skip must be recorded as 'skipped (user)'"
-  grep -qF 'n.a. (Exempt)' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: Exempt review must be recorded as 'n.a. (Exempt)'"
+  grep -qF 'n.a. (<tier>)' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: tier-based skip must be recorded as 'n.a. (<tier>)'"
   grep -qF 'skipped (user)' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: Chain artifacts missing the skipped (user) value"
   grep -qF '`Wayfinding: active` suggests' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the active-map priority"
   grep -qF '`Wayfinding: hold` asks the hold question first' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the hold priority"

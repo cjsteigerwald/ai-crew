@@ -156,8 +156,10 @@ against the doc's snapshot (see **Controls**) before resuming.
 
 **Resume status.** Each stage writes a record with its commit SHA to the doc's Chain artifacts
 (ticket `integrated @<sha>`, `plan pass @<revisions>`, `code-review @<sha>`, `full-tier diff pass
-@<sha>`, `verify @<sha>`, the PR head); a deliberate skip is `skipped (user)` or `n.a. (Exempt)`,
-never a missing record. On resume (the doc exists, or "continue <KEY>"), show ONE compact status
+@<sha>`, `verify @<sha>`, the PR head); a deliberate skip is `skipped (user)`, and a stage the
+recorded review tier does not require is `n.a. (<tier>)` (Routine: no plan pass or Full-tier diff
+pass; Exempt: no reviews), never a missing record. On resume (the doc exists, or "continue <KEY>"),
+show ONE compact status
 block from those records plus live git and tracker reads: branch @ HEAD short SHA; Requirements
 status and Wayfinding state; spec issue; each ticket and whether it is integrated; each review
 record with its SHA and "N commits behind HEAD"; Verify; draft PR (number, head SHA). A record
