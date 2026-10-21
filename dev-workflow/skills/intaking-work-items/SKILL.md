@@ -224,6 +224,12 @@ Present the result as one table, then the questions you will ask, in order. That
 
 ## 3. Close the gaps — HARD GATE
 
+- **Entry first.** When sdlc-process is installed, load `sdlc-process:sdlc-process` with the
+  `Skill` tool before any flow skill below, then `sdlc-process:orchestrator` (see
+  [chain-sdlc-process.md](chain-sdlc-process.md), Entry). Intake expects the entry's situation
+  table to select "Bounded repo-backed idea" (grill-with-docs), and later "Uncertainty exceeds a
+  session" (wayfinder) and "Resolved intent/design" (to-spec, to-tickets); if it selects another
+  flow, relay that to the user rather than forcing intake's.
 - Load `sdlc-process:grill-with-docs` with the `Skill` tool, passing the step-2 agenda (the gap
   table, the ordered questions, the contradictions). It grills the user, models the domain, and
   updates `CONTEXT.md` and the ADRs as terms and decisions settle. The rules below bind that

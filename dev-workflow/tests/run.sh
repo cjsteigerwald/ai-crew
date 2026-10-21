@@ -394,6 +394,12 @@ GUARD_EOF
   grep -qF '**Review = tier.**' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the review-tier rule"
   grep -qF 'dev-workflow:implement-spec' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the implement-spec route"
   grep -qF 'never ask the user to type either' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the load-tdd-and-code-review-via-Skill rule"
+  grep -qF '## Entry' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the Entry section"
+  grep -qF 'Entry first.' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: step 3 does not route through the sdlc-process entry"
+  grep -qF 'sdlc-process:sdlc-policy-review' "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: missing the policy-review checkpoint"
+  grep -qF "local adaptation of the entry table's \"Authorized delivery" "$INTAKE_DIR/chain-sdlc-process.md" || ifail "intaking-work-items/chain-sdlc-process.md: implement-spec not named as the local adaptation of the delivery row"
+  grep -qF 'sdlc-process:orchestrator' "$ROOT/skills/implement-spec/SKILL.md" || ifail "implement-spec/SKILL.md: missing the orchestrator load"
+  grep -qF 'verify its report yourself before any merge' "$ROOT/skills/implement-spec/SKILL.md" || ifail "implement-spec/SKILL.md: missing verify-before-merge"
   IS_SKILL="$ROOT/skills/implement-spec/SKILL.md"
   if [ -f "$IS_SKILL" ]; then
     is_fm="$(extract_frontmatter "$IS_SKILL")"

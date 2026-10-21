@@ -39,6 +39,10 @@ Communication to and from subagents should be sparse. Communicate primarily thro
 
 Each implementer gets its own worktree only through the Agent tool's `isolation: "worktree"` parameter. Never run `git worktree add` by hand and point a subagent at it. Every implementer brief ends with: if a write, cd or git command is refused, stop and report; never script around the refusal.
 
+## Orchestration
+
+When sdlc-process is installed, load `sdlc-process:orchestrator` with the Skill tool before the first implementer dispatch, and re-read it before each new wave of implementers (step 6). Follow its brief rules for implementer and merger briefs; they are not repeated here.
+
 ## Steps
 
 1. Read the spec and tickets to understand the task graph.
@@ -52,7 +56,7 @@ Each implementer gets its own worktree only through the Agent tool's `isolation:
    - calls the Skill tool with `sdlc-process:tdd` to build the ticket (in intake mode with the caller's `confirmed seam list`; a seam not in the list is a stop: report it, never ask or invent);
    - merges the integration branch tip into its own branch before reporting done
 
-5. Once an **implementer subagent** completes, merge its work to the integration branch with a **merger subagent**.
+5. Once an **implementer subagent** completes, verify its report yourself before any merge: inspect the actual diff (`git diff` of its branch) and the actual test command output, red then green per `tdd`. A report alone is not proof. If it is not verified, merge nothing and send the work back to the implementer. Then merge its work to the integration branch with a **merger subagent**.
 
 6. If this changes the **frontier** of available tickets, kick off more **implementer subagents** to work on the new tickets. This allows for maximum concurrency.
 

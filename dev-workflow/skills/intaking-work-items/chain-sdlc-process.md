@@ -27,6 +27,22 @@ Load every skill through the `Skill` tool yourself. The bundled `sdlc-process:im
 If the ticket is Jira-only, warn the user once: sdlc-process tracks owning work on GitHub, so expect
 it to ask about or hold on ownership and readiness; the user decides each.
 
+## Entry
+
+Every flow skill intake loads (`grill-with-docs`, `wayfinder`, `to-spec`, `to-tickets`,
+`implement`) goes through the entry: load `sdlc-process:sdlc-process` with the `Skill` tool, then
+`sdlc-process:orchestrator`, once at the start of step 3 (or at resume, if the run starts later),
+and again at each new session. Reload `sdlc-process:orchestrator` at the start of any session that
+dispatches agents and before each dispatch wave. Intake states which flow it expects the entry's
+situation table to select for the stage (step 3: "Bounded repo-backed idea"; wayfinder:
+"Uncertainty exceeds a session"; stage 4: "Resolved intent/design"; stage 5: "Authorized delivery
+assignment"). Intake's stage gates stay; the entry does not replace them.
+
+**Policy review.** Before advancing a stage (publishing the spec or tickets, starting
+implementation, pushing or opening the PR), obtain the independent `sdlc-process:sdlc-policy-review`
+assessment the entry requires, supplying exact artifacts. Intake never marks its own checkpoint
+passed, and a user "go" does not stand in for the assessment.
+
 ## Authority
 
 Intake supplies evidence and surfaces holds. It does not pre-answer or bypass sdlc-process's
@@ -43,8 +59,8 @@ readiness, policy-review or publication gates.
 1. **Work branch.** Before handoff, create or check out the work branch (e.g. `<key>-<slug>` from
    main, or the repo's convention from step 0) — never main. Record the branch and its merge-base
    with main (the `review base`) in the Run log.
-2. **Handoff.** Invoke `sdlc-process:sdlc-process` via the Skill tool; it loads
-   `sdlc-process:orchestrator` itself — do not invert the order. Pass one brief containing:
+2. **Handoff.** Hand the entry (already loaded, see **Entry**; load it now if not, and
+   `sdlc-process:orchestrator` after it — do not invert the order) one brief containing:
    - the ticket key and URL;
    - the path `docs/specs/<KEY>-requirements.md` as THE source for the spec and the work record;
    - the settled AC list with each AC's disposition (SKILL.md step 6) and the deferred-gap list —
@@ -82,7 +98,10 @@ readiness, policy-review or publication gates.
    doc, the tickets and the settled AC list as the only scope:
    - **One ticket, or no decomposition:** `sdlc-process:implement`, which runs `sdlc-process:tdd`
      then `sdlc-process:code-review`.
-   - **Two or more tickets:** `dev-workflow:implement-spec` in intake mode, with the spec issue
+   - **Two or more tickets:** `dev-workflow:implement-spec` in intake mode. This is dev-workflow's
+     local adaptation of the entry table's "Authorized delivery assignment" row (`implement`,
+     `tdd`) for a spec with two or more published tickets; `tdd` and `code-review` obligations are
+     carried inside it, and the row's readiness and start checks still apply. Pass the spec issue
      URL, the AC→test table as the `confirmed seam list`, the `review base` and the requirements
      doc path. A seam not in the table is a stop. Intake mode publishes nothing and returns the
      integration branch.
