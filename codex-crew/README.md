@@ -536,7 +536,7 @@ substituting a cheaper model is an orchestrator decision, made in the open.
 
 ## `crew-adversary-review`
 
-`bin/crew-adversary-review` (on PATH beside `crew-codex`) launches a foreground
+`bin/crew-adversary-review` (on PATH beside `crew-codex`) launches an
 adversarial review whose focus text is read from a file, as ONE plain command
 that an auto-mode allow rule `Bash(crew-adversary-review:*)` can match:
 
