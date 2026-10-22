@@ -1018,6 +1018,9 @@ bdocs_nontable="$(printf '%s\n' "$bdocs_life" | grep -vE '^\|')"
 if printf '%s\n' "$bdocs_nontable" | grep -qE '\b(Refining|Building|Validating)\b'; then
   bfail "AC-4: lifecycle prose hard-codes a column name (Refining/Building/Validating)"
 fi
+if printf '%s\n' "$bdocs_nontable" | grep -qE '(to|not) \{\{status_'; then
+  bfail "AC-4: lifecycle prose says 'to/not {{status_...}}', which breaks for a label only step"
+fi
 bdocs_chk "AC-4" "$bdocs_lj" 'Merging a PR does not finish an issue'
 bdocs_chki "AC-4 automation rule" "$(bdocs_join "$bdocs_all")" 'project workflows may set Status when an item is added or closed'
 bdocs_not "AC-4" "$bdocs_all" 'Nothing adds issues automatically'
@@ -1038,10 +1041,12 @@ grep -q '^<!-- optional: wayfinding -->$' "$BAD_IT" 2>/dev/null || bfail "AC-4: 
 bdocs_way="$(bdocs_join "$(bdocs_sec "$BAD_IT" 'Wayfinding')")"
 bdocs_chki "AC-4 wayfinding" "$bdocs_way" 'closed blocker'
 bdocs_chki "AC-4 wayfinding" "$bdocs_way" 'dependency only'
-bdocs_not "AC-4 PR listing" "$(grep 'gh pr list' "$BAD_IT" 2>/dev/null)" 'authorAssociation'
+bdocs_not "AC-4 PR listing" "$(cat "$BAD_IT" 2>/dev/null)" 'authorAssociation'
+bdocs_chk "AC-4 PR listing" "$(cat "$BAD_IT" 2>/dev/null)" 'FIRST_TIMER'
 bdocs_chk "AC-4 PR listing" "$(cat "$BAD_IT" 2>/dev/null)" 'repos/{{owner}}/{{repo}}/pulls'
 # The eight Status cells appear in the lifecycle table in the Placeholders table's order (catches swapped rows).
 bdocs_exp="$(bdocs_sec "$BAD_SKILL" '([0-9]+[.] )?Placeholders$' | grep -oE '^\| `\{\{status_[a-z_]+\}\}`' | sed 's/^| `//; s/`$//' | tr '\n' ' ')"
+[ -n "$bdocs_exp" ] || bfail "AC-4: Placeholders table has no status_* rows"
 bdocs_got="$(printf '%s\n' "$bdocs_rows" | sed 's/^ *//; s/ *$//' | grep -v '^$' | tr '\n' ' ')"
 [ "$bdocs_got" = "$bdocs_exp" ] || bfail "AC-4: lifecycle Status cells ($bdocs_got) are not in Placeholders-table order ($bdocs_exp)"
 bdocs_ho="$(bdocs_join "$(bdocs_sec "$BAD_IT" 'Handoff comment')")"
@@ -1101,7 +1106,7 @@ for bdocs_p in 'Ask first whether the repo has phase gates' 'Status options from
   'unmatched' 'no column; label only' 'Never create a column' 'default branch' 'git fetch' 'git worktree' 'dirty' \
   'collision-free' 'merge / overwrite / skip' 'append only the missing' 'conflicting rules' 'incomplete' \
   'No unresolved' 'Confirm the batch before writing' 'Push and open the PR' 'one confirmed action' \
-  'git fetch <remote>' '<remote>/<default-branch>' 'gh pr create --repo <org>/<repo> --base' 'no Status change' \
+  'git fetch <remote>' '<remote>/<default-branch>' 'git push <remote> <branch>' 'gets no Status write' 'gh pr create --repo <org>/<repo> --base' 'no Status change' \
   'ask which to create' 'AGENTS.md' 'CLAUDE.md' 'separate confirmed edit' 'install skipped' 'Never reset'; do
   bdocs_chki "AC-8" "$bdocs_ins" "$bdocs_p"
 done
@@ -1135,7 +1140,7 @@ bdocs_not "AC-10 verify" "$bdocs_ver" 'exactly one state label'
 bdocs_not "AC-10 verify" "$bdocs_ver" 'label counts add up'
 bdocs_chk "AC-10 verify" "$bdocs_ver" 'at most one'
 bdocs_chk "AC-10 verify" "$bdocs_ver" 'lifecycle row'
-bdocs_chk "AC-10 verify" "$bdocs_ver" 'default table when no lifecycle exists'
+bdocs_chk "AC-10 verify" "$bdocs_ver" 'default table in step 10'
 bdocs_chki "AC-10 verify" "$bdocs_ver" 'label only'
 bdocs_chki "AC-10 add issues" "$bdocs_add" 'label only'
 bdocs_chk "AC-10 add issues" "$bdocs_add" 'NOT_PLANNED'
