@@ -63,7 +63,7 @@ labels the same way, without hand-copying the source repo's docs and their repo-
 - **FR-5** The `triage-labels.md` template maps the five canonical roles to label strings, under the header "Canonical role".
 
 **Preflight (before "Copy and link"; read-only)** (decision 11, R2)
-- **FR-6** Resolve the checkout: a path the user names, or cwd only if its `git remote -v` resolves to `<org>/<repo>` (ssh or https). Run `gh auth status` and `gh api user` from that directory and confirm the account. Detect a dirty tree and the repo's default branch (`gh repo view --json defaultBranchRef`). Never clone. With no usable checkout, record "install skipped" and continue.
+- **FR-6** Resolve the checkout: a path the user names, or cwd only if its `git remote -v` resolves to `<org>/<repo>` (ssh or https). Run `gh auth status` and `gh api user` from that directory and confirm the account. Detect a dirty tree and the repo's default branch (`gh repo view <org>/<repo> --json defaultBranchRef`, always repo-qualified: in a fork checkout with an `upstream` remote an unqualified `gh` resolves the wrong repo; diff-pass Codex round 2). Never clone. With no usable checkout, record "install skipped" and continue.
 
 **Install (between "Copy and link" and "Add issues")** (decisions 3, 4, 11)
 - **FR-7** Ask about phase gates first.
@@ -106,7 +106,7 @@ Automated checks are scoped to the named section (heading to next same-level hea
   - the user-named path, or cwd whose remote matches `<org>/<repo>`
   - account check from that directory
   - dirty-tree detection
-  - default branch
+  - default branch, via the repo-qualified `gh repo view <org>/<repo> --json defaultBranchRef`
   - never clone
   - read-only
 - **AC-8** (FR-7–FR-12) The install section, placed between "Copy and link" and "Add issues" by heading line numbers, says each of these:
@@ -247,5 +247,8 @@ Records:
 - Policy review (code-review hand-off @7bc914a): PASS.
 - `code-review @7bc914a`: Standards: 0 must-fix, 2 should-fix (duplicated lifecycle list in step 7.2; negation style), 5 flagged; coverage gap: it did not read the templates or this doc in full (covered by the Spec axis and the Full diff pass). Spec: 0 must-fix, 1 should-fix (triage step does not use the step 7 mapping), o1 confirmed, o2 partial, weak assertions in AC-3/AC-4/AC-6. Fixes routed to the implementer.
 - Code-review fixes: tests `9dca553` (red: `FAIL: AC-4 blocked: missing '{{status_refining}}'`, `FAIL: AC-9: missing 'uses the Status mapping from step 7'`; mutations on AC-3/AC-4/AC-6 fail), fix `a9d8de0`. Orchestrator check @a9d8de0: `timeout 300 /bin/bash dev-workflow/tests/run.sh` exit 0 `PASSED`, 0 FAIL lines; no Refining/Building/Validating in the template; scrub-check `--require-private` over all changed files exit 0. Dispositioned without change (flagged): negation style, step 7 length, phrase-presence brittleness, reused AC labels across sections, install "write and commit", backlog/wayfinding keep rules.
-- Codex rounds used: 1 of 3.
-**Last completed stage:** code-review (stage 5) with fixes; next: Full-tier diff pass.
+- `full-tier diff pass @00f24b1 (base 0386a11)`: fresh-verifier approve with comments (1 should-fix: label-only prose); codex-adversary round 2 needs-attention (high: unqualified `gh repo view` in fork checkouts; medium: mapping not driving steps 8–10, no `stateReason`, unsupported `authorAssociation` gh field). All fixed: tests `b1edae0`, fix `7d2c496`.
+- `bounded code-review @7d2c496 (00f24b1..7d2c496)`: Standards and Spec 0 must-fix; should-fix items (PR listing `FIRST_TIMER` and fields, push remote, rewrap, label-only prose rendering, whole-template `authorAssociation` check, FR-6/AC-7 wording) fixed in `65f10b9`/`d5287f2`/`68a478e` (`d5287f2` alone is not green; `68a478e` is) and in this doc. Dispositioned without change: restoring two minor source rules; strengthening the "never create a column" phrase check; generic-phrase `bdocs_chki` checks.
+- Orchestrator check @68a478e: `timeout 300 /bin/bash dev-workflow/tests/run.sh` exit 0 `PASSED`, 0 FAIL; scrub `--require-private` exit 0; cumulative churn 00f24b1..68a478e = 97/753 = 12.9% (bounded-eligible: no new file, same architecture).
+- Codex rounds used: 2 of 3.
+**Last completed stage:** Full-tier diff pass with fixes; next: bounded code-review of 7d2c496..HEAD + bounded fresh-verifier (A = 00f24b1).
