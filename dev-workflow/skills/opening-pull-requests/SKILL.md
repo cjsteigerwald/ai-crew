@@ -126,9 +126,6 @@ rather than switching accounts:
 `GH_TOKEN="$(gh auth token --hostname github.com --user <org-account>)" gh pr create ...`.
 If that still fails the cause is elsewhere (scopes, SSO, a renamed repo).
 
-Body carries: what, why, verification evidence, review tier, and any known-open issues the PR does
-**not** fix. State what was proven live versus what was only inspected — they are different claims.
-
 ### 10. Verify after opening
 
 Confirm checks are green and the diff is what you intended. If it grew past the tier thresholds,

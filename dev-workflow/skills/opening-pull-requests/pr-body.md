@@ -1,13 +1,13 @@
 # PR body
 
 Gate 9 writes the PR body from this template. The order is fixed so a reviewer knows where to look
-for each thing: header block, then Summary, Evidence, Merge Danger, Review. Skip preambles and keep
-prose brief.
+for each thing: header block, then Summary, Evidence, Merge Danger, Review. Start at the header block;
+keep prose brief.
 
 ```markdown
 **Ticket:** [PROJ-210](https://<your-jira-host>/browse/PROJ-210)
-Depends on #<PR> / Supersedes #<PR>
-Refs owner/repo#N
+<optional: Depends on #<PR> / Supersedes #<PR>>
+<optional: Refs owner/repo#N>
 
 ## Summary
 
@@ -29,7 +29,7 @@ Refs owner/repo#N
 
 <optional: description>
 
-**Blast Radius:** <one-word description>
+**Blast Radius:** <who or what is affected if this is wrong>
 
 <optional: potential ramifications of merge; applied-before-merge disclosure>
 
@@ -38,6 +38,8 @@ Refs owner/repo#N
 **Tier:** <Exempt — reason | Routine | Full>
 
 <coverage-chain records>
+
+**Delivered:** <active AC numbers this PR delivers>
 
 **Not in this PR:** <known-open issues, deferred/skipped/out-of-scope AC>
 
@@ -52,8 +54,8 @@ The two PR lines and the `Refs` lines are optional.
 
 ### Summary
 
-Open with one sentence of what and why, then the smallest view that makes the key point clear. No
-other prose before the visual. Use the repo's domain language: its glossary is `CONTEXT.md`, or
+Open with one sentence of what and why, then the smallest view that makes the key point clear. The visual
+follows that one sentence directly. Use the repo's domain language: its glossary is `CONTEXT.md`, or
 `GLOSSARY.md` where that is what the repo has.
 
 - Show logic or an algorithm as pseudocode:
@@ -170,9 +172,6 @@ function expandSkill(command: string): string {
 Place each visual next to the short text it supports. Keep only the calls, files, props, states, and
 boundaries the reviewer needs to understand the change.
 
-You may use one of these, you may use several, it is unlikely you will use all of them. Use your
-judgement and don't overwhelm the reviewer.
-
 ### Evidence
 
 Concrete evidence that the change works. Show a before and an after.
@@ -183,7 +182,7 @@ Execution-based evidence is A-tier: test results, console output. Show the exact
 and passes, using pseudocode.
 
 Label every item **proven live** (you ran it against the real thing) or **only inspected** (you read
-the code or config). Never let an inspection pass for a run (gate 9).
+the code or config). Never let an inspection pass for a run.
 
 When the work came through `dev-workflow:intaking-work-items`, put its step-7 per-AC evidence table
 here, and the parallel-pieces summary table when the run used orchestrating-pieces.
@@ -206,6 +205,7 @@ applied-before-merge disclosure): what was applied, where, and from which commit
 - **Tier:** the review tier from gate 5. `Exempt — <reason>` is allowed for flows that skip the review
   chain, such as investigating-incidents.
 - **Coverage-chain records:** the gate 6 coverage-chain records showing the required reviews ran on this head.
+- **Delivered:** the active AC numbers this PR delivers, per intake step 8.
 - **Not in this PR:** known-open issues, and any acceptance criteria that were deferred, skipped or
   out of scope, so nothing is assumed delivered.
 - **Intake lines:** each `Intake: …` skipped-step line from intake's step 8.

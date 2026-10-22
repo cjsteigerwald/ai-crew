@@ -751,19 +751,19 @@ pfail() {
   PRB_FAILS=$((PRB_FAILS + 1))
   fail "$1"
 }
-# ac_done <label> — prints an ok line when no pfail ran since the previous ac_done.
-ac_done() {
+# prb_ac_done <label> — prints an ok line when no pfail ran since the previous prb_ac_done.
+prb_ac_done() {
   if [ "$PRB_FAILS" -eq "$PRB_MARK" ]; then
     echo "ok: $1"
   fi
   PRB_MARK=$PRB_FAILS
 }
-# chk <label> <content> <phrase> — fixed-string, case-sensitive presence check.
-chk() {
+# prb_chk <label> <content> <phrase> — fixed-string, case-sensitive presence check.
+prb_chk() {
   printf '%s\n' "$2" | grep -qF -- "$3" || pfail "$1: missing '$3'"
 }
-# chki — same, case-insensitive.
-chki() {
+# prb_chki — same, case-insensitive.
+prb_chki() {
   printf '%s\n' "$2" | grep -qiF -- "$3" || pfail "$1: missing '$3'"
 }
 # prb_section <file> <heading> — lines under '### <heading>' up to the next '### ' heading.
@@ -777,7 +777,6 @@ PRB_SKILL="$PRB_DIR/SKILL.md"
 
 # AC-1: inside the template's fenced block, the header block precedes the four sections, in order.
 prb_block="$(awk '/^```markdown$/ && !seen { f = 1; seen = 1; next } f && /^```/ { exit } f { print NR ":" $0 }' "$PRB_FILE" 2>/dev/null)"
-prb_ln() { printf '%s\n' "$prb_block" | grep -F -- ":$1" | head -1 | cut -d: -f1; }
 prb_first="$(printf '%s\n' "$prb_block" | grep -v ':$' | head -1 | cut -d: -f2-)"
 case "$prb_first" in
   '**Ticket:**'*) : ;;
@@ -794,41 +793,41 @@ for prb_h in '**Ticket:**' '## Summary' '## Evidence' '## Merge Danger' '## Revi
     prb_prev="$prb_n"
   fi
 done
-chk "AC-1" "$prb_block" 'Refs '
-chk "AC-1" "$prb_block" 'Depends on'
-chk "AC-1" "$prb_block" 'Supersedes'
-ac_done "AC-1 template block order: header, Summary, Evidence, Merge Danger, Review"
+prb_chk "AC-1" "$prb_block" 'Refs '
+prb_chk "AC-1" "$prb_block" 'Depends on'
+prb_chk "AC-1" "$prb_block" 'Supersedes'
+prb_ac_done "AC-1 template block order: header, Summary, Evidence, Merge Danger, Review"
 
 # AC-2: gate 9's own section links the template and says to write the body from it.
 prb_g9="$(awk '/^### 9\./ { f = 1; next } /^### 10\./ { f = 0 } f' "$PRB_SKILL" 2>/dev/null)"
-chk "AC-2" "$prb_g9" '[pr-body.md](pr-body.md)'
-chki "AC-2" "$prb_g9" 'write the body from'
-ac_done "AC-2 gate 9 links pr-body.md and says to write the body from it"
+prb_chk "AC-2" "$prb_g9" '[pr-body.md](pr-body.md)'
+prb_chki "AC-2" "$prb_g9" 'write the body from'
+prb_ac_done "AC-2 gate 9 links pr-body.md and says to write the body from it"
 
 # AC-3: Summary guidance.
 prb_s="$(prb_section "$PRB_FILE" Summary)"
-for p in 'one sentence' 'what and why' 'CONTEXT.md' 'GLOSSARY.md'; do chk "AC-3" "$prb_s" "$p"; done
-for p in pseudocode 'call tree' 'component tree' 'file tree' Mermaid diff 'whole block'; do chki "AC-3" "$prb_s" "$p"; done
-ac_done "AC-3 Summary guidance: one sentence, visuals menu, CONTEXT.md/GLOSSARY.md"
+for p in 'one sentence' 'what and why' 'CONTEXT.md' 'GLOSSARY.md'; do prb_chk "AC-3" "$prb_s" "$p"; done
+for p in pseudocode 'call tree' 'component tree' 'file tree' Mermaid diff 'whole block'; do prb_chki "AC-3" "$prb_s" "$p"; done
+prb_ac_done "AC-3 Summary guidance: one sentence, visuals menu, CONTEXT.md/GLOSSARY.md"
 
 # AC-4: Evidence guidance.
 prb_e="$(prb_section "$PRB_FILE" Evidence)"
-chki "AC-4" "$prb_e" 'before'
-chki "AC-4" "$prb_e" 'after'
-for p in 'proven live' 'only inspected' 'per-AC evidence table' 'parallel-pieces summary table'; do chk "AC-4" "$prb_e" "$p"; done
-ac_done "AC-4 Evidence guidance: before/after, proven live vs only inspected, intake tables"
+prb_chki "AC-4" "$prb_e" 'before'
+prb_chki "AC-4" "$prb_e" 'after'
+for p in 'proven live' 'only inspected' 'per-AC evidence table' 'parallel-pieces summary table'; do prb_chk "AC-4" "$prb_e" "$p"; done
+prb_ac_done "AC-4 Evidence guidance: before/after, proven live vs only inspected, intake tables"
 
 # AC-5: Review guidance.
 prb_r="$(prb_section "$PRB_FILE" Review)"
-for p in 'Exempt — <reason>' 'coverage-chain' 'Not in this PR' 'Intake:' 'sdlc-process: no tickets published' 'stub' 'no doc at all'; do chk "AC-5" "$prb_r" "$p"; done
-chki "AC-5" "$prb_r" 'tier'
-ac_done "AC-5 Review guidance: tier, coverage chain, Not in this PR, Intake lines, spec issue, stub doc"
+for p in 'Exempt — <reason>' 'coverage-chain' 'Delivered' 'Not in this PR' 'Intake:' 'sdlc-process: no tickets published' 'stub' 'no doc at all'; do prb_chk "AC-5" "$prb_r" "$p"; done
+prb_chki "AC-5" "$prb_r" 'tier'
+prb_ac_done "AC-5 Review guidance: tier, coverage chain, Not in this PR, Intake lines, spec issue, stub doc"
 
 # AC-5b: Merge Danger guidance.
 prb_m="$(prb_section "$PRB_FILE" "Merge Danger")"
-for p in 'one-way' 'two-way' 'applied-before-merge'; do chk "AC-5b" "$prb_m" "$p"; done
-chki "AC-5b" "$prb_m" 'blast radius'
-ac_done "AC-5b Merge Danger guidance: door, blast radius, applied-before-merge"
+for p in 'one-way' 'two-way' 'applied-before-merge'; do prb_chk "AC-5b" "$prb_m" "$p"; done
+prb_chki "AC-5b" "$prb_m" 'blast radius'
+prb_ac_done "AC-5b Merge Danger guidance: door, blast radius, applied-before-merge"
 
 # AC-6: LICENSE holds both MIT notices; the Pocock block equals the mattpocock-skills 1.3.1 root LICENSE.
 prb_lic="$PRB_DIR/LICENSE"
@@ -858,8 +857,8 @@ LIC
 )"
 if [ -f "$prb_lic" ]; then
   prb_lic_text="$(cat "$prb_lic")"
-  chk "AC-6" "$prb_lic_text" 'Copyright (c) 2026 Matt Pocock'
-  chk "AC-6" "$prb_lic_text" 'Copyright (c) 2026 HumanLayer'
+  prb_chk "AC-6" "$prb_lic_text" 'Copyright (c) 2026 Matt Pocock'
+  prb_chk "AC-6" "$prb_lic_text" 'Copyright (c) 2026 HumanLayer'
   prb_perm="$(grep -cF 'Permission is hereby granted, free of charge, to any person obtaining a copy' "$prb_lic")"
   [ "$prb_perm" -ge 2 ] || pfail "AC-6: LICENSE has $prb_perm MIT permission sentence(s), expected both notices"
   prb_pocock_actual="$(awk '/^MIT License$/ && !s { f = 1; s = 1 } f && /^---$/ { exit } f' "$prb_lic")"
@@ -871,20 +870,20 @@ prb_cred="$PRB_DIR/CREDITS.md"
 if [ -f "$prb_cred" ]; then
   prb_cred_text="$(cat "$prb_cred")"
   for p in 'Matt Pocock' 'mattpocock/skills' '1.3.1' 'Dex Horthy' 'show-me' 'https://github.com/humanlayer/skills/blob/main/plugins/show-me/skills/show-me/SKILL.md'; do
-    chk "AC-6" "$prb_cred_text" "$p"
+    prb_chk "AC-6" "$prb_cred_text" "$p"
   done
   printf '%s\n' "$prb_cred_text" | grep -qF 'github.com/humanlayer/humanlayer' && pfail "AC-6: CREDITS.md links the wrong upstream repository (humanlayer/humanlayer)"
 else
   pfail "AC-6: opening-pull-requests/CREDITS.md not found"
 fi
-ac_done "AC-6 LICENSE carries both MIT notices (Pocock block = 1.3.1 root); CREDITS names both authors and the right URL"
+prb_ac_done "AC-6 LICENSE carries both MIT notices (Pocock block = 1.3.1 root); CREDITS names both authors and the right URL"
 
 # AC-7: the opening-pull-requests README row itself (the implement-spec row also says "Adapted from mattpocock/skills").
 prb_row="$(grep -F '| `opening-pull-requests` |' "$ROOT/README.md")"
 [ -n "$prb_row" ] || pfail "AC-7: README.md has no opening-pull-requests row"
-chk "AC-7" "$prb_row" 'pr-body.md'
-chk "AC-7" "$prb_row" 'Adapted from mattpocock/skills (MIT'
-ac_done "AC-7 README opening-pull-requests row mentions the template and the adaptation credit"
+prb_chk "AC-7" "$prb_row" 'pr-body.md'
+prb_chk "AC-7" "$prb_row" 'Adapted from mattpocock/skills (MIT'
+prb_ac_done "AC-7 README opening-pull-requests row mentions the template and the adaptation credit"
 
 # AC-8: version 0.2.3 in the plugin manifest and the dev-workflow marketplace entry.
 if python3 - "$ROOT/.claude-plugin/plugin.json" "$ROOT/../.claude-plugin/marketplace.json" <<'PY'
@@ -902,7 +901,7 @@ then
 else
   pfail "AC-8: dev-workflow version is not 0.2.3 in both plugin.json and marketplace.json"
 fi
-ac_done "AC-8 dev-workflow is 0.2.3 in plugin.json and marketplace.json"
+prb_ac_done "AC-8 dev-workflow is 0.2.3 in plugin.json and marketplace.json"
 
 echo "== review ledger and codex-cap gate =="
 # Skills call the ledger CLI directly as ${CLAUDE_PLUGIN_ROOT}/scripts/review-ledger.sh.
