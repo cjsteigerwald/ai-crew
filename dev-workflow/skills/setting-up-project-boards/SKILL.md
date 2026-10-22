@@ -104,19 +104,23 @@ target checkout under `docs/agents/`, from the files in [templates/](templates/)
 2. Read the Status options from the copied project (step 6 re-inspection), never from the template.
    Show the user a mapping table for review: each step of the template's "Issue lifecycle" table to a
    Status option. For an unmatched step the user picks an existing option, or the cell reads "no column; label only".
-   Never create a column or rename one. The same mapping drives this install, triage (step 10) and verify (step 11).
+   Never create a column or rename one. The same mapping drives this install, triage (step 10) and verify
+   (step 11). A step mapped label only gets no Status write anywhere in this skill.
 3. Fill the placeholders from the [Placeholders table](#placeholders). For a step mapped "label only", fill
    its cell with `no column; label only` and reword lifecycle bullets naming that step to its label (for
-   example "keeps `wontfix`, no Status change"). No unresolved `{{…}}` may remain in a written file; strip the `<!-- optional: … -->` markers and the content of dropped sections.
-4. Branch from the default branch, `<remote>/<default-branch>`, after `git fetch <remote>` (the remote found in step 5), with a collision-free branch name (check local and
-   remote branches, suffix on a clash). Use a `git worktree` when the tree is dirty. Never reset or discard existing work.
+   example "keeps `wontfix`, no Status change"). No unresolved `{{…}}` may remain in a written file; strip
+   the `<!-- optional: … -->` markers and the content of dropped sections.
+4. Branch from the default branch, `<remote>/<default-branch>`, after `git fetch <remote>` (the remote found
+   in step 5), with a collision-free branch name (check local and remote branches, suffix on a clash).
+   Use a `git worktree` when the tree is dirty. Never reset or discard existing work.
 5. For each target file that already exists, show a diff and ask merge / overwrite / skip. For
    `issue-tracker.md` the default is to append only the missing board sections. Show conflicting rules in
    the diff. Keep the target's own instruction precedence and resolve label strings through its
    `triage-labels.md` mapping. If a conflicting section is skipped, the existing policy keeps governing and
    the final report says the install is incomplete.
 6. Confirm the batch before writing, then write and commit the files on the branch.
-7. Push and open the PR (`gh pr create --repo <org>/<repo> --base <default-branch>`) is one confirmed action. Declining leaves the branch local.
+7. Push and open the PR is one confirmed action: `git push <remote> <branch>`, then
+   `gh pr create --repo <org>/<repo> --base <default-branch>`. Declining leaves the branch local.
 8. A one-line pointer to `docs/agents/` in `AGENTS.md` (or `CLAUDE.md` when there is no `AGENTS.md`) is a
    separate confirmed edit. If the repo has neither, ask which to create or skip the pointer.
 
@@ -145,7 +149,7 @@ Side effect: auto-add sub-issues pulls in sub-issues of added parents, including
 Status. Re-list board items afterward (items query) and report the extras. Closed items on the board
 go to Done or Won't do (when mapped), from the step 7 mapping: `stateReason` NOT_PLANNED or a `wontfix`
 label goes to the won't-do option, any other close to done. Find them with the items query (content
-`state`) and set Status to that option, skipping Status for a step mapped label only.
+`state`) and set Status to that option, skipping Status for label-only steps (see step 7).
 
 ## 9. Workflows the user must turn on in the UI
 
@@ -155,14 +159,14 @@ The API can read built-in workflows but cannot enable or configure them. Tell th
 - "Auto-add to project": repo + filter `is:issue is:open` (not retroactive).
 - "Item added to project": set Status to the mapped intake option.
 - "Item closed": set Status to the mapped done option. Won't do items closed as not planned need Status set to Won't do by hand.
-- Skip Status for a step mapped label only.
+- Skip Status for label-only steps (see step 7).
 - Skip "Pull request merged": merging a PR does not finish an issue.
 
 ## 10. Triage onto the board
 
 Follow the target repo's triage process (its triage skill if it has one) and its label mapping. When the
 repo has a `docs/agents/issue-tracker.md` lifecycle (installed, merged or pre-existing), that
-lifecycle table decides the Status for each state label, and a step mapped label only gets its label with no Status change. Triage uses the Status mapping from step 7;
+lifecycle table decides the Status for each state label. Triage uses the Status mapping from step 7 (label-only steps: see step 7);
 the default table's column names are a fallback only when no mapping or lifecycle exists.
 
 a. `gh label list --repo <org>/<repo>` against the mapping. Propose creating missing state labels
@@ -190,15 +194,18 @@ c. Recommend a table to the user: issue | category | state label | board column 
 d. Apply (mechanical; the cheapest writer lane can do it given exact per-issue text): create the
    approved labels; post one comment per issue whose first line is
    `> *This was generated by AI during triage.*`; apply labels with
-   `gh issue edit --add-label … --remove-label …`; set Status (skipped for a label only step). `needs-info` comments use a
-   "Triage Notes" layout: what is established / what we still need, with specific questions.
+   `gh issue edit --add-label … --remove-label …`; set Status (not for label-only steps: see step 7).
+   `needs-info` comments use a "Triage Notes" layout: what is established / what we still need, with
+   specific questions.
 
 ## 11. Verify and report
 
 Use the items query: group items by Status, list labels per issue, and check that each issue has at most one
 state label and that the label matches the lifecycle row for its Status. A "label only" step (no mapped
-column) is checked by label alone, and the default table when no lifecycle exists supplies the rows. Check that its latest triage comment starts with the disclaimer (a
-later human reply may follow it, so look through the last few comments), and report any extra board items. Undo a Status change with `gh project item-edit … --clear`.
+column) is checked by label alone. When no lifecycle exists, check labels against the default table in
+step 10. Check that its latest triage comment starts with the disclaimer (a later human reply may follow
+it, so look through the last few comments), and report any extra board items. Undo a Status change with
+`gh project item-edit … --clear`.
 
 ## Placeholders
 

@@ -59,18 +59,18 @@ project {{project_number}} (`gh project item-edit` on the Status field). The tri
 | Closed: every checkbox and exit criterion has evidence in a `## Handoff` | {{status_done}} | none |
 | Closed as won't do: the owner cancelled it, and the handoff records that decision | {{status_wont_do}} | `wontfix` |
 
-- **Merging a PR does not finish an issue.** The issue stays in {{status_validating}} until a handoff records evidence for every criterion. Only then is it closed and moved to {{status_done}}.
+- **Merging a PR does not finish an issue.** The issue stays in {{status_validating}} until a handoff records evidence for every criterion. Only then is it closed (Status: {{status_done}}).
 <!-- optional: phase_gates -->
 - **Gates.** An issue is ready only when every gate it depends on (`docs/agents/phase-gates.md`) has a passing handoff.
 <!-- /optional -->
-- **Blocked.** A specified issue that cannot proceed stays in {{status_refining}}. An issue found blocked after work starts goes back to {{status_refining}}, and you remove the `ready-for-*` label. Either way, the handoff names the blocker under **Open / blocked**.
-- **Reopened.** The session that reopens an issue moves it to {{status_refining}}, or to {{status_building}} if work resumes at once, and removes `wontfix`.
+- **Blocked.** A specified issue that cannot proceed stays in {{status_refining}}. An issue found blocked after work starts is set back (Status: {{status_refining}}), and you remove the `ready-for-*` label. Either way, the handoff names the blocker under **Open / blocked**.
+- **Reopened.** The session that reopens an issue removes `wontfix` and sets Status: {{status_refining}}, or {{status_building}} if work resumes at once.
 <!-- optional: backlog -->
 - **Reopened, backlog.** It also puts the {{backlog_name}} ticket (and its parent issue) back in progress if either is in {{status_done}}.
 <!-- /optional -->
-- **Parent (spec) issue.** It carries no `ready-for-*` label. It is in {{status_building}} while any child issue is open. It is closed and moved to {{status_done}}, with its own handoff, once every child issue is closed.
+- **Parent (spec) issue.** It carries no `ready-for-*` label. It is in {{status_building}} while any child issue is open. It is closed (Status: {{status_done}}), with its own handoff, once every child issue is closed.
 <!-- optional: backlog -->
-- **Backlog ticket.** Move it to {{status_done}} only after every `{{owner}}/{{repo}}` issue for it is closed. If the owner cancels the whole ticket, it goes to {{status_wont_do}}, not {{status_done}}.
+- **Backlog ticket.** Close it (Status: {{status_done}}) only after every `{{owner}}/{{repo}}` issue for it is closed. If the owner cancels the whole ticket, close it as cancelled instead (Status: {{status_wont_do}}).
 <!-- /optional -->
 - **Missing labels.** If a label in this table does not exist on the repo, create it with the description from `docs/agents/triage-labels.md` before applying it.
 
@@ -87,7 +87,7 @@ is names, ids and status codes; never secret values.
 When set to `yes`, PRs run through the same labels and states as issues, using the `gh pr` equivalents:
 
 - **Read a PR**: `gh pr view <number> --repo {{owner}}/{{repo}} --comments` and `gh pr diff <number> --repo {{owner}}/{{repo}}` for the diff.
-- **List external PRs for triage**: `gh api repos/{{owner}}/{{repo}}/pulls --paginate --jq '.[] | select(.author_association | IN("CONTRIBUTOR","FIRST_TIME_CONTRIBUTOR","NONE")) | {number, title, user: .user.login}'` (`gh pr list --json` has no author-association field; the REST form drops `OWNER`/`MEMBER`/`COLLABORATOR`).
+- **List external PRs for triage**: `gh api repos/{{owner}}/{{repo}}/pulls --paginate --jq '.[] | select(.author_association | IN("CONTRIBUTOR","FIRST_TIME_CONTRIBUTOR","FIRST_TIMER","NONE")) | {number, title, body, labels: [.labels[].name], user: .user.login}'` (`gh pr list --json` has no author-association field; the REST form drops `OWNER`/`MEMBER`/`COLLABORATOR`).
 - **Comment / label / close**: `gh pr comment`, `gh pr edit --add-label`/`--remove-label`, `gh pr close`, each with `--repo {{owner}}/{{repo}}`.
 
 GitHub shares one number space across issues and PRs, so a bare `#42` may be either: resolve with `gh pr view 42 --repo {{owner}}/{{repo}}` and fall back to `gh issue view 42 --repo {{owner}}/{{repo}}`.
