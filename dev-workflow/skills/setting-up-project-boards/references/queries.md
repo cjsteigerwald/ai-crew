@@ -62,7 +62,7 @@ query($endCursor: String) {
           status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } }
           content {
             ... on Issue {
-              number title state
+              number title state stateReason
               labels(first: 10) { nodes { name } }
               comments(last: 5) { nodes { body } }
             }
@@ -76,7 +76,7 @@ query($endCursor: String) {
 
 `gh api --paginate` only advances a GraphQL query whose cursor variable is named `$endCursor`.
 
-Group by `status.name` for the final report. `state` finds closed items (move to Done or Won't do).
+Group by `status.name` for the final report. `state` finds closed items (move to Done or Won't do; `stateReason` NOT_PLANNED means Won't do).
 `comments(last: 5)` lets you find the latest triage comment (it starts with the AI disclaimer) even
 when a later human reply follows it.
 
