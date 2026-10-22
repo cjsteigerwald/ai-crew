@@ -64,7 +64,7 @@ project {{project_number}} (`gh project item-edit` on the Status field). The tri
 - **Gates.** An issue is ready only when every gate it depends on (`docs/agents/phase-gates.md`) has a passing handoff.
 <!-- /optional -->
 - **Blocked.** A specified issue that cannot proceed stays at the refining step (Status: {{status_refining}}). An issue found blocked after work starts is set back (Status: {{status_refining}}), and you remove the `ready-for-*` label. Either way, the handoff names the blocker under **Open / blocked**.
-- **Reopened.** The session that reopens an issue removes `wontfix` and sets Status: {{status_refining}}, or Status: {{status_building}} if work resumes at once.
+- **Reopened.** The session that reopens an issue sets Status: {{status_refining}}. If work resumes at once, it sets Status: {{status_building}} instead. It removes `wontfix`.
 <!-- optional: backlog -->
 - **Reopened, backlog.** It also puts the {{backlog_name}} ticket (and its parent issue) back in progress if either is done (Status: {{status_done}}).
 <!-- /optional -->
