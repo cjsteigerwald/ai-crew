@@ -18,10 +18,10 @@ description: >
 # Setting up project boards
 
 Reproduce a template GitHub Project for another repo, populate it, and triage the issues onto it.
-Run the steps in order. Every outward-facing batch (copy, link, writing docs, pushing and opening the PR, editing an
-instruction file, adding items, creating labels, posting comments) is confirmed with the user first. State counts from command output, never memory,
-never put token values in comments or output, and never delete a project workflow (the API allows
-it; nothing here needs it).
+Run the steps in order. Every outward-facing batch (copy, link, writing docs, pushing and opening the
+PR, editing an instruction file, adding items, creating labels, posting comments) is confirmed with the
+user first. State counts from command output, never memory, never put token values in comments
+or output, and never delete a project workflow (the API allows it; nothing here needs it).
 
 Long GraphQL queries live in [references/queries.md](references/queries.md).
 
@@ -100,9 +100,8 @@ target checkout under `docs/agents/`, from the files in [templates/](templates/)
    sections stay; otherwise they are dropped. Likewise keep `backlog` only if the user names an external
    backlog, and `wayfinding` only if the repo uses wayfinder maps. Offer to fill in any gates the user already knows.
 2. Read the Status options from the copied project (step 6 re-inspection), never from the template.
-   Show the user a mapping table for review: lifecycle step to Status option, for the eight steps not yet
-   triaged, refining, ready for an agent, ready for a human, building, validating, done, won't do. For an
-   unmatched step the user picks an existing option, or the cell reads "no column; label only". Never create
+   Show the user a mapping table for review: each step of the template's "Issue lifecycle" table to a
+   Status option. For an unmatched step the user picks an existing option, or the cell reads "no column; label only". Never create
    a column or rename one. The same mapping drives this install, triage (step 10) and verify (step 11).
 3. Fill the placeholders from the [Placeholders table](#placeholders). No unresolved `{{…}}` may remain in a
    written file; strip the `<!-- optional: … -->` markers and the content of dropped sections.
@@ -158,7 +157,8 @@ The API can read built-in workflows but cannot enable or configure them. Tell th
 
 Follow the target repo's triage process (its triage skill if it has one) and its label mapping. When the
 repo has a `docs/agents/issue-tracker.md` lifecycle (installed, merged or pre-existing), that
-lifecycle table decides the Status for each state label; the default table below applies only without one.
+lifecycle table decides the Status for each state label. Triage uses the Status mapping from step 7;
+the default table's column names are a fallback only when no mapping or lifecycle exists.
 
 a. `gh label list --repo <org>/<repo>` against the mapping. Propose creating missing state labels
    (for example `needs-info`).
@@ -203,7 +203,7 @@ Every `{{name}}` in [templates/](templates/) is listed here; step 7 fills them a
 |---|---|---|
 | `{{owner}}` | Org or user that owns the repo | Step 1 target owner |
 | `{{repo}}` | Repo name | Step 1 target repo |
-| `{{instruction_file}}` | Instruction file that wins on conflict | Step 1 instruction files (`AGENTS.md` or `CLAUDE.md`) |
+| `{{instruction_file}}` | Entry instruction file (`AGENTS.md`, else `CLAUDE.md`) | Step 1 instruction files |
 | `{{project_title}}` | Board title | Step 1 new project title |
 | `{{project_url}}` | Board URL | Step 6 `gh project copy` output |
 | `{{project_number}}` | Board number under the owner | Step 6 `gh project copy` output |
