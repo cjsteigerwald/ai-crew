@@ -20,7 +20,7 @@ two domain specialists.
 | `copilot-agent-readiness` | Audits and remediates a repo to maximize GitHub Copilot coding agent output quality. |
 | `orchestrating-pieces` | Piece orchestration: builds a ticket's published GitHub issues in parallel, one piece agent (a `claude --bg` session) per issue, each in its own worktree and branch, talking to you directly. The orchestrating session tracks pieces with the `piece-track.sh` CLI, fast-forwards finished pieces into the ticket branch one at a time and hands back one draft PR. Needs `jq` and `perl` (the CLI locks its tracking file with `flock` through perl). |
 | `review-policy` | The tiered review policy (Exempt / Routine / Full chain, codex-adversary governance, evidence rule) that the other skills and agents here cite. |
-| `setting-up-project-boards` | Sets up a GitHub Projects (v2) board for a repo: copy a template project, link the repo, add open issues, move closed items to Done, list the workflows to enable in the UI, then triage each issue onto the board. |
+| `setting-up-project-boards` | Sets up a GitHub Projects (v2) board for a repo: copy a template project, link the repo, install the board's agent docs (issue tracker lifecycle, triage labels, optional phase gates) from templates, add open issues, move closed items to Done or Won't do, list the workflows to enable in the UI, then triage each issue onto the board. |
 
 ## Agents
 

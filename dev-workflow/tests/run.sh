@@ -897,13 +897,13 @@ prb_chk "AC-7" "$prb_row" 'pr-body.md'
 prb_chk "AC-7" "$prb_row" 'Adapted from mattpocock/skills (MIT'
 prb_ac_done "AC-7 README opening-pull-requests row mentions the template and the adaptation credit"
 
-# AC-8: version 0.2.3 in the plugin manifest and the dev-workflow marketplace entry.
+# AC-8: version 0.2.4 in the plugin manifest and the dev-workflow marketplace entry.
 if python3 - "$ROOT/.claude-plugin/plugin.json" "$ROOT/../.claude-plugin/marketplace.json" <<'PY'
 import json, sys
 plugin = json.load(open(sys.argv[1]))
 market = json.load(open(sys.argv[2]))
 entry = [p for p in market["plugins"] if p.get("name") == "dev-workflow"]
-ok = plugin.get("version") == "0.2.3" and len(entry) == 1 and entry[0].get("version") == "0.2.3"
+ok = plugin.get("version") == "0.2.4" and len(entry) == 1 and entry[0].get("version") == "0.2.4"
 if not ok:
     print("plugin.json=%s marketplace=%s" % (plugin.get("version"), [e.get("version") for e in entry]))
 sys.exit(0 if ok else 1)
@@ -911,9 +911,259 @@ PY
 then
   :
 else
-  pfail "AC-8: dev-workflow version is not 0.2.3 in both plugin.json and marketplace.json"
+  pfail "AC-8: dev-workflow version is not 0.2.4 in both plugin.json and marketplace.json"
 fi
-prb_ac_done "AC-8 dev-workflow is 0.2.3 in plugin.json and marketplace.json"
+prb_ac_done "AC-8 dev-workflow is 0.2.4 in plugin.json and marketplace.json"
+
+echo "== setting-up-project-boards agent docs =="
+# Static structure checks only (NFR-4). Local counters, same convention as the PR-body section.
+BAD_DIR="$ROOT/skills/setting-up-project-boards"
+BAD_SKILL="$BAD_DIR/SKILL.md"
+BAD_Q="$BAD_DIR/references/queries.md"
+BAD_T="$BAD_DIR/templates"
+BAD_IT="$BAD_T/issue-tracker.md"
+BAD_PG="$BAD_T/phase-gates.md"
+BAD_TL="$BAD_T/triage-labels.md"
+BAD_FAILS=0
+BAD_MARK=0
+bfail() {
+  BAD_FAILS=$((BAD_FAILS + 1))
+  fail "$1"
+}
+# bdocs_ac_done <label> — prints an ok line when no bfail ran since the previous bdocs_ac_done.
+bdocs_ac_done() {
+  if [ "$BAD_FAILS" -eq "$BAD_MARK" ]; then
+    echo "ok: $1"
+  fi
+  BAD_MARK=$BAD_FAILS
+}
+# bdocs_chk <label> <content> <phrase> — fixed-string, case-sensitive presence check.
+bdocs_chk() {
+  printf '%s\n' "$2" | grep -qF -- "$3" || bfail "$1: missing '$3'"
+}
+# bdocs_chki — same, case-insensitive.
+bdocs_chki() {
+  printf '%s\n' "$2" | grep -qiF -- "$3" || bfail "$1: missing '$3'"
+}
+# bdocs_not <label> <content> <ERE> — the pattern must not match (case-insensitive).
+bdocs_not() {
+  if printf '%s\n' "$2" | grep -qiE -- "$3"; then bfail "$1: must not match '$3'"; fi
+}
+# bdocs_sec <file> <title-ERE> — lines under the '## ' heading whose text matches <title-ERE>,
+# up to the next '## ' heading. Sections are found by title, never by step number.
+bdocs_sec() {
+  awk -v re="^## ($2)" '/^## / { f = ($0 ~ re); next } f' "$1" 2>/dev/null
+}
+# bdocs_line <file> <heading-ERE> — line number of the matching '## ' heading (first), or empty.
+bdocs_line() {
+  grep -nE "^## ($2)" "$1" 2>/dev/null | head -1 | cut -d: -f1
+}
+# bdocs_join <content> — one line, whitespace runs collapsed, so wrapped sentences match.
+bdocs_join() {
+  printf '%s\n' "$1" | tr '\n' ' ' | sed 's/[[:space:]][[:space:]]*/ /g'
+}
+
+# AC-1: the three templates exist.
+for bdocs_f in issue-tracker.md triage-labels.md phase-gates.md; do
+  [ -f "$BAD_T/$bdocs_f" ] || bfail "AC-1: templates/$bdocs_f not found"
+done
+bdocs_ac_done "AC-1 board-docs templates exist"
+
+# AC-2: shape check over templates/ (identity literals themselves are left to scrub-check).
+for bdocs_re in '--repo [^{]' '--owner [^{]' 'github\.com/(orgs|users)/[^{]' '/projects/[0-9]' '\.jira\.com' '[A-Z]{2,}-[0-9]+'; do
+  if cat "$BAD_T"/*.md 2>/dev/null | grep -qE -- "$bdocs_re"; then
+    bfail "AC-2: templates match shape '$bdocs_re'"
+  fi
+done
+bdocs_ac_done "AC-2 templates shape-scrubbed"
+
+# AC-3: placeholder parity between the templates and SKILL.md's Placeholders table; optional markers balanced.
+bdocs_all="$(cat "$BAD_T"/*.md 2>/dev/null)"
+bdocs_tokens="$(printf '%s\n' "$bdocs_all" | grep -oE '\{\{[^}]*\}\}' | sort -u)"
+bdocs_malformed="$(printf '%s\n' "$bdocs_tokens" | grep -vE '^\{\{[a-z_]+\}\}$' | grep -v '^$')"
+[ -z "$bdocs_malformed" ] || bfail "AC-3: malformed placeholder(s): $(bdocs_join "$bdocs_malformed")"
+bdocs_used="$(printf '%s\n' "$bdocs_tokens" | sed 's/^{{//; s/}}$//' | grep -v '^$' | sort -u)"
+bdocs_doc="$(bdocs_sec "$BAD_SKILL" '([0-9]+[.] )?Placeholders$' | grep -oE '^\| `\{\{[a-z_]+\}\}`' | sed 's/^| `{{//; s/}}`$//' | sort -u)"
+[ -n "$bdocs_doc" ] || bfail "AC-3: SKILL.md Placeholders table has no rows"
+[ "$bdocs_used" = "$bdocs_doc" ] || bfail "AC-3: placeholders used in templates ($(bdocs_join "$bdocs_used")) differ from the table ($(bdocs_join "$bdocs_doc"))"
+for bdocs_f in "$BAD_T"/*.md; do
+  [ -f "$bdocs_f" ] || continue
+  bdocs_open="$(grep -cE '^<!-- optional: (backlog|phase_gates|wayfinding) -->$' "$bdocs_f")"
+  bdocs_close="$(grep -cE '^<!-- /optional -->$' "$bdocs_f")"
+  bdocs_any="$(grep -c '<!-- optional' "$bdocs_f")"
+  { [ "$bdocs_open" -eq "$bdocs_close" ] && [ "$bdocs_open" -eq "$bdocs_any" ]; } || bfail "AC-3: optional markers unbalanced or malformed in $(basename "$bdocs_f")"
+  # Pairing in order: no nested open, no close before its open.
+  awk '/^<!-- optional: / { if (d) bad = 1; d = 1; next } /^<!-- \/optional -->$/ { if (!d) bad = 1; d = 0; next } END { exit (bad || d) ? 1 : 0 }' "$bdocs_f" || bfail "AC-3: optional markers nest or close before opening in $(basename "$bdocs_f")"
+done
+bdocs_ac_done "AC-3 placeholder parity and balanced optional markers"
+
+# AC-4: issue-tracker template.
+bdocs_h="$(grep -E '^## ' "$BAD_IT" 2>/dev/null)"
+for bdocs_p in 'precedence' 'Conventions' 'project board' 'Issue lifecycle' 'triage surface' 'publish' 'fetch' 'Wayfinding' 'Handoff comment'; do
+  bdocs_chki "AC-4 heading" "$bdocs_h" "$bdocs_p"
+done
+bdocs_life="$(bdocs_sec "$BAD_IT" 'Issue lifecycle')"
+bdocs_rows="$(printf '%s\n' "$bdocs_life" | awk -F'|' '/^\|/ { n++; if (n > 2) print $3 }')"
+bdocs_nrows="$(printf '%s\n' "$bdocs_rows" | grep -c .)"
+[ "$bdocs_nrows" -ge 8 ] || bfail "AC-4: lifecycle table has $bdocs_nrows rows, need at least 8"
+bdocs_badcells="$(printf '%s\n' "$bdocs_rows" | sed 's/^ *//; s/ *$//' | grep -v '^$' | grep -vE '^\{\{[a-z_]+\}\}$')"
+[ -z "$bdocs_badcells" ] || bfail "AC-4: lifecycle Status cell is not a placeholder: '$(printf '%s\n' "$bdocs_badcells" | head -1)'"
+printf '%s\n' "$bdocs_life" | grep -E '^\|' | grep -F '| {{status_wont_do}} |' | grep -q 'wontfix' || bfail "AC-4: the {{status_wont_do}} row does not carry wontfix"
+bdocs_lj="$(bdocs_join "$bdocs_life")"
+bdocs_blk="$(printf '%s\n' "$bdocs_life" | grep -F -- '- **Blocked.**')"
+bdocs_chk "AC-4 blocked" "$bdocs_blk" '{{status_refining}}'
+bdocs_chk "AC-4 blocked" "$bdocs_blk" 'remove the `ready-for-*` label'
+# Outside the table, prose uses the status placeholders, never literal column names.
+bdocs_nontable="$(printf '%s\n' "$bdocs_life" | grep -vE '^\|')"
+if printf '%s\n' "$bdocs_nontable" | grep -qE '\b(Refining|Building|Validating)\b'; then
+  bfail "AC-4: lifecycle prose hard-codes a column name (Refining/Building/Validating)"
+fi
+# Outside table rows, every {{status_...}} is written "Status: {{status_...}}" so a label only step still reads well.
+bdocs_n_all=$(($(printf '%s\n' "$bdocs_nontable" | grep -o '{{status_' | wc -l)))
+bdocs_n_ok=$(($(printf '%s\n' "$bdocs_nontable" | grep -o 'Status: {{status_' | wc -l)))
+if [ "$bdocs_n_all" -eq 0 ] || [ "$bdocs_n_all" -ne "$bdocs_n_ok" ]; then
+  bfail "AC-4: lifecycle prose has $bdocs_n_all {{status_...}} but $bdocs_n_ok preceded by 'Status: ' (need both equal and non-zero)"
+fi
+bdocs_chk "AC-4" "$bdocs_lj" 'Merging a PR does not finish an issue'
+bdocs_chki "AC-4 automation rule" "$(bdocs_join "$bdocs_all")" 'project workflows may set Status when an item is added or closed'
+bdocs_not "AC-4" "$bdocs_all" 'Nothing adds issues automatically'
+bdocs_not "AC-4 removed content" "$bdocs_all" 'release:|Priority'
+# Optional markers: backlog, phase-gates and wayfinding content sit only inside their own optional block.
+bdocs_stray="$(awk '
+  /^<!-- optional: / { k = $0; sub(/^<!-- optional: /, "", k); sub(/ -->.*/, "", k); cur = k; next }
+  /^<!-- \/optional -->/ { cur = ""; next }
+  {
+    if ((tolower($0) ~ /backlog/ || index($0, "**Ticket:**")) && cur != "backlog") print "backlog outside optional: " $0
+    if (index($0, "phase-gates") && cur != "phase_gates") print "phase-gates outside optional: " $0
+    if (tolower($0) ~ /wayfind/ && cur != "wayfinding") print "wayfinding outside optional: " $0
+  }' "$BAD_IT" 2>/dev/null)"
+[ -z "$bdocs_stray" ] || bfail "AC-4: $(printf '%s\n' "$bdocs_stray" | head -1)"
+grep -q '^<!-- optional: backlog -->$' "$BAD_IT" 2>/dev/null || bfail "AC-4: no 'optional: backlog' block"
+grep -q '^<!-- optional: phase_gates -->$' "$BAD_IT" 2>/dev/null || bfail "AC-4: no 'optional: phase_gates' block"
+grep -q '^<!-- optional: wayfinding -->$' "$BAD_IT" 2>/dev/null || bfail "AC-4: no 'optional: wayfinding' block"
+bdocs_way="$(bdocs_join "$(bdocs_sec "$BAD_IT" 'Wayfinding')")"
+bdocs_chki "AC-4 wayfinding" "$bdocs_way" 'closed blocker'
+bdocs_chki "AC-4 wayfinding" "$bdocs_way" 'dependency only'
+bdocs_not "AC-4 PR listing" "$(cat "$BAD_IT" 2>/dev/null)" 'authorAssociation'
+bdocs_chk "AC-4 PR listing" "$(cat "$BAD_IT" 2>/dev/null)" 'FIRST_TIMER'
+bdocs_chk "AC-4 PR listing" "$(cat "$BAD_IT" 2>/dev/null)" 'repos/{{owner}}/{{repo}}/pulls'
+# The eight Status cells appear in the lifecycle table in the Placeholders table's order (catches swapped rows).
+bdocs_exp="$(bdocs_sec "$BAD_SKILL" '([0-9]+[.] )?Placeholders$' | grep -oE '^\| `\{\{status_[a-z_]+\}\}`' | sed 's/^| `//; s/`$//' | tr '\n' ' ')"
+[ -n "$bdocs_exp" ] || bfail "AC-4: Placeholders table has no status_* rows"
+bdocs_got="$(printf '%s\n' "$bdocs_rows" | sed 's/^ *//; s/ *$//' | grep -v '^$' | tr '\n' ' ')"
+[ "$bdocs_got" = "$bdocs_exp" ] || bfail "AC-4: lifecycle Status cells ($bdocs_got) are not in Placeholders-table order ($bdocs_exp)"
+bdocs_ho="$(bdocs_join "$(bdocs_sec "$BAD_IT" 'Handoff comment')")"
+bdocs_chk "AC-4 handoff" "$bdocs_ho" '## Handoff'
+bdocs_chk "AC-4 handoff" "$bdocs_ho" '**Open / blocked**'
+bdocs_chki "AC-4 handoff" "$bdocs_ho" 'secret values'
+bdocs_chk "AC-4" "$(bdocs_join "$bdocs_all")" 'PRs as a request surface: no'
+bdocs_ac_done "AC-4 issue-tracker template"
+
+# AC-5: phase-gates skeleton.
+bdocs_pg="$(bdocs_join "$(cat "$BAD_PG" 2>/dev/null)")"
+bdocs_chk "AC-5" "$bdocs_pg" '## Handoff'
+bdocs_chki "AC-5" "$bdocs_pg" 'a closed issue alone is not a pass'
+bdocs_chk "AC-5" "$bdocs_pg" '**Open / blocked**'
+bdocs_chki "AC-5" "$bdocs_pg" 'end the session'
+bdocs_tail="$(awk '/^## Gates$/ { f = 1; next } f && NF' "$BAD_PG" 2>/dev/null)"
+[ -n "$bdocs_tail" ] || bfail "AC-5: no '## Gates' heading followed by a comment line"
+printf '%s\n' "$bdocs_tail" | grep -v '^$' | grep -qvE '^<!--.*-->$' && bfail "AC-5: '## Gates' is followed by more than a comment line"
+bdocs_ac_done "AC-5 phase-gates skeleton"
+
+# AC-6: triage-labels template.
+bdocs_tl="$(cat "$BAD_TL" 2>/dev/null)"
+bdocs_chk "AC-6" "$bdocs_tl" 'Canonical role'
+bdocs_hdr="$(printf '%s\n' "$bdocs_tl" | grep -E '^\|' | head -1 | awk -F'|' '{ gsub(/^ +| +$/, "", $2); print $2 }')"
+[ "$bdocs_hdr" = "Canonical role" ] || bfail "AC-6: first table header cell is '$bdocs_hdr', not 'Canonical role'"
+for bdocs_r in needs-triage needs-info ready-for-agent ready-for-human wontfix; do
+  printf '%s\n' "$bdocs_tl" | grep -E '^\|' | grep -qF -- "\`$bdocs_r\`" || bfail "AC-6: role '$bdocs_r' is not mapped in a table row"
+  bdocs_lab="$(printf '%s\n' "$bdocs_tl" | grep -E '^\|' | grep -F -- "\`$bdocs_r\`" | head -1 | awk -F'|' '{ gsub(/ /, "", $3); print $3 }')"
+  [ -n "$bdocs_lab" ] || bfail "AC-6: role '$bdocs_r' has an empty label column"
+done
+bdocs_ac_done "AC-6 triage-labels template"
+
+# AC-7: preflight section, placed before 'Copy and link'.
+bdocs_pre_l="$(bdocs_line "$BAD_SKILL" '[0-9]+[.] Checkout preflight$')"
+bdocs_cp_l="$(bdocs_line "$BAD_SKILL" '[0-9]+[.] Copy and link$')"
+if [ -z "$bdocs_pre_l" ] || [ -z "$bdocs_cp_l" ]; then
+  bfail "AC-7: missing 'Checkout preflight' or 'Copy and link' heading"
+elif [ "$bdocs_pre_l" -ge "$bdocs_cp_l" ]; then
+  bfail "AC-7: Checkout preflight (line $bdocs_pre_l) is not before Copy and link (line $bdocs_cp_l)"
+fi
+bdocs_pre="$(bdocs_join "$(bdocs_sec "$BAD_SKILL" '[0-9]+[.] Checkout preflight$')")"
+for bdocs_p in 'a path the user names' 'git remote -v' '<org>/<repo>' 'gh auth status' 'gh api user' 'dirty' 'gh repo view <org>/<repo> --json defaultBranchRef' 'upstream' 'Never clone' 'read-only'; do
+  bdocs_chki "AC-7" "$bdocs_pre" "$bdocs_p"
+done
+bdocs_ac_done "AC-7 checkout preflight"
+
+# AC-8: install section, placed between 'Copy and link' and 'Add issues'.
+bdocs_in_l="$(bdocs_line "$BAD_SKILL" '[0-9]+[.] Install the board.s agent docs$')"
+bdocs_ad_l="$(bdocs_line "$BAD_SKILL" '[0-9]+[.] Add issues$')"
+if [ -z "$bdocs_in_l" ] || [ -z "$bdocs_cp_l" ] || [ -z "$bdocs_ad_l" ]; then
+  bfail "AC-8: missing Install, Copy and link or Add issues heading"
+elif ! { [ "$bdocs_cp_l" -lt "$bdocs_in_l" ] && [ "$bdocs_in_l" -lt "$bdocs_ad_l" ]; }; then
+  bfail "AC-8: Install (line $bdocs_in_l) is not between Copy and link ($bdocs_cp_l) and Add issues ($bdocs_ad_l)"
+fi
+bdocs_ins="$(bdocs_join "$(bdocs_sec "$BAD_SKILL" '[0-9]+[.] Install the board.s agent docs$')")"
+for bdocs_p in 'Ask first whether the repo has phase gates' 'Status options from the copied project' 'mapping table' 'for review' \
+  'unmatched' 'no column; label only' 'Never create a column' 'default branch' 'git fetch' 'git worktree' 'dirty' \
+  'collision-free' 'merge / overwrite / skip' 'append only the missing' 'conflicting rules' 'incomplete' \
+  'No unresolved' 'Confirm the batch before writing' 'Push and open the PR' 'one confirmed action' \
+  'git fetch <remote>' '<remote>/<default-branch>' 'git push <remote> <branch>' 'gets no Status write' 'gh pr create --repo <org>/<repo> --base' 'no Status change' \
+  'ask which to create' 'AGENTS.md' 'CLAUDE.md' 'separate confirmed edit' 'install skipped' 'Never reset'; do
+  bdocs_chki "AC-8" "$bdocs_ins" "$bdocs_p"
+done
+bdocs_ac_done "AC-8 install step"
+
+# AC-9: step 1 reads phase-gates.md; triage defers to the repo lifecycle, default table reconciled.
+bdocs_s1="$(bdocs_join "$(bdocs_sec "$BAD_SKILL" '[0-9]+[.] Inputs and instruction layers$')")"
+bdocs_chk "AC-9" "$bdocs_s1" 'docs/agents/phase-gates.md'
+bdocs_tri_raw="$(bdocs_sec "$BAD_SKILL" '[0-9]+[.] Triage onto the board$')"
+bdocs_tri="$(bdocs_join "$bdocs_tri_raw")"
+bdocs_chk "AC-9" "$bdocs_tri" 'docs/agents/issue-tracker.md'
+bdocs_chki "AC-9" "$bdocs_tri" 'lifecycle'
+bdocs_chki "AC-9" "$bdocs_tri" 'installed, merged or pre-existing'
+bdocs_chk "AC-9" "$bdocs_tri" 'uses the Status mapping from step 7'
+bdocs_chki "AC-9" "$bdocs_tri" 'fallback only when no mapping or lifecycle exists'
+printf '%s\n' "$bdocs_tri_raw" | grep -E '^[[:space:]]*\|' | grep -i 'blocked' | grep -q 'Refining' || bfail "AC-9: default table has no Blocked -> Refining row"
+printf '%s\n' "$bdocs_tri_raw" | grep -E '^[[:space:]]*\|' | grep -q "Won't do" || bfail "AC-9: default table has no Won't do row"
+bdocs_not "AC-9" "$bdocs_tri" 'keeps its ready label'
+bdocs_ac_done "AC-9 triage defers to lifecycle"
+
+# AC-10: reconciliation, each change in its own section.
+bdocs_add="$(bdocs_join "$(bdocs_sec "$BAD_SKILL" '[0-9]+[.] Add issues$')")"
+bdocs_chk "AC-10 add issues" "$bdocs_add" "Done or Won't do"
+bdocs_qn="$(bdocs_join "$(bdocs_sec "$BAD_Q" 'List board items')")"
+bdocs_chk "AC-10 queries.md" "$bdocs_qn" "Done or Won't do"
+bdocs_wf="$(bdocs_join "$(bdocs_sec "$BAD_SKILL" '[0-9]+[.] Workflows the user must turn on in the UI$')")"
+bdocs_not "AC-10 workflows" "$bdocs_wf" 'Pull request merged.{0,12}Done'
+bdocs_chk "AC-10 workflows" "$bdocs_wf" "Won't do"
+bdocs_ver="$(bdocs_join "$(bdocs_sec "$BAD_SKILL" '[0-9]+[.] Verify and report$')")"
+bdocs_not "AC-10 verify" "$bdocs_ver" 'exactly one state label'
+bdocs_not "AC-10 verify" "$bdocs_ver" 'label counts add up'
+bdocs_chk "AC-10 verify" "$bdocs_ver" 'at most one'
+bdocs_chk "AC-10 verify" "$bdocs_ver" 'lifecycle row'
+bdocs_chk "AC-10 verify" "$bdocs_ver" 'default table in step 10'
+bdocs_chki "AC-10 verify" "$bdocs_ver" 'label only'
+bdocs_chki "AC-10 add issues" "$bdocs_add" 'label only'
+bdocs_chk "AC-10 add issues" "$bdocs_add" 'NOT_PLANNED'
+bdocs_chk "AC-10 queries.md" "$(cat "$BAD_Q" 2>/dev/null)" 'stateReason'
+bdocs_chki "AC-10 workflows" "$bdocs_wf" 'label only'
+bdocs_chki "AC-10 triage" "$bdocs_tri" 'label only'
+bdocs_intro="$(bdocs_join "$(awk '/^# / { f = 1; next } /^## / { exit } f' "$BAD_SKILL" 2>/dev/null)")"
+for bdocs_p in 'writing docs' 'pushing' 'instruction file'; do
+  bdocs_chki "AC-10 intro" "$bdocs_intro" "$bdocs_p"
+done
+bdocs_desc="$(bdocs_join "$(extract_frontmatter "$BAD_SKILL")")"
+bdocs_chki "AC-10 description" "$bdocs_desc" 'agent docs'
+bdocs_chk "AC-10 description" "$bdocs_desc" "closed items to Done or Won't do"
+bdocs_not "AC-10 description" "$bdocs_desc" 'closed items to Done[,.]'
+bdocs_ac_done "AC-10 skill reconciled"
+
+# AC-12: the README row mentions installing the board's agent docs.
+bdocs_row="$(grep -F '| `setting-up-project-boards` |' "$ROOT/README.md")"
+bdocs_chki "AC-12" "$bdocs_row" 'agent docs'
+bdocs_ac_done "AC-12 README row mentions installing the board's agent docs"
 
 echo "== review ledger and codex-cap gate =="
 # Skills call the ledger CLI directly as ${CLAUDE_PLUGIN_ROOT}/scripts/review-ledger.sh.
