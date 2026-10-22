@@ -13,7 +13,7 @@ canonical: docs/work/initiatives/dev-workflow/workstreams/setting-up-project-boa
 **Linked items:** the source repo's `docs/agents/{issue-tracker,phase-gates,triage-labels}.md`: related context, generalized into templates. `dev-workflow/skills/setting-up-project-boards/SKILL.md` (dev-workflow 0.2.3): the skill being changed.
 **Fetched:** 2026-10-22. Ticket status `n/a`, sprint `none`, estimate `none`
 **Intake by:** Christopher Steigerwald with the `dev-workflow:intaking-work-items` skill
-**Status:** Ready, revision 2.1. The plan pass returned revise; the user accepted R1–R6 on 2026-10-22 (decision 11); the bounded re-check's should-fix corrections (sv-1..sv-4) applied within that decision. No steps skipped.
+**Status:** Ready, revision 2.1. Step 7 (Verify) complete on `feat/board-agent-docs` @ `af3de81`: AC-1–AC-13 verified; AC-14 deferred. The plan pass returned revise; the user accepted R1–R6 on 2026-10-22 (decision 11); the bounded re-check's should-fix corrections (sv-1..sv-4) applied within that decision. No steps skipped.
 **Chain:** sdlc-process
 
 > Snapshot of the request on the fetched date plus the decisions below. If the scope changes,
@@ -180,7 +180,26 @@ Repo-wide checks: `/bin/bash dev-workflow/tests/run.sh`; `bash scripts/scrub-che
 
 ## Verification evidence
 
-Not started.
+Head = `af3de81` (last code commit; later commits are this doc's records only). Repo check: `timeout 300 /bin/bash dev-workflow/tests/run.sh </dev/null` run twice on head at 15:13: both exit 0, 0 `FAIL` lines, `== Result == PASSED`. Red check: only `dev-workflow/tests/run.sh` copied onto base `0386a11` in a throwaway worktree (removed): exit 1, `FAILED`.
+
+| AC | Check | Kind | Result | Evidence | Base / head / time |
+|---|---|---|---|---|---|
+| AC-1 | run.sh "board-docs templates exist" | automated, new | verified | base: `FAIL: AC-1: templates/issue-tracker.md not found`; head ×2: `ok: AC-1 board-docs templates exist` | `0386a11` / `af3de81` 15:13 |
+| AC-2 | run.sh "templates shape-scrubbed" | automated, new | verified (red via mutation) | base: passes vacuously (no templates; AC-1 covers absence); mutation at head (`--repo acme/widgets` appended to a template copy): `FAIL: AC-2: templates match shape '--repo [^{]'`; head ×2: `ok: AC-2 templates shape-scrubbed` | `af3de81` mutated / `af3de81` 15:15 |
+| AC-3 | run.sh "placeholder parity and balanced optional markers" | automated, new | verified | base: `FAIL: AC-3: SKILL.md Placeholders table has no rows`; head ×2: `ok: AC-3 …`; mutations (deleted table row; nested/early-closed markers) fail | `0386a11` / `af3de81` 15:13 |
+| AC-4 | run.sh "issue-tracker template" | automated, new | verified | base: `FAIL: AC-4 heading: missing 'precedence'`; head ×2: `ok: AC-4 issue-tracker template`; mutations (literal Status cell; swapped rows; line-start `{{status_refining}}`; `stays in {{status_refining}}`) fail | `0386a11` / `af3de81` 15:13 |
+| AC-5 | run.sh "phase-gates skeleton" | automated, new | verified | base: `FAIL: AC-5: missing '## Handoff'`; head ×2: `ok: AC-5 phase-gates skeleton` | `0386a11` / `af3de81` 15:13 |
+| AC-6 | run.sh "triage-labels template" | automated, new | verified | base: `FAIL: AC-6: missing 'Canonical role'`; head ×2: `ok: AC-6 triage-labels template`; mutation (empty label cell) fails | `0386a11` / `af3de81` 15:13 |
+| AC-7 | run.sh "checkout preflight" | automated, new | verified | base: `FAIL: AC-7: missing 'Checkout preflight' or 'Copy and link' heading`; head ×2: `ok: AC-7 checkout preflight` | `0386a11` / `af3de81` 15:13 |
+| AC-8 | run.sh "install step" | automated, new | verified | base: `FAIL: AC-8: …` (install-section lines, among 126 base FAILs); head ×2: `ok: AC-8 install step`; mutation (confirm-before-writing removed) fails | `0386a11` / `af3de81` 15:13 |
+| AC-9 | run.sh "triage defers to lifecycle" | automated, new | verified | base: `FAIL: AC-9: missing 'docs/agents/phase-gates.md'`; head ×2: `ok: AC-9 triage defers to lifecycle` | `0386a11` / `af3de81` 15:13 |
+| AC-10 | run.sh "skill reconciled" | automated, new | verified | base: `FAIL: AC-10 add issues: missing 'Done or Won't do'`; head ×2: `ok: AC-10 skill reconciled`; mutation (wrapped "exactly one / state label" restored) fails | `0386a11` / `af3de81` 15:13 |
+| AC-11 | run.sh version assertion (labelled "AC-8" in the PR-body section) | automated, updated | verified | base: `FAIL: AC-8: dev-workflow version is not 0.2.4 in both plugin.json and marketplace.json`; head ×2: `ok: AC-8 dev-workflow is 0.2.4 in plugin.json and marketplace.json` | `0386a11` / `af3de81` 15:13 |
+| AC-12 | run.sh "README row" | automated, new | verified | base: `FAIL: AC-12: missing 'agent docs'`; head ×2: `ok: AC-12 README row mentions installing the board's agent docs` | `0386a11` / `af3de81` 15:13 |
+| AC-13 | whole suite + `bash scripts/scrub-check.sh --require-private --allow scripts/scrub-allow.txt $(git diff --name-only 0386a11..HEAD)` | suite | verified | suite head ×2 exit 0 `PASSED`; scrub exit 0 | `0386a11` / `af3de81` 15:13 |
+| AC-14 | live sandbox scenarios (a)–(d) | person-only, deferred | not delivered | "Accept the recommended answers for R1–R6." (decision 11) | — |
+
+Definition of done: AC-1–AC-13 verified (above); AC-14 deferred and named in the PR; dev-workflow 0.2.4 and README row (AC-11, AC-12); merge via draft PR marked ready: post-merge, carried to close-out; no CHANGELOG (`ls CHANGELOG* dev-workflow/CHANGELOG*` → no matches, per precedent).
 
 ## Run log
 
@@ -255,5 +274,12 @@ Records:
 - `bounded re-review @f1fcb2d (00f24b1..f1fcb2d): resolved` (churn 97/753 = 12.9% excluding doc records, 14.3% including; no new file; same boundary). Informational: label-only prose still uses "in {{status_…}}" at three lines; two long lines; AC text lagging the new assertions (closed here).
 - `bounded code-review @f1fcb2d (7d2c496..f1fcb2d)`: Standards and Spec 0 must-fix; both should-fix on the same class as the verifier's note.
 - **Recurrence consolidation (label-only prose, third instance):** governing behaviour FR-3/FR-8: a step mapped "no column; label only" must render grammatically. Affected inputs: every `{{status_*}}` in template prose outside the lifecycle table. Observed: "goes to …" (fixed in d5287f2), then "stays in / is in …" (open). Regression coverage: a structural assertion that every such occurrence is `Status: {{status_x}}`, not a preposition list. Completion boundary: that assertion green plus the rewritten lines. AC-4/AC-10 text above updated to name the assertions run.sh already makes.
+- Consolidated label-only fix: tests `33eea52`, fix `00221dc`; records `f6be5e6`.
+- `bounded code-review @f6be5e6 (f1fcb2d..f6be5e6)`: 0 must-fix; should-fix: the new assertion's 8-character blind spot (Standards, proven) and the Reopened wording (Spec).
+- `bounded re-review @f6be5e6 (00f24b1..f6be5e6): resolved` (churn 16.2% incl. docs), with fv-1 = the same assertion blind spot, proven by mutation.
+- Fix: tests `11fdfb5` (count-based check on the lifecycle section), template `af3de81` (Reopened bullet split).
+- `bounded code-review @af3de81 (f6be5e6..af3de81)`: 0 must-fix. Dispositioned without change: identical Reopened sentences when both steps are label only (install step 7.3, `SKILL.md:109-111`, rewords label-only bullets); the counting idiom differs from its neighbours (style only, marked optional).
+- `bounded re-review @af3de81 (00f24b1..af3de81): resolved` (churn 124/753 = 16.5% incl. doc records; no new file; mutations A and B exit 1; suite exit 0; scrub exit 0). Coverage chain: `full-tier diff pass @00f24b1 (base 0386a11)` + this record cover every commit to `af3de81`; later commits are this doc's records only.
+- `verify @af3de81`: AC-1–AC-13 verified, AC-14 not delivered (deferred); see Verification evidence.
 - Codex rounds used: 2 of 3.
-**Last completed stage:** bounded re-review resolved @f1fcb2d; consolidated label-only fix in progress, then bounded code-review + bounded fresh-verifier.
+**Last completed stage:** Verify (step 7). Next: Ship (step 8): push and draft PR, each on the user's yes.
