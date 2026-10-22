@@ -1018,8 +1018,9 @@ bdocs_nontable="$(printf '%s\n' "$bdocs_life" | grep -vE '^\|')"
 if printf '%s\n' "$bdocs_nontable" | grep -qE '\b(Refining|Building|Validating)\b'; then
   bfail "AC-4: lifecycle prose hard-codes a column name (Refining/Building/Validating)"
 fi
-if printf '%s\n' "$bdocs_nontable" | grep -qE '(to|not) \{\{status_'; then
-  bfail "AC-4: lifecycle prose says 'to/not {{status_...}}', which breaks for a label only step"
+# Outside table rows, every {{status_...}} is written "Status: {{status_...}}" so a label only step still reads well.
+if grep -v '^|' "$BAD_IT" 2>/dev/null | grep -o '.\{8\}{{status_' | grep -qv 'Status: {{status_'; then
+  bfail "AC-4: a {{status_...}} outside the table is not preceded by 'Status: '"
 fi
 bdocs_chk "AC-4" "$bdocs_lj" 'Merging a PR does not finish an issue'
 bdocs_chki "AC-4 automation rule" "$(bdocs_join "$bdocs_all")" 'project workflows may set Status when an item is added or closed'
