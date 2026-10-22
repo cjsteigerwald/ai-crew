@@ -68,7 +68,9 @@ readiness, policy-review or publication gates.
 
 1. **Work branch.** Before handoff, create or check out the work branch (e.g. `<key>-<slug>` from
    main, or the repo's convention from step 0) — never main. Record the branch and its merge-base
-   with main (the `review base`) in the Run log.
+   with main (the `review base`) in the Run log. As the last action of this step, run
+   `${CLAUDE_PLUGIN_ROOT}/scripts/review-ledger.sh link branch:<ticket-branch> plan:<ticket>`
+   so any Codex rounds already counted under the ticket carry over.
 2. **Handoff.** Hand the entry (already loaded, see **Entry**; load it now if not, and
    `sdlc-process:orchestrator` after it — do not invert the order) one brief containing:
    - the ticket key and URL;
@@ -107,7 +109,8 @@ readiness, policy-review or publication gates.
    - Every ticket cites the `AC-n` it satisfies. Check coverage: every active AC is cited by at least
      one ticket and no ticket cites a non-active AC. Take any gap back to the user.
    - On Full tier, run the plan pass on the published spec and tickets after `to-tickets` and
-     before stage 5 (SKILL.md **Review = tier**); record `plan pass @<revisions>`.
+     before stage 5 (SKILL.md **Review = tier**); record `plan pass @<revisions>`. The Codex brief's
+     `ledger:` line names the repo path only (the ticket branch exists, so the branch key applies).
 5. **Implement.** Route by the number of published tickets. The implementer gets the requirements
    doc, the tickets and the settled AC list as the only scope:
    - **One ticket, or no decomposition:** `sdlc-process:implement`, which runs `sdlc-process:tdd`
@@ -134,9 +137,10 @@ readiness, policy-review or publication gates.
 
    **Records.** Write a record with its SHA to **Chain artifacts** as stage 5 goes (SKILL.md step
    1, **Resume status**): each ticket `integrated @<sha>`, then `code-review @<sha>`, then on
-   Full tier the diff pass, last, as `full-tier diff pass @<sha>`: the end of stage 5, after
-   code-review and before Verify. A Verify fix that changes code re-runs both reviews here
-   (SKILL.md **Review = tier**).
+   Full tier the diff pass, last, as `full-tier diff pass @A (base B)`: the end of stage 5, after
+   code-review and before Verify. A Verify fix that changes code re-runs the bounded
+   code-review and the bounded re-review here, or the diff pass when eligibility fails, recording
+   `bounded re-review @N (A..N): resolved|NEEDS FULL PASS` (SKILL.md **Review = tier**).
 
    **After the review completes, before Verify:** check the diff and tests against the active AC
    list, and flag back to the user any change that implements a non-active AC.

@@ -63,7 +63,7 @@ When sdlc-process is installed, load `sdlc-process:orchestrator` with the Skill 
 
 6. If this changes the **frontier** of available tickets, kick off more **implementer subagents** to work on the new tickets. This allows for maximum concurrency.
 
-7. Once all tickets are complete, call the Skill tool with `sdlc-process:code-review` on the integration branch (in intake mode, with the caller's review base and spec path). Fix all issues raised by the code review in a single **implementer subagent**, then re-run `sdlc-process:code-review` bounded to the corrected findings before step 8.
+7. Once all tickets are complete, call the Skill tool with `sdlc-process:code-review` on the integration branch (in intake mode, with the caller's review base and spec path). Fix all issues raised by the code review in a single **implementer subagent**, then re-run `sdlc-process:code-review` bounded to the corrected findings before step 8 (on a Full-tier PR, see `dev-workflow:review-policy`, **Re-review after fixes**, for the extra bounded verifier and the eligibility rule).
 
 8. If a draft PR exists, mark it ready for review. Otherwise, resolve each ticket the way the issue tracker closes work, and report the integration branch. In intake mode, mark nothing ready, close no tickets, and use no closing keywords; report the integration branch to the caller.
 

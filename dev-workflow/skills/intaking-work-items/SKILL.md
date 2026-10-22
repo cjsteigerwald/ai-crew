@@ -156,7 +156,8 @@ against the doc's snapshot (see **Controls**) before resuming.
 
 **Resume status.** Each stage writes a record with its commit SHA to the doc's Chain artifacts
 (ticket `integrated @<sha>`, `plan pass @<revisions>`, `code-review @<sha>`, `full-tier diff pass
-@<sha>`, `verify @<sha>`, the PR head); a deliberate skip is `skipped (user)`, and a stage the
+@A (base B)`, `bounded re-review @N (A..N): resolved|NEEDS FULL PASS`, `verify @<sha>`, the PR
+head); a deliberate skip is `skipped (user)`, and a stage the
 recorded review tier does not require is `n.a. (<tier>)` (Routine: no plan pass or Full-tier diff
 pass; Exempt: no reviews), never a missing record. On resume (the doc exists, or "continue <KEY>"),
 show ONE compact status
@@ -169,7 +170,8 @@ recorded), and ONE `AskUserQuestion`: the suggestion first (Recommended), the us
 stage as the alternative. Two priorities are automatic: `Wayfinding: active` suggests "resolve the
 next map decision" ([wayfinder.md](wayfinder.md)); `Wayfinding: hold` asks the hold question first.
 Resume only chooses where to continue; it never marks a gate passed. Close-out needs Verify and
-the tier's reviews to have run on the PR's current head; if the status shows otherwise, say so
+the tier's reviews to cover the PR's current head (on Full tier, through the coverage chain in
+`dev-workflow:review-policy`, **Re-review after fixes**); if the status shows otherwise, say so
 and suggest the earlier stage.
 
 **Jira** — Atlassian MCP `getJiraIssue`. Collect: summary, description, any acceptance-criteria
@@ -348,11 +350,17 @@ Exempt runs none. **Full** adds two passes, each one message dispatching
 `dev-workflow:fresh-verifier` + `dev-workflow:codex-adversary`: the plan pass on the published
 spec and tickets (between to-tickets and Implement), and the diff pass at the end of Implement,
 after code-review and before Verify, with the code-review report as input (independence and
-refutation). Record each with its SHA. The PR gate accepts a `full-tier diff pass` recorded at the
-PR's current head. A Verify fix that changes code re-runs, at the same position, a bounded
-`sdlc-process:code-review` of the fix diff and then the Full-tier diff pass, before Verify re-runs;
-each re-pass declares its trigger under review-policy's cap. If the cap is exhausted, stop and ask
-the user how to proceed.
+refutation). Record the diff pass as `full-tier diff pass @A (base B)`. Every Codex brief carries
+`ledger: <repo-path>` (the branch key; add `| plan:<ticket>` only when no ticket branch exists
+yet). The PR gate accepts the coverage chain at the PR's current head. A Verify fix that changes
+code re-runs, at the same position, a bounded `sdlc-process:code-review` of the fix diff and then,
+per review-policy's **Re-review after fixes**, one bounded `fresh-verifier`, recorded as
+`bounded re-review @N (A..N): resolved|NEEDS FULL PASS`, before Verify re-runs; a fix that fails
+eligibility (changed input) re-runs the Full-tier diff pass instead, which becomes the new
+anchor, and declares its trigger under review-policy's cap. At the cap, ask with
+`AskUserQuestion`: recommended is "Stop Codex: bounded fresh-verifier on the remaining fix" when
+the fix is still bounded-eligible, else "Stop: hand to human review"; "One more Codex round"
+is always second and names its trigger; exceeding the cap is never recommended.
 
 A lint/test failure inside `opening-pull-requests` is a step-7 failure. If gate 2's rebase or a
 review fix changes the tree, step 7 re-runs on the commit Ship pushes. The PR body carries the

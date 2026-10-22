@@ -115,7 +115,7 @@ skipped".>
 `CONTEXT.md` and ADR paths grilling changed; the work branch (also the integration branch);
 the spec issue (`owner/repo#N`); the published ticket issue links (each with `AC-n`); the
 commit-bound records, each with its SHA (`plan pass @<revisions>`, ticket `integrated @<sha>`,
-`code-review @<sha>`, `full-tier diff pass @<sha>`, `verify @<sha>`; a deliberate skip is
+`code-review @<sha>`, `full-tier diff pass @A (base B)`, `bounded re-review @N (A..N): resolved|NEEDS FULL PASS`, `verify @<sha>`; a deliberate skip is
 `skipped (user)`, and a stage the review tier does not require is `n.a. (<tier>)`, not a missing
 record); the review tier (`Exempt`, `Routine` or `Full`); the draft PR and its head; sdlc-process holds and their
 resolutions; any superseded tickets; and, if parallel pieces were chosen, the tracking-file location

@@ -97,7 +97,7 @@ One `done` piece at a time (recipe: Merge):
 1. `FF --check <branch> <sha>`. Exit 10 means the piece's sha does not descend from the current
    head: send `RESYNC #N <head>` and take the next piece.
 2. Pin `PIN` = the current head, then `FF <branch> <sha> "$PIN"`.
-3. Exit 0: `PT merged <issue>`, then `PT launchable` again.
+3. Exit 0: `PT merged <issue>`, then `PT launchable` again. As the last action of this step, run `${CLAUDE_PLUGIN_ROOT}/scripts/review-ledger.sh link branch:<ticket-branch> branch:<piece>` (carries the piece's Codex rounds into the ticket branch; safe to re-run).
    Exit 10: the head moved; send `RESYNC #N <current-head>` and wait for a fresh DONE.
    Exit 3, 1 or 2: stop and tell the user.
 

@@ -25,11 +25,16 @@ substitute your own and update the cross-references in each skill/agent.
    operational content (a common credential/hostname leak surface — Routine minimum plus
    a `fresh-verifier` security-lens dispatch on the pasted-excerpt checklist).
 2. **Full chain** — touches Terraform, CI/workflows, auth/credential handling,
-   hooks/settings that gate behavior, or agent/command/skill definitions; OR >3 files
+   hooks/settings that gate behavior, or agent/command/skill definitions; OR Helm chart
+   templates, or any values/manifest file used by a prod deploy (decided by the repo's deploy
+   workflows, not by filename; shared base values that prod uses count; target unknown →
+   Full; image tag/digest bumps that only affect non-prod follow the size thresholds; the
+   other triggers apply on their own); OR >3 files
    changed; OR >~150 changed lines; OR cross-cutting/architectural. Dispatch
    `dev-workflow:fresh-verifier` + `dev-workflow:codex-adversary` in one message, both in
    plan mode (on the plan) and again before `gh pr create` (on `git diff main...HEAD`).
-   At least one adversarial pass is required; cap three per PR in aggregate; every pass
+   At least one adversarial pass is required; cap three per PR in aggregate, counted per
+   key in the review ledger across sessions (see **Codex round ledger**); every pass
    beyond the first declares its trigger in the transcript **before** dispatch. Effort
    cannot be set per dispatch (the Agent tool exposes model, not effort), so escalate by
    dispatching `dev-workflow:fresh-verifier-high` in place of `fresh-verifier` — model may
@@ -52,3 +57,77 @@ reader can re-check) or explicit human adjudication, recorded with who decided a
 later adversarial pass disagreeing with an earlier one is analysis, not evidence, on its
 own; where two passes disagree and neither is backed by such evidence, the finding stands
 open.
+
+## Re-review after fixes
+
+A fix after a review does not default to a full re-run. Which re-review applies depends on
+the tier and on whether the fix is still within what the last full pass saw.
+
+- **Routine:** a bounded `sdlc-process:code-review` on the fix delta.
+- **Full:** the same, plus **one bounded `fresh-verifier`**. No Codex round.
+
+**Anchor.** The last full pass records the reviewed SHA `A` and its comparison base `B`
+(the merge-base with the PR's target branch, pinned when that pass runs).
+
+**Eligibility** is checked each time and is cumulative from `A`; it is not reset after a
+bounded pass. A fix is bounded-eligible only if all of these hold:
+- churn = (lines added + deleted in `A..HEAD`) ÷ (lines added + deleted in `B..A`) is
+  **≤ 20%**;
+- no new file or service;
+- the **same architecture and trust boundaries** as the pass at `A`;
+- no binary changes, and a non-zero denominator.
+
+If any condition fails, the fix is **changed input**.
+
+**Bounded `fresh-verifier` inputs:** `A`, `B`, the delta `A..HEAD`, the prior findings, and
+the deterministic checks to re-run. **Duties:** mark each prior finding resolved or not;
+check every consumer of what the delta changed (code callers, and any workflow, config,
+Helm values, or agent/skill instructions that read a changed file or key); re-run the tests
+that cover them; check eligibility itself and return `NEEDS FULL PASS` if any condition
+fails.
+
+**Triggers keep their existing scope:**
+
+| Trigger | What it re-runs |
+|---|---|
+| Changed input (eligibility fails) | A full pass: verifier + Codex; it becomes the new anchor |
+| New lens | Only the skipped dimension |
+| Escalated effort | Only the one contested finding, in task mode |
+
+**Coverage chain.** A Full-tier PR is covered at HEAD when there is a
+`full-tier diff pass @A (base B)` record, every later commit falls inside a
+`bounded re-review @N (A..N): resolved` record, and no record says `NEEDS FULL PASS`.
+
+## Codex round ledger
+
+Codex rounds are counted per key (`branch:<name>`, or `plan:<ticket>` before a branch
+exists) in the review ledger, across sessions, by `${CLAUDE_PLUGIN_ROOT}/scripts/review-ledger.sh`
+(`record`, `link`, `void`, `reset`, `count`, `show`). The `codex-cap-gate` hook derives the
+key from the `ledger: <repo-path>[ | plan:<ticket>]` line every Codex brief carries, records
+each dispatch, and asks before round 4. It is accounting that prompts you, not a security
+boundary.
+
+- Put the `ledger:` line outside code fences, once per brief.
+
+- After a branch rename, run `review-ledger.sh link branch:<new> branch:<old>` so the count
+  follows the work. `link` is a snapshot and idempotent; run it at the end of the step.
+- Starting genuinely new work under a recycled branch name is a deliberate
+  `review-ledger.sh reset <key> <reason>`.
+- A dispatch that never ran Codex (a BLOCKING envelope, a failed launch) or a round 4 you
+  declined at the prompt is removed with `review-ledger.sh void <tool_use_id> <reason>`.
+
+**Declared limits:**
+- the count is per clone;
+- attribution comes from the brief's repo path;
+- a direct Bash Codex launch (`crew-codex adversarial-review`) is invisible to the hook, so
+  record it by hand;
+- triggers remain self-certified;
+- dispatches blocked by another gate are counted (fix with `void`).
+
+**At the cap**, ask with `AskUserQuestion`; exceeding the cap is never the recommended
+option:
+- **Recommended when the remaining fix is bounded-eligible:** "Stop Codex: bounded
+  fresh-verifier on the remaining fix".
+- **Recommended when it is not eligible:** "Stop: hand to human review" (a bounded verifier
+  cannot cover a change that needs a full pass).
+- **Always second:** "One more Codex round", which must name its trigger.

@@ -172,7 +172,7 @@ echo "== review-policy skill =="
 # evidence rule; the hash catches wording changes the heading checks can't.
 # The frontmatter description is excluded on purpose — description tuning
 # shouldn't trip this.
-REVIEW_POLICY_SHA256="d983678b5fe88485f0c0ed564f665bf29735feae71958474ac744f3924589fd4"
+REVIEW_POLICY_SHA256="e871c6e6e2437e0c8eda5971df112070bcf188f8ed296c947dc565077bd5eabe"
 
 # extract_skill_body <file> — prints everything after the frontmatter's
 # closing '---' line.
@@ -421,12 +421,12 @@ GUARD_EOF
     grep -qF "$gone" "$INTAKE_SKILL" && ifail "intaking-work-items/SKILL.md: removed text '$gone' is back"
   done
   iordered "$INTAKE_SKILL" "intaking-work-items/SKILL.md Review = tier (plan pass, then diff pass)" '(between to-tickets and Implement)' 'after code-review and before Verify' 'PR gate accepts'
-  iordered "$INTAKE_DIR/chain-sdlc-process.md" "intaking-work-items/chain-sdlc-process.md stage 5 records" '`code-review @<sha>`' 'full-tier diff pass @<sha>`: the end of stage 5' 'before Verify'
+  iordered "$INTAKE_DIR/chain-sdlc-process.md" "intaking-work-items/chain-sdlc-process.md stage 5 records" '`code-review @<sha>`' 'full-tier diff pass @A (base B)`: the end of stage 5' 'before Verify'
   grep -qF 'Wayfinding: hold' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: missing the Wayfinding: hold route"
   grep -qF 'do not loop on wayfinder' "$INTAKE_DIR/wayfinder.md" || ifail "intaking-work-items/SKILL.md: hold must not loop on wayfinder"
   grep -qF 'hold — <what' "$INTAKE_DIR/template.md" || ifail "intaking-work-items/template.md: Chain artifacts missing the Wayfinding: hold state"
   grep -qF 'not to grilling' "$INTAKE_SKILL" || ifail "intaking-work-items/SKILL.md: reopened rows under an active map must go to wayfinder, not grilling"
-  grep -qF '`full-tier diff pass` record at the PR'"'"'s current head' "$ROOT/skills/opening-pull-requests/SKILL.md" || ifail "opening-pull-requests/SKILL.md: PR gate does not accept the commit-bound Full pass"
+  grep -qF 'a `full-tier diff pass @A (base B)` record' "$ROOT/skills/opening-pull-requests/SKILL.md" || ifail "opening-pull-requests/SKILL.md: PR gate does not accept the commit-bound Full pass"
   # Entry-then-orchestrator by POSITION inside the Entry section: swapping the two names fails.
   ent_a="$(awk '/^## Entry/{f=1} f&&/sdlc-process:sdlc-process/{print NR; exit}' "$INTAKE_DIR/chain-sdlc-process.md")"
   ent_b="$(awk '/^## Entry/{f=1} f&&/sdlc-process:orchestrator/{print NR; exit}' "$INTAKE_DIR/chain-sdlc-process.md")"
@@ -703,7 +703,7 @@ else
     'only after the user confirms that write' 'Intake is always attended' \
     'Only `sdlc-process` skills run in the flow'
   # None of the dropped machinery, and nothing that pushes or rebases.
-  ! grep -qE 'git push|--force|rebase|ledger\.sh|canary|outbox|gen=' "$OP_SKILL" || orchfail "$OSL: carries a push, rebase, force or dropped-ledger term"
+  ! grep -qE 'git push|--force|rebase|(^|[^-])ledger\.sh|canary|outbox|gen=' "$OP_SKILL" || orchfail "$OSL: carries a push, rebase, force or dropped-ledger term"
   # The stage-5 option points to the new skill and not to the old one.
   pin_file "$ROOT/skills/intaking-work-items/chain-sdlc-process.md" "intaking-work-items/chain-sdlc-process.md" \
     '**Parallel pieces (stage 5 option).**' '`dev-workflow:orchestrating-pieces`'
@@ -731,7 +731,7 @@ done
 REMOVED_N="$(wc -l < "$REMOVED_LIST" | tr -d ' ')"
 [ "$REMOVED_N" -ge 20 ] || { REMOVED_FAILS=$((REMOVED_FAILS + 1)); fail "removed-module scan saw only $REMOVED_N files"; }
 while IFS= read -r rf; do
-  rhit="$(grep -nE 'ledger\.sh|ledger\.jq|ledger\.md|frontier\.sh|parse-msg|coordinating-partner-sessions|partner-brief|readiness\.md|lockf -s' "$rf" 2>/dev/null || true)"
+  rhit="$(grep -nE '(^|[^-])ledger\.sh|ledger\.jq|ledger\.md|frontier\.sh|parse-msg|coordinating-partner-sessions|partner-brief|readiness\.md|lockf -s' "$rf" 2>/dev/null || true)"
   [ -z "$rhit" ] || { REMOVED_FAILS=$((REMOVED_FAILS + 1)); fail "$rf: references a removed module: $rhit"; }
 done < "$REMOVED_LIST"
 rm -f "$REMOVED_LIST"
@@ -741,6 +741,46 @@ fi
 if [ "$ORCH_FAILS" -eq 0 ] && [ "$PIECE_FAILS" -eq "$PIECE_FAILS_BEFORE" ]; then
   echo "ok: orchestrating-pieces skill present ($OP_DIR/SKILL.md, ${op_lines:-0} lines) and pinned"
 fi
+
+echo "== review ledger and codex-cap gate =="
+# Skills call the ledger CLI directly as ${CLAUDE_PLUGIN_ROOT}/scripts/review-ledger.sh.
+for x in scripts/review-ledger.sh scripts/review_ledger.py hooks/codex-cap-gate.py; do
+  if [ -x "$ROOT/$x" ]; then
+    echo "ok: $x is executable"
+  else
+    fail "$x is not executable (chmod +x; skills invoke it directly)"
+  fi
+done
+# hooks/hooks.json parses, and every command it runs names an existing script.
+if python3 - "$ROOT/hooks/hooks.json" "$ROOT" <<'PY'
+import json, os, sys
+hooks_path, root = sys.argv[1], sys.argv[2]
+data = json.load(open(hooks_path))
+cmds = [h.get("command", "") for entries in data.get("hooks", {}).values()
+        for e in entries for h in e.get("hooks", [])]
+ok = bool(cmds)
+for c in cmds:
+    marker = "${CLAUDE_PLUGIN_ROOT}/"
+    if marker not in c:
+        print(f"command does not use the plugin root: {c}"); ok = False; continue
+    rel = c.split(marker, 1)[1].split('"', 1)[0]
+    if not os.path.isfile(os.path.join(root, rel)):
+        print(f"referenced script does not exist: {rel}"); ok = False
+sys.exit(0 if ok else 1)
+PY
+then
+  echo "ok: hooks/hooks.json parses and its scripts exist"
+else
+  fail "hooks/hooks.json does not parse or references a missing script"
+fi
+# Run with the interpreter running this file, so `/bin/bash run.sh` exercises bash 3.2.
+for t in review-ledger codex-cap-gate; do
+  if "$BASH" "$HERE/$t.test.sh"; then
+    :
+  else
+    fail "$t.test.sh reported a failure (see above)"
+  fi
+done
 
 echo "== Result =="
 if [ "$FAIL" -ne 0 ]; then

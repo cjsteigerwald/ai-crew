@@ -65,6 +65,10 @@ Astra to infer.
 - Node.js
 - bash 3.2 or newer — `crew-codex` runs under macOS's system `/bin/bash`
 
+When dev-workflow is installed, its `codex-cap-gate` hook counts `codex-crew:codex-reviewer`
+dispatches, so their briefs need the `ledger:` line (see `dev-workflow:review-policy`
+§ Codex round ledger).
+
 ## Install
 
 ```bash
