@@ -100,6 +100,8 @@ Automated checks are scoped to the named section (heading to next same-level hea
   - **Lifecycle rules:** Blocked → Refining and remove `ready-for-*`; "Merging a PR does not finish an issue"; the adapted automation rule (project workflows may set Status on add and close), and no "Nothing adds issues automatically".
   - **Optional markers:** backlog parts inside `optional: backlog`; `phase-gates.md` references inside `optional: phase_gates`; the wayfinding section inside `optional: wayfinding`. The wayfinding section states that a closed blocker is not a gate pass.
   - **Removed content:** no `release:`, no "Priority".
+  - **Label-only-safe prose:** outside the lifecycle table, every `{{status_*}}` appears only as `Status: {{status_x}}`, so a step mapped "no column; label only" still reads correctly. The eight Status cells appear in the Placeholders-table order.
+  - **PR listing:** the REST `repos/{{owner}}/{{repo}}/pulls` form including `FIRST_TIMER`; no `authorAssociation` anywhere.
 - **AC-5** (FR-4) The `phase-gates.md` template states the three gate rules, and its `## Gates` heading is followed only by a comment line.
 - **AC-6** (FR-5) The `triage-labels.md` template has the header "Canonical role" and all five roles mapped.
 - **AC-7** (FR-6) A preflight section in SKILL.md, placed before "Copy and link" (by heading line numbers), says each of these:
@@ -128,8 +130,8 @@ Automated checks are scoped to the named section (heading to next same-level hea
   - no checkout means skip and continue
 - **AC-9** (FR-13, FR-14) Step 1 names `docs/agents/phase-gates.md`. The triage section defers to the repo's `docs/agents/issue-tracker.md` lifecycle when present (installed, merged or pre-existing), and its default table has Blocked → Refining and a Won't-do row, with no "keeps its ready label".
 - **AC-10** (FR-15–FR-18) Each change sits in its own section:
-  - **Add issues:** closed items go to Done or Won't do.
-  - **`references/queries.md`, "List board items" note:** says Done or Won't do.
+  - **Add issues:** closed items go to Done or Won't do; `NOT_PLANNED` or `wontfix` selects the won't-do option.
+  - **`references/queries.md`:** the items query fetches `stateReason`; the "List board items" note says Done or Won't do.
   - **Workflows:** no "Pull request merged" → Done recommendation.
   - **Verify:** no "exactly one state label" (matched whitespace-tolerantly over the joined section, since the source sentence wraps) and no "label counts add up"; says "at most one" and the lifecycle row.
   - **Intro confirmation list:** names the doc write, push/PR and the instruction-file edit.
@@ -250,5 +252,8 @@ Records:
 - `full-tier diff pass @00f24b1 (base 0386a11)`: fresh-verifier approve with comments (1 should-fix: label-only prose); codex-adversary round 2 needs-attention (high: unqualified `gh repo view` in fork checkouts; medium: mapping not driving steps 8–10, no `stateReason`, unsupported `authorAssociation` gh field). All fixed: tests `b1edae0`, fix `7d2c496`.
 - `bounded code-review @7d2c496 (00f24b1..7d2c496)`: Standards and Spec 0 must-fix; should-fix items (PR listing `FIRST_TIMER` and fields, push remote, rewrap, label-only prose rendering, whole-template `authorAssociation` check, FR-6/AC-7 wording) fixed in `65f10b9`/`d5287f2`/`68a478e` (`d5287f2` alone is not green; `68a478e` is) and in this doc. Dispositioned without change: restoring two minor source rules; strengthening the "never create a column" phrase check; generic-phrase `bdocs_chki` checks.
 - Orchestrator check @68a478e: `timeout 300 /bin/bash dev-workflow/tests/run.sh` exit 0 `PASSED`, 0 FAIL; scrub `--require-private` exit 0; cumulative churn 00f24b1..68a478e = 97/753 = 12.9% (bounded-eligible: no new file, same architecture).
+- `bounded re-review @f1fcb2d (00f24b1..f1fcb2d): resolved` (churn 97/753 = 12.9% excluding doc records, 14.3% including; no new file; same boundary). Informational: label-only prose still uses "in {{status_…}}" at three lines; two long lines; AC text lagging the new assertions (closed here).
+- `bounded code-review @f1fcb2d (7d2c496..f1fcb2d)`: Standards and Spec 0 must-fix; both should-fix on the same class as the verifier's note.
+- **Recurrence consolidation (label-only prose, third instance):** governing behaviour FR-3/FR-8: a step mapped "no column; label only" must render grammatically. Affected inputs: every `{{status_*}}` in template prose outside the lifecycle table. Observed: "goes to …" (fixed in d5287f2), then "stays in / is in …" (open). Regression coverage: a structural assertion that every such occurrence is `Status: {{status_x}}`, not a preposition list. Completion boundary: that assertion green plus the rewritten lines. AC-4/AC-10 text above updated to name the assertions run.sh already makes.
 - Codex rounds used: 2 of 3.
-**Last completed stage:** Full-tier diff pass with fixes; next: bounded code-review of 7d2c496..HEAD + bounded fresh-verifier (A = 00f24b1).
+**Last completed stage:** bounded re-review resolved @f1fcb2d; consolidated label-only fix in progress, then bounded code-review + bounded fresh-verifier.
