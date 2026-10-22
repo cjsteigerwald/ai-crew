@@ -1012,7 +1012,7 @@ bad_chk "AC-4" "$bad_lj" 'Blocked'
 bad_chk "AC-4" "$bad_lj" 'Refining'
 bad_chk "AC-4" "$bad_lj" 'remove the `ready-for-*` label'
 bad_chk "AC-4" "$bad_lj" 'Merging a PR does not finish an issue'
-bad_chk "AC-4 automation rule" "$(bad_join "$bad_all")" 'project workflows may set Status when an item is added or closed'
+bad_chki "AC-4 automation rule" "$(bad_join "$bad_all")" 'project workflows may set Status when an item is added or closed'
 bad_not "AC-4" "$bad_all" 'Nothing adds issues automatically'
 bad_not "AC-4 removed content" "$bad_all" 'release:|Priority'
 # Optional markers: backlog, phase-gates and wayfinding content sit only inside their own optional block.
@@ -1097,8 +1097,8 @@ bad_tri="$(bad_join "$bad_tri_raw")"
 bad_chk "AC-9" "$bad_tri" 'docs/agents/issue-tracker.md'
 bad_chki "AC-9" "$bad_tri" 'lifecycle'
 bad_chki "AC-9" "$bad_tri" 'installed, merged or pre-existing'
-printf '%s\n' "$bad_tri_raw" | grep -E '^\|' | grep -i 'blocked' | grep -q 'Refining' || bfail "AC-9: default table has no Blocked -> Refining row"
-printf '%s\n' "$bad_tri_raw" | grep -E '^\|' | grep -q "Won't do" || bfail "AC-9: default table has no Won't do row"
+printf '%s\n' "$bad_tri_raw" | grep -E '^[[:space:]]*\|' | grep -i 'blocked' | grep -q 'Refining' || bfail "AC-9: default table has no Blocked -> Refining row"
+printf '%s\n' "$bad_tri_raw" | grep -E '^[[:space:]]*\|' | grep -q "Won't do" || bfail "AC-9: default table has no Won't do row"
 bad_not "AC-9" "$bad_tri" 'keeps its ready label'
 bad_ac_done "AC-9 triage defers to lifecycle"
 

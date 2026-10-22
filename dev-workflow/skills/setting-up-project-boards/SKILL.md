@@ -2,9 +2,11 @@
 name: setting-up-project-boards
 description: >
   Sets up a GitHub Projects (v2) board for a repository by copying a template
-  project, linking the repo, bringing its open issues onto the board, moving
-  closed items to Done, telling the user which workflows to enable in the UI,
-  then triaging each issue onto the board. Use when "set up a project board for
+  project, linking the repo, installing the board's agent docs (issue tracker
+  lifecycle, triage labels, optional phase gates) into the repo, bringing its
+  open issues onto the board, moving closed items to Done or Won't do, telling
+  the user which workflows to enable in the UI, then triaging each issue onto
+  the board. Use when "set up a project board for
   <repo>", "copy this project/view to another repo", a pasted
   `github.com/orgs/<org>/projects/<n>/views/<m>` URL with a request to explain
   or reproduce it, "add the repo's issues to the board", or "triage the issues
@@ -16,8 +18,8 @@ description: >
 # Setting up project boards
 
 Reproduce a template GitHub Project for another repo, populate it, and triage the issues onto it.
-Run the steps in order. Every outward-facing batch (copy, link, adding items, creating labels,
-posting comments) is confirmed with the user first. State counts from command output, never memory,
+Run the steps in order. Every outward-facing batch (copy, link, writing docs, pushing and opening the PR, editing an
+instruction file, adding items, creating labels, posting comments) is confirmed with the user first. State counts from command output, never memory,
 never put token values in comments or output, and never delete a project workflow (the API allows
 it; nothing here needs it).
 
@@ -26,8 +28,8 @@ Long GraphQL queries live in [references/queries.md](references/queries.md).
 ## 1. Inputs and instruction layers
 
 Collect: template project (owner + number), target owner, target repo, new project title.
-Read the target repo's instruction files plus `docs/agents/issue-tracker.md` and
-`docs/agents/triage-labels.md` if present. They govern labels and close rules.
+Read the target repo's instruction files plus `docs/agents/issue-tracker.md`,
+`docs/agents/triage-labels.md` and `docs/agents/phase-gates.md` if present. They govern labels and close rules.
 
 ## 2. Auth preflight
 
@@ -65,7 +67,18 @@ and `viewerCanCreateProjects`. A repo can only be linked to a project owned by t
 create the project under the repo's owner. **Confirm owner and title with the user before creating
 anything.**
 
-## 5. Copy and link
+## 5. Checkout preflight
+
+Read-only; nothing is written. It decides whether step 7 can install the board's agent docs.
+
+- Resolve the checkout: a path the user names, or the current directory only if its `git remote -v`
+  resolves to `<org>/<repo>` (ssh or https). Never clone.
+- From that directory run `gh auth status` and `gh api user`, and confirm the account (`login`) with the user.
+- Detect a dirty tree (`git status --porcelain`) and the repo's default branch
+  (`gh repo view --json defaultBranchRef`).
+- With no usable checkout, record "install skipped" and continue; step 7 is then skipped.
+
+## 6. Copy and link
 
 ```bash
 gh project copy <n> --source-owner <template-owner> --target-owner <org> --title "<title>" --format json
@@ -78,7 +91,34 @@ copied. Verify; do not assume. Always pass `--owner` to `link`, `view`, `field-l
 `item-list` (copy uses `--source-owner`/`--target-owner`; `item-edit` uses `--project-id`): project
 numbers are per owner, so the copy and the template can both be number 1. Re-run the step 3 query against the new project to verify.
 
-## 6. Add issues
+## 7. Install the board's agent docs
+
+Skip this step, and say so in the final report, when step 5 recorded "install skipped". Writes land in the
+target checkout under `docs/agents/`, from the files in [templates/](templates/).
+
+1. Ask first whether the repo has phase gates. If yes, `phase-gates.md` is installed and `phase_gates`
+   sections stay; otherwise they are dropped. Likewise keep `backlog` only if the user names an external
+   backlog, and `wayfinding` only if the repo uses wayfinder maps. Offer to fill in any gates the user already knows.
+2. Read the Status options from the copied project (step 6 re-inspection), never from the template.
+   Show the user a mapping table for review: lifecycle step to Status option, for the eight steps not yet
+   triaged, refining, ready for an agent, ready for a human, building, validating, done, won't do. For an
+   unmatched step the user picks an existing option, or the cell reads "no column; label only". Never create
+   a column or rename one. The same mapping drives this install, triage (step 10) and verify (step 11).
+3. Fill the placeholders from the [Placeholders table](#placeholders). No unresolved `{{…}}` may remain in a
+   written file; strip the `<!-- optional: … -->` markers and the content of dropped sections.
+4. Branch from the default branch after `git fetch`, with a collision-free branch name (check local and
+   remote branches, suffix on a clash). Use a `git worktree` when the tree is dirty. Never reset or discard existing work.
+5. For each target file that already exists, show a diff and ask merge / overwrite / skip. For
+   `issue-tracker.md` the default is to append only the missing board sections. Show conflicting rules in
+   the diff. Keep the target's own instruction precedence and resolve label strings through its
+   `triage-labels.md` mapping. If a conflicting section is skipped, the existing policy keeps governing and
+   the final report says the install is incomplete.
+6. Confirm the batch before writing, then write and commit the files on the branch.
+7. Push and open the PR (base = the default branch) is one confirmed action. Declining leaves the branch local.
+8. A one-line pointer to `docs/agents/` in `AGENTS.md` (or `CLAUDE.md` when there is no `AGENTS.md`) is a
+   separate confirmed edit.
+
+## 8. Add issues
 
 Run the "Count issues" query first. Default scope is open issues, confirm with the user. List with
 `--limit` at least the open `totalCount`, then check the listed count equals it; if not, raise the
@@ -89,7 +129,7 @@ gh issue list --repo <org>/<repo> --state open --limit 1000 --json number,title,
 ```
 
 `gh project field-list <new-n> --owner <org> --format json` gives the Status field id and option
-ids (fields only, not the project id). Take the project id `PVT_…` from the step 5
+ids (fields only, not the project id). Take the project id `PVT_…` from the step 6
 `gh project copy --format json` output (`.id`), `gh project view <new-n> --owner <org> --format json`,
 or the Inspect query's `id`. The intake column is the template's first-stage column (for
 example "Not yet triaged"). For each issue:
@@ -101,21 +141,24 @@ gh project item-edit --project-id <PVT_…> --id <item> --field-id <status-field
 
 Side effect: auto-add sub-issues pulls in sub-issues of added parents, including closed ones, with no
 Status. Re-list board items afterward (items query) and report the extras. Closed items on the board
-go to Done: find them with the items query (content `state`) and set Status to the Done option.
+go to Done or Won't do (when mapped, for issues closed as not planned or labelled `wontfix`): find them
+with the items query (content `state`) and set Status to that option.
 
-## 7. Workflows the user must turn on in the UI
+## 9. Workflows the user must turn on in the UI
 
 The API can read built-in workflows but cannot enable or configure them. Tell the user: Project →
 ⋯ → Workflows, then:
 
 - "Auto-add to project": repo + filter `is:issue is:open` (not retroactive).
 - "Item added to project": set Status to the intake column.
-- "Item closed": set Status to Done.
-- Optionally "Pull request merged": Done.
+- "Item closed": set Status to Done. Won't do items closed as not planned need Status set to Won't do by hand.
+- Skip "Pull request merged": merging a PR does not finish an issue.
 
-## 8. Triage onto the board
+## 10. Triage onto the board
 
-Follow the target repo's triage process (its triage skill if it has one) and its label mapping.
+Follow the target repo's triage process (its triage skill if it has one) and its label mapping. When the
+repo has a `docs/agents/issue-tracker.md` lifecycle (installed, merged or pre-existing), that
+lifecycle table decides the Status for each state label; the default table below applies only without one.
 
 a. `gh label list --repo <org>/<repo>` against the mapping. Propose creating missing state labels
    (for example `needs-info`).
@@ -130,9 +173,10 @@ c. Recommend a table to the user: issue | category | state label | board column 
    | `ready-for-agent` | Ready for an agent |
    | `ready-for-human` | Ready for a human |
    | `needs-info` | Refining |
-   | Blocked by an open issue or an outside party | Backlog (keeps its ready label; the comment names the blocker) |
+   | Blocked by an open issue or an outside party | Refining (remove the `ready-for-*` label; the comment names the blocker) |
    | Delivered, awaiting a final check | Validating |
    | Umbrella with open children | Building |
+   | Owner cancelled it (`wontfix`) | Won't do |
 
    Never close issues or edit bodies here; respect the repo's close rule. Flag stale bodies in the
    comment instead. The approved per-issue plan lists labels to ADD and to REMOVE. Triage state labels
@@ -144,9 +188,31 @@ d. Apply (mechanical; the cheapest writer lane can do it given exact per-issue t
    `gh issue edit --add-label … --remove-label …`; set Status. `needs-info` comments use a
    "Triage Notes" layout: what is established / what we still need, with specific questions.
 
-## 9. Verify and report
+## 11. Verify and report
 
-Use the items query: group items by Status, list labels per issue, and check that each issue has exactly
-one state label consistent with its Status, and that its latest triage comment starts with the
-disclaimer (a later human reply may follow it, so look through the last few comments). Check the label counts add up to the triaged total and report any
-extra board items. Undo a Status change with `gh project item-edit … --clear`.
+Use the items query: group items by Status, list labels per issue, and check that each issue has at most one
+state label and that the label matches the lifecycle row for its Status. A "label only" step (no mapped
+column) is checked by label alone. Check that its latest triage comment starts with the disclaimer (a
+later human reply may follow it, so look through the last few comments), and report any extra board items. Undo a Status change with `gh project item-edit … --clear`.
+
+## Placeholders
+
+Every `{{name}}` in [templates/](templates/) is listed here; step 7 fills them all.
+
+| Placeholder | Meaning | Source |
+|---|---|---|
+| `{{owner}}` | Org or user that owns the repo | Step 1 target owner |
+| `{{repo}}` | Repo name | Step 1 target repo |
+| `{{instruction_file}}` | Instruction file that wins on conflict | Step 1 instruction files (`AGENTS.md` or `CLAUDE.md`) |
+| `{{project_title}}` | Board title | Step 1 new project title |
+| `{{project_url}}` | Board URL | Step 6 `gh project copy` output |
+| `{{project_number}}` | Board number under the owner | Step 6 `gh project copy` output |
+| `{{backlog_name}}` | Name of the external backlog | The user, when the `backlog` section is kept |
+| `{{status_not_triaged}}` | Status option for "not yet triaged" | Step 7 mapping table |
+| `{{status_refining}}` | Status option for "refining" | Step 7 mapping table |
+| `{{status_ready_agent}}` | Status option for "ready for an agent" | Step 7 mapping table |
+| `{{status_ready_human}}` | Status option for "ready for a human" | Step 7 mapping table |
+| `{{status_building}}` | Status option for "building" | Step 7 mapping table |
+| `{{status_validating}}` | Status option for "validating" | Step 7 mapping table |
+| `{{status_done}}` | Status option for "done" | Step 7 mapping table |
+| `{{status_wont_do}}` | Status option for "won't do" | Step 7 mapping table |
