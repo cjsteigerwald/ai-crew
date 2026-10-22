@@ -89,3 +89,12 @@ named in `plan-implementation` (`claude-scout`, `claude-reader`,
 The `NEEDS_LOOKUP` recipient enforcement for `code-writer` (only `main` may be
 messaged) also comes from `claude-crew`'s `sendmessage-recipient-gate` hook;
 without claude-crew installed, that rule is prose only.
+
+dev-workflow ships one hook, `codex-cap-gate` (PreToolUse on `Agent|Task`). It counts
+every `codex-adversary`, `dev-workflow:codex-adversary` and `codex-crew:codex-reviewer`
+dispatch in a per-clone review ledger and asks before round 4. Each Codex brief must
+carry one `ledger: <repo-path>[ | plan:<ticket>]` line outside code fences, or the
+dispatch is denied with a recovery message. `scripts/review-ledger.sh` inspects and
+corrects the count (`show`, `count`, `link`, `void`, `reset`, `record`); see
+`review-policy` § Codex round ledger. Turn the hook off with `CLAUDE_CODEX_CAP_GATE=off`.
+It needs `python3` and `git`.

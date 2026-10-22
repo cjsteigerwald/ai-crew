@@ -155,7 +155,7 @@ Two steps, and **the order is load-bearing** — the conclusion is reviewed befo
 
 ### 7a. Refute the conclusion — before you write anything
 
-Dispatch `codex-adversary` in **task mode** with the causal claim and the evidence behind it, mandated to refute it. This runs regardless of tier — it reviews reasoning, not a diff, so there is deliberately nothing to diff yet.
+Dispatch `codex-adversary` in **task mode** with the causal claim and the evidence behind it, mandated to refute it. The brief carries `ledger: <repo-path> | plan:<ticket>`. This runs regardless of tier — it reviews reasoning, not a diff, so there is deliberately nothing to diff yet.
 
 - If the pass **refutes** the conclusion, you are back at **Gate 5**, not here. A revised conclusion is changed input and earns a fresh pass; re-passing an *unchanged* conclusion is the forbidden same-input re-score, and the three-pass cap counts these.
 - If the pass **holds**, record its verdict in the RCA under `## Root Cause`, beside the claim it examined.
@@ -172,7 +172,7 @@ The split exists because team review reliably catches a claim that *reads* wrong
 
 Deterministic gates still run, and are not optional — they are what replaces the review chain:
 
-1. Branch from `main` in a worktree; never commit to `main`.
+1. Branch from `main` in a worktree; never commit to `main`. As the last action of this step, run `${CLAUDE_PLUGIN_ROOT}/scripts/review-ledger.sh link branch:<rca-branch> plan:<ticket>` so the 7a rounds count against the branch.
 2. `gitleaks detect` — and distinguish hits inside your diff from pre-existing ones in history. Report both; only the former blocks.
 3. Scan every new document for credential and identifier leaks: tokens, keys, PATs, connection strings, secret values. RCAs and runbooks are typically the highest-risk leak surface in a repo because they paste live output. Variable *names* are fine; values never are.
 4. Verify every relative link resolves: run the repo's link checker (e.g. `python3 scripts/check-doc-links.py`) from the repo root, which must exit 0. Run it against the **complete repo tree** — a checker fed only the directories you changed reports links into sibling directories as broken and produces false failures.

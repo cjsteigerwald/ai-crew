@@ -76,10 +76,14 @@ full chain now. When torn between Routine and Full, run Full.
 
 Per the same table. **Routine** is a single `code-review` pass. On the **full chain**,
 `codex-adversary` is mandatory — omitting it is a blocking error. If a `code-review` report
-already exists for the diff, hand it to the verifier and the adversary as input. A
-`full-tier diff pass` record at the PR's current head SHA satisfies this gate's Full pass;
-otherwise send the work back to the diff-pass position in the implement stage, never run the
-pass first at the gate. A finding from the verifier or adversary cannot be dismissed without
+already exists for the diff, hand it to the verifier and the adversary as input. Every
+Codex dispatch brief carries `ledger: <repo-path>[ | plan:<ticket>]`, so the round is counted
+in the review ledger (`dev-workflow:review-policy`, **Codex round ledger**). The Full pass is
+satisfied by the **coverage chain** (`dev-workflow:review-policy`, **Re-review after
+fixes**) at the PR's current head SHA: a `full-tier diff pass @A (base B)` record, with every
+later commit inside a `bounded re-review @N (A..N): resolved` record and none saying
+`NEEDS FULL PASS`. Otherwise send the work back to the diff-pass position in the implement
+stage, never run the pass first at the gate. A finding from the verifier or adversary cannot be dismissed without
 written evidence.
 
 ### 7. Ticket references
