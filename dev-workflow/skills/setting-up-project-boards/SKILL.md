@@ -111,7 +111,7 @@ target checkout under `docs/agents/`, from the files in [templates/](templates/)
    example "keeps `wontfix`, no Status change"). No unresolved `{{…}}` may remain in a written file; strip
    the `<!-- optional: … -->` markers and the content of dropped sections.
 4. Branch from the default branch, `<remote>/<default-branch>`, after `git fetch <remote>` (the remote found
-   in step 5), with a collision-free branch name (check local and remote branches, suffix on a clash).
+   in the preflight, step 5), with a collision-free branch name (check local and remote branches, suffix on a clash).
    Use a `git worktree` when the tree is dirty. Never reset or discard existing work.
 5. For each target file that already exists, show a diff and ask merge / overwrite / skip. For
    `issue-tracker.md` the default is to append only the missing board sections. Show conflicting rules in
@@ -158,7 +158,8 @@ The API can read built-in workflows but cannot enable or configure them. Tell th
 
 - "Auto-add to project": repo + filter `is:issue is:open` (not retroactive).
 - "Item added to project": set Status to the mapped intake option.
-- "Item closed": set Status to the mapped done option. Won't do items closed as not planned need Status set to Won't do by hand.
+- "Item closed": set Status to the mapped done option. Won't do items closed as not planned need Status
+  set to Won't do by hand.
 - Skip Status for label only steps (see step 7).
 - Skip "Pull request merged": merging a PR does not finish an issue.
 
@@ -166,7 +167,8 @@ The API can read built-in workflows but cannot enable or configure them. Tell th
 
 Follow the target repo's triage process (its triage skill if it has one) and its label mapping. When the
 repo has a `docs/agents/issue-tracker.md` lifecycle (installed, merged or pre-existing), that
-lifecycle table decides the Status for each state label. Triage uses the Status mapping from step 7 (label only steps: see step 7);
+lifecycle table decides the Status for each state label. Triage uses the Status mapping from step 7
+(label only steps: see step 7);
 the default table's column names are a fallback only when no mapping or lifecycle exists.
 
 a. `gh label list --repo <org>/<repo>` against the mapping. Propose creating missing state labels
