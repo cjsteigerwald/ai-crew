@@ -796,6 +796,18 @@ done
 prb_chk "AC-1" "$prb_block" 'Refs '
 prb_chk "AC-1" "$prb_block" 'Depends on'
 prb_chk "AC-1" "$prb_block" 'Supersedes'
+for prb_l in '**Tier:**' '**Delivered:**' '**Not in this PR:**' '**Door:**' '**Blast Radius:**' 'proven live'; do
+  prb_chk "AC-1" "$prb_block" "$prb_l"
+done
+# Placement: the depends-on/supersedes line and the Refs line sit after the ticket line, before Summary.
+prb_tn="$(printf '%s\n' "$prb_block" | grep -F -- ':**Ticket:**' | head -1 | cut -d: -f1)"
+prb_sn="$(printf '%s\n' "$prb_block" | grep -F -- ':## Summary' | head -1 | cut -d: -f1)"
+for prb_l in 'Depends on' 'Supersedes' 'Refs '; do
+  prb_pn="$(printf '%s\n' "$prb_block" | grep -F -- "$prb_l" | head -1 | cut -d: -f1)"
+  if [ -n "$prb_pn" ] && [ -n "$prb_tn" ] && [ -n "$prb_sn" ]; then
+    { [ "$prb_pn" -gt "$prb_tn" ] && [ "$prb_pn" -lt "$prb_sn" ]; } || pfail "AC-1: '$prb_l' line is not between '**Ticket:**' and '## Summary'"
+  fi
+done
 prb_ac_done "AC-1 template block order: header, Summary, Evidence, Merge Danger, Review"
 
 # AC-2: gate 9's own section links the template and says to write the body from it.

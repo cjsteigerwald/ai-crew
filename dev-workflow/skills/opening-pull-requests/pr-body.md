@@ -35,7 +35,7 @@ keep prose brief.
 
 ## Review
 
-**Tier:** <Exempt — reason | Routine | Full>
+**Tier:** <Exempt — reason | Routine | Full chain>
 
 <coverage-chain records>
 
