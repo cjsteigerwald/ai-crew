@@ -13,7 +13,7 @@ canonical: docs/work/initiatives/dev-workflow/workstreams/opening-pull-requests/
 **Linked items:** `mattpocock-skills` 1.3.1 `skills/engineering/pr/` (SKILL.md, CREDITS.md, MIT LICENSE) — related context, the content being adapted; `dev-workflow/skills/implement-spec/` — related context, precedent for an adapted Pocock skill with its MIT LICENSE.
 **Fetched:** 2026-10-22 — ticket status `n/a`, sprint `none`, estimate `none`
 **Intake by:** Christopher Steigerwald with the `dev-workflow:intaking-work-items` skill
-**Status:** Ready — step 4 (requirements doc) written; awaiting user OK. No steps skipped.
+**Status:** Ready — step 7 (Verify) complete on `feat/pr-body-template` @ `7928a15`: AC-1–AC-9 and AC-5b verified; AC-10 (person-only) pending at close-out. No steps skipped.
 **Chain:** sdlc-process
 
 > Snapshot of the request on the fetched date plus the decisions below. If the scope changes,
@@ -121,7 +121,21 @@ Repo-wide checks: `bash dev-workflow/tests/run.sh` (baseline PASSED on main per 
 
 ## Verification evidence
 
-None — step 7 not run.
+Red = `/bin/bash dev-workflow/tests/run.sh` at `cb165fc` (tests only, exit 1, `FAILED`). Green = the same command at `7928a15` (exit 0, `PASSED`), 2026-10-22 08:58; also green under bash 5.
+
+| AC | Check | Kind | Result | Evidence | Base / head / time |
+|---|---|---|---|---|---|
+| AC-1 | run.sh AC-1 block (fenced-block order, body lines, header placement) | automated, new | verified | red: `FAIL: AC-1: template block does not open with the '**Ticket:**' line`; green: `ok: AC-1 template block order: header, Summary, Evidence, Merge Danger, Review`; mutations (`**Delivered:**` removed; Refs moved below Summary) fail AC-1 | `cb165fc` / `7928a15` 08:58 |
+| AC-2 | run.sh AC-2 (gate 9 section) | automated, new | verified | red: `FAIL: AC-2: missing '[pr-body.md](pr-body.md)'`; green: `ok: AC-2 gate 9 links pr-body.md and says to write the body from it` | `cb165fc` / `7928a15` 08:58 |
+| AC-3 | run.sh AC-3 (`### Summary` section) | automated, new | verified | red: `FAIL: AC-3: missing 'one sentence'`; green: `ok: AC-3 Summary guidance: one sentence, visuals menu, CONTEXT.md/GLOSSARY.md` | `cb165fc` / `7928a15` 08:58 |
+| AC-4 | run.sh AC-4 (`### Evidence` section) | automated, new | verified | red: `FAIL: AC-4: missing 'before'`; green: `ok: AC-4 Evidence guidance: before/after, proven live vs only inspected, intake tables` | `cb165fc` / `7928a15` 08:58 |
+| AC-5 | run.sh AC-5 (`### Review` section) | automated, new | verified | red: `FAIL: AC-5: missing 'Exempt — <reason>'`; green: `ok: AC-5 Review guidance: tier, coverage chain, Not in this PR, Intake lines, spec issue, stub doc` | `cb165fc` / `7928a15` 08:58 |
+| AC-5b | run.sh AC-5b (`### Merge Danger` section) | automated, new | verified | red: `FAIL: AC-5b: missing 'one-way'`; green: `ok: AC-5b Merge Danger guidance: door, blast radius, applied-before-merge` | `cb165fc` / `7928a15` 08:58 |
+| AC-6 | run.sh AC-6 (LICENSE both notices, Pocock block = 1.3.1; CREDITS) | automated, new | verified | red: `FAIL: AC-6: opening-pull-requests/LICENSE not found`; green: `ok: AC-6 LICENSE carries both MIT notices …`; diff-pass verifier: both notices byte-identical to upstream | `cb165fc` / `7928a15` 08:58 |
+| AC-7 | run.sh AC-7 (README row) | automated, new | verified | red: `FAIL: AC-7: missing 'pr-body.md'`; green: `ok: AC-7 README opening-pull-requests row mentions the template and the adaptation credit` | `cb165fc` / `7928a15` 08:58 |
+| AC-8 | run.sh AC-8 (parsed manifests) | automated, new | verified | red: `FAIL: AC-8: dev-workflow version is not 0.2.3 in both plugin.json and marketplace.json`; green: `ok: AC-8 dev-workflow is 0.2.3 in plugin.json and marketplace.json` | `cb165fc` / `7928a15` 08:58 |
+| AC-9 | `/bin/bash dev-workflow/tests/run.sh` | automated, suite | verified | baseline `PASSED` at `2ee2f92`; red `FAILED` at `cb165fc`; green `PASSED`, exit 0 at `7928a15` | `2ee2f92` / `7928a15` 08:58 |
+| AC-10 | this PR's body written from `pr-body.md`; user judges it readable | person-only | unverified | at close-out | — |
 
 ## Run log
 
@@ -131,6 +145,12 @@ None — step 7 not run.
 | — | 3 | Three grilling rounds; all rows Present or n/a; contradictions resolved | 1 | — |
 | — | 4 | Requirements doc written | 1 | — |
 | — | 6 | Spec drafted via `sdlc-process:to-spec` (entry: sdlc-process → orchestrator loaded); policy review PASS for publication; published cjsteigerwald/ai-crew#46 with `ready-for-agent`; readback: AC-1–AC-10 present, body byte-identical | 1 | — |
+| — | 6 | Plan pass: fresh-verifier sound-with-changes, Codex r1 revise → AC revised (decision 14); #46 edited to rev 2; policy review PASS (edit + implementation start) | 1 | — |
+| — | 6 | Branch `feat/pr-body-template` from `4e327d3`; first doc commit landed on local main by a chained-command error, moved to the branch, main reset (nothing pushed) | 1 | — |
+| — | 6 | Implement (claude-implementer-sonnet): red `cb165fc`, green `06ee0f5` | 1 | — |
+| — | 6 | code-review @06ee0f5: Standards + Spec findings fixed in `5762668` | 1 | — |
+| — | 6 | Full-tier diff pass @5762668: verifier approve-with-comments, Codex r2 approve; fv-1/fv-2/placement fixed in `7928a15`; bounded code-review + bounded re-review: resolved | 1 | — |
+| 08:58 | 7 | Verify @7928a15: AC-1–AC-9, AC-5b verified; AC-10 pending | 1 | — |
 
 ## Risks
 
@@ -175,4 +195,14 @@ Review tier: Full.
 Spec issue: cjsteigerwald/ai-crew#46 (also the single delivery ticket; no to-tickets).
 Policy review: publication PASS (2026-10-22).
 Plan pass: `plan pass @#46 v1 + requirements doc` — fresh-verifier: sound with changes; codex-adversary (Codex round 1, ledger `plan:ai-crew-46`): revise; findings folded into the revised AC (decision 14).
-**Last completed stage:** to-spec (published).
+Records:
+- `plan pass @#46 v1 + requirements doc` (fresh-verifier + codex-adversary r1, ledger `plan:ai-crew-46`)
+- ticket `integrated @7928a15` (single ticket = spec #46; no to-tickets)
+- `code-review @06ee0f5` (Standards + Spec; fixes in `5762668`)
+- `full-tier diff pass @5762668 (base 4e327d3)` (fresh-verifier approve-with-comments; codex-adversary r2 approve)
+- `bounded code-review @7928a15 (5762668..7928a15)`: no must-fix; `Refs ` needle should-fix dispositioned (head -1 + strict placement; confirmed by bounded verifier probe m3)
+- `bounded re-review @7928a15 (5762668..7928a15): resolved` (churn 2.2%)
+- `verify @7928a15`
+- Codex rounds used: 2 of 3.
+- Incident: during the diff pass the verifier's mutation script accidentally invoked `gh pr create` from a scratch copy; it exited on a usage error; `gh pr list --head feat/pr-body-template --state all` → `[]`.
+**Last completed stage:** Verify (step 7).
