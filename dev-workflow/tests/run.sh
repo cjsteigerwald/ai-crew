@@ -1037,7 +1037,13 @@ grep -q '^<!-- optional: phase_gates -->$' "$BAD_IT" 2>/dev/null || bfail "AC-4:
 grep -q '^<!-- optional: wayfinding -->$' "$BAD_IT" 2>/dev/null || bfail "AC-4: no 'optional: wayfinding' block"
 bdocs_way="$(bdocs_join "$(bdocs_sec "$BAD_IT" 'Wayfinding')")"
 bdocs_chki "AC-4 wayfinding" "$bdocs_way" 'closed blocker'
-bdocs_chki "AC-4 wayfinding" "$bdocs_way" 'not a gate pass'
+bdocs_chki "AC-4 wayfinding" "$bdocs_way" 'dependency only'
+bdocs_not "AC-4 PR listing" "$(grep 'gh pr list' "$BAD_IT" 2>/dev/null)" 'authorAssociation'
+bdocs_chk "AC-4 PR listing" "$(cat "$BAD_IT" 2>/dev/null)" 'repos/{{owner}}/{{repo}}/pulls'
+# The eight Status cells appear in the lifecycle table in the Placeholders table's order (catches swapped rows).
+bdocs_exp="$(bdocs_sec "$BAD_SKILL" '([0-9]+[.] )?Placeholders$' | grep -oE '^\| `\{\{status_[a-z_]+\}\}`' | sed 's/^| `//; s/`$//' | tr '\n' ' ')"
+bdocs_got="$(printf '%s\n' "$bdocs_rows" | sed 's/^ *//; s/ *$//' | grep -v '^$' | tr '\n' ' ')"
+[ "$bdocs_got" = "$bdocs_exp" ] || bfail "AC-4: lifecycle Status cells ($bdocs_got) are not in Placeholders-table order ($bdocs_exp)"
 bdocs_ho="$(bdocs_join "$(bdocs_sec "$BAD_IT" 'Handoff comment')")"
 bdocs_chk "AC-4 handoff" "$bdocs_ho" '## Handoff'
 bdocs_chk "AC-4 handoff" "$bdocs_ho" '**Open / blocked**'
@@ -1077,7 +1083,7 @@ elif [ "$bdocs_pre_l" -ge "$bdocs_cp_l" ]; then
   bfail "AC-7: Checkout preflight (line $bdocs_pre_l) is not before Copy and link (line $bdocs_cp_l)"
 fi
 bdocs_pre="$(bdocs_join "$(bdocs_sec "$BAD_SKILL" '[0-9]+[.] Checkout preflight$')")"
-for bdocs_p in 'a path the user names' 'git remote -v' '<org>/<repo>' 'gh auth status' 'gh api user' 'dirty' 'defaultBranchRef' 'Never clone' 'read-only'; do
+for bdocs_p in 'a path the user names' 'git remote -v' '<org>/<repo>' 'gh auth status' 'gh api user' 'dirty' 'gh repo view <org>/<repo> --json defaultBranchRef' 'upstream' 'Never clone' 'read-only'; do
   bdocs_chki "AC-7" "$bdocs_pre" "$bdocs_p"
 done
 bdocs_ac_done "AC-7 checkout preflight"
@@ -1095,7 +1101,8 @@ for bdocs_p in 'Ask first whether the repo has phase gates' 'Status options from
   'unmatched' 'no column; label only' 'Never create a column' 'default branch' 'git fetch' 'git worktree' 'dirty' \
   'collision-free' 'merge / overwrite / skip' 'append only the missing' 'conflicting rules' 'incomplete' \
   'No unresolved' 'Confirm the batch before writing' 'Push and open the PR' 'one confirmed action' \
-  'AGENTS.md' 'CLAUDE.md' 'separate confirmed edit' 'install skipped' 'Never reset'; do
+  'git fetch <remote>' '<remote>/<default-branch>' 'gh pr create --repo <org>/<repo> --base' 'no Status change' \
+  'ask which to create' 'AGENTS.md' 'CLAUDE.md' 'separate confirmed edit' 'install skipped' 'Never reset'; do
   bdocs_chki "AC-8" "$bdocs_ins" "$bdocs_p"
 done
 bdocs_ac_done "AC-8 install step"
@@ -1128,6 +1135,13 @@ bdocs_not "AC-10 verify" "$bdocs_ver" 'exactly one state label'
 bdocs_not "AC-10 verify" "$bdocs_ver" 'label counts add up'
 bdocs_chk "AC-10 verify" "$bdocs_ver" 'at most one'
 bdocs_chk "AC-10 verify" "$bdocs_ver" 'lifecycle row'
+bdocs_chk "AC-10 verify" "$bdocs_ver" 'default table when no lifecycle exists'
+bdocs_chki "AC-10 verify" "$bdocs_ver" 'label only'
+bdocs_chki "AC-10 add issues" "$bdocs_add" 'label only'
+bdocs_chk "AC-10 add issues" "$bdocs_add" 'NOT_PLANNED'
+bdocs_chk "AC-10 queries.md" "$(cat "$BAD_Q" 2>/dev/null)" 'stateReason'
+bdocs_chki "AC-10 workflows" "$bdocs_wf" 'label only'
+bdocs_chki "AC-10 triage" "$bdocs_tri" 'label only'
 bdocs_intro="$(bdocs_join "$(awk '/^# / { f = 1; next } /^## / { exit } f' "$BAD_SKILL" 2>/dev/null)")"
 for bdocs_p in 'writing docs' 'pushing' 'instruction file'; do
   bdocs_chki "AC-10 intro" "$bdocs_intro" "$bdocs_p"
