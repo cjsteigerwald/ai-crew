@@ -116,6 +116,9 @@ approves; opening unasked is too proactive.
 
 ### 9. Create
 
+Write the body from [pr-body.md](pr-body.md): header block, then Summary, Evidence, Merge Danger,
+Review. Run `gh pr create` with that body.
+
 ⚠️ If `gh` answers *"Could not resolve to a Repository"*, check `gh auth status` before believing it —
 a personal account active against a work org produces exactly that message, and `git push` will have
 just succeeded because `git` and `gh` use different credentials. Retry with a per-invocation token
