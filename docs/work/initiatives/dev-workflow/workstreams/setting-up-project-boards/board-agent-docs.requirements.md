@@ -195,6 +195,8 @@ Not started.
 | — | 6 | Plan pass: fresh-verifier revise (fv-1..fv-16), codex-adversary round 1 revise (6 must-fix, 2 should-fix); merged into R1–R6; user accepted all; doc rev 2 (scrubbed of denylisted literals per fv-1) | 1 | — |
 | — | 6 | Policy review (edit #48 + implementation start): A PASS; B HOLD pending bounded re-check + F1–F3. #48 body replaced with rev 2 (sha256 `3401952a…`); readback identical, label kept, 0 comments | 1 | — |
 | — | 6 | Bounded fresh-verifier on rev 2: approve with comments, bounded-eligible (no NEEDS FULL PASS; churn n/a for an untracked plan doc; trust boundary unchanged from rev 1); should-fix sv-1..sv-4 applied as rev 2.1 corrections within decision 11's scope; #48 body re-edited to match | 1 | — |
+| — | 6 | Policy reassessment (implementation start): PASS with execution-time conditions (brief hygiene; local commits; later checkpoints separate) | 1 | — |
+| — | 6 | Implement (claude-implementer-sonnet, `sdlc-process:tdd` loaded): red `e8f5116` (`FAILED`), green `7bc914a`; mutations on AC-3/AC-4/AC-10 fail as expected. Orchestrator check @7bc914a: `timeout 300 /bin/bash dev-workflow/tests/run.sh` exit 0 `PASSED`; scrub-check `--require-private` over all 10 changed files exit 0; only `.claude/` untracked. Diff read in full; primary observations: (o1) lifecycle bullets hard-code "Refining"/"Building"; (o2) `{{instruction_file}}` wins is a fixed precedence | 1 | — |
 
 ## Risks
 
@@ -242,5 +244,8 @@ Records:
 - `bounded plan re-check @#48 rev 2 + requirements rev 2 (sha256 abdb3f5a…)`: approve with comments; prior findings resolved except fv-1/C2/C7 partial, closed by sv-1..sv-3 in rev 2.1; sv-4 applied.
 - Policy review 2026-10-22: (A) #48 body edit PASS; (B) implementation start HOLD → conditions F1 (bounded re-check with eligibility stated: met), F2 (these records), F3 (writer brief hygiene).
 - Rev 2.1 digests: #48 body sha256 `401bd36e…` (readback identical, label kept, 0 comments). This doc changes with every record, so its digest is recorded in the Run log at each assessment rather than here.
+- Policy review (code-review hand-off @7bc914a): PASS.
+- `code-review @7bc914a`: Standards: 0 must-fix, 2 should-fix (duplicated lifecycle list in step 7.2; negation style), 5 flagged; coverage gap: it did not read the templates or this doc in full (covered by the Spec axis and the Full diff pass). Spec: 0 must-fix, 1 should-fix (triage step does not use the step 7 mapping), o1 confirmed, o2 partial, weak assertions in AC-3/AC-4/AC-6. Fixes routed to the implementer.
+- Code-review fixes: tests `9dca553` (red: `FAIL: AC-4 blocked: missing '{{status_refining}}'`, `FAIL: AC-9: missing 'uses the Status mapping from step 7'`; mutations on AC-3/AC-4/AC-6 fail), fix `a9d8de0`. Orchestrator check @a9d8de0: `timeout 300 /bin/bash dev-workflow/tests/run.sh` exit 0 `PASSED`, 0 FAIL lines; no Refining/Building/Validating in the template; scrub-check `--require-private` over all changed files exit 0. Dispositioned without change (flagged): negation style, step 7 length, phrase-presence brittleness, reused AC labels across sections, install "write and commit", backlog/wayfinding keep rules.
 - Codex rounds used: 1 of 3.
-**Last completed stage:** Plan pass (stage 4), revision 2.1.
+**Last completed stage:** code-review (stage 5) with fixes; next: Full-tier diff pass.
