@@ -57,7 +57,7 @@ board items and two handoffs.
 
 Each AC is testable as written and names how it is verified. Plans and PRs cite these numbers.
 
-- **AC-1** (FR-1) Given intake reaches stage 4, when it reads `chain-sdlc-process.md`, then the doc states that the spec issue and any to-tickets child issues are published without a `ready-for-*` label (in the repo's refining state where its tracker doc defines one), and names the readiness gate as the only path to `ready-for-*`, overriding to-spec's and to-tickets' label defaults.
+- **AC-1** (FR-1) Given intake reaches stage 4, when it reads `chain-sdlc-process.md`, then the doc states that the spec issue and every issue to-tickets publishes are published without a `ready-for-*` label (in the repo's refining state where its tracker doc defines one), and names the readiness gate as the only path to `ready-for-*`, overriding to-spec's and to-tickets' label defaults, as the one exception to repo-procedure precedence, needing no second confirmation (decision 12).
   *Verify:* `run.sh` assertion "AC-1" greps the rule's stable phrase in `chain-sdlc-process.md`; reviewer reads stage 4.
 - **AC-2** (FR-2, FR-3) Given a published spec issue and a to-tickets breakdown of one slice, when intake is at stage 4, then the chain doc tells it to publish no child issue, to use the spec issue as the delivery issue, to record `tickets: none — one slice` in Chain artifacts (not as a plan-skip, no "Intake: plan skipped"), to check AC coverage against the spec issue, to run the Full-tier plan pass on the spec issue alone, to give that issue `ready-for-*` only through the readiness gate (the parent rule does not apply: it has no children), and to take stage 5's "One ticket, or no decomposition" route; and it states that with `to-spec` skipped the rule does not apply and to-tickets publishes its one ticket as the delivery issue.
   *Verify:* `run.sh` assertions "AC-2" grep the one-slice phrase, the to-spec-skipped exception and the readiness-gate/parent phrase; reviewer reads stage 4, stage 5 and Controls.
@@ -124,6 +124,7 @@ None — step 7 not run.
 | 04:44 | 5 | code-review @44a3737 (Standards + Spec): 0 must-fix; fixed S1 oslfail wrapper, S2/S3 wraps, P1 one-slice coverage, P2 stage 5 route; kept S3 five-place mention (spec-mandated), S4/S5 accepted; P3 piece-mode resume step out of scope (follow-up) | 1 | — |
 | 06:06 | 5 | Full-tier diff pass @9f04e17 (base c23c119): fresh-verifier pass with comments (AC-1–AC-7 met; AC-7 walk-through recorded), codex-adversary 3/3 needs-attention (label precedence); decision 12 | 1 | — |
 | 06:06 | 5 | Diff-pass fixes (decision 12) red→green; run.sh exit 0 | 1 | — |
+| 06:24 | 5 | Bounded re-review @b393ca3 (eligible, churn 10.1%): C-1 partial (SKILL.md Controls/step 0 still absolute), SHOULD-1 and FLAG-2 resolved; bounded code-review: 3 should-fix; consolidated fixes (decision 12 scope) red→green | 1 | — |
 
 ## Risks
 
@@ -177,4 +178,5 @@ None — step 3 completed.
 - code-review @44a3737: Standards 1 should-fix / 4 flagged, Spec 0 must-fix / 3 flagged; fixes @459780c
 - `full-tier diff pass @9f04e17 (base c23c119)`: fresh-verifier pass with comments; codex-adversary (round 3/3) needs-attention; decision 12 fixes @2cccde6
 - AC-7 scenario walk-through: fresh-verifier diff pass @9f04e17 (scenarios i–iii, no contradiction, delivery issue defined; F-4 at chain-sdlc-process.md:118-120)
-- **Last completed stage:** 5 (Implement; code-review pending)
+- bounded re-review @b393ca3 (9f04e17..b393ca3): C-1 partial; fixes @6b12eb7
+- **Last completed stage:** 5 (Implement; diff pass + bounded re-review; Verify pending)
