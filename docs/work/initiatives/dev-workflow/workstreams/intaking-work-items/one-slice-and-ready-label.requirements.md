@@ -1,7 +1,7 @@
 ---
 id: dev-workflow-intake-one-slice-and-ready-label-requirements
 type: requirements
-status: draft
+status: ready
 owner: dev-workflow
 representation: canonical
 canonical: docs/work/initiatives/dev-workflow/workstreams/intaking-work-items/one-slice-and-ready-label.requirements.md
@@ -13,7 +13,7 @@ canonical: docs/work/initiatives/dev-workflow/workstreams/intaking-work-items/on
 **Linked items:** `sdlc-process` 0.4.14 `bundle/.agents/skills/to-spec/SKILL.md:18` and `to-tickets/SKILL.md:62,76` (the `ready-for-agent` defaults): related context, upstream, read-only. `bundle/docs/work/agent-orchestration/process/orchestration.process.md:372` (ready label follows the readiness gate) and `bundle/.claude/skills/sdlc-process/SKILL.md:42` (to-tickets "when decomposition is needed"): related context. `dev-workflow/skills/setting-up-project-boards/templates/issue-tracker.md:54,55,71` (board lifecycle): related context. No equivalent, parent or dependency.
 **Fetched:** 2026-10-22. Issue state `OPEN`, no labels, no comments, no cross-referenced PRs; sprint `none`, estimate `none`
 **Intake by:** Christopher Steigerwald with the `dev-workflow:intaking-work-items` skill
-**Status:** Ready, revision 2 (plan-pass revisions R1–R7, decision 10). Step 3 (grilling) complete; to-spec and to-tickets skipped by the user (Intake: plan skipped). Doc path follows this repo's `docs/work/` convention instead of `docs/specs/<KEY>-requirements.md` (step 0: repo procedure wins).
+**Status:** Ready, revision 3 (plan-pass revisions R1–R7, decision 10; R8–R10, decision 11). Step 3 (grilling) complete; to-spec and to-tickets skipped by the user (Intake: plan skipped). Doc path follows this repo's `docs/work/` convention instead of `docs/specs/<KEY>-requirements.md` (step 0: repo procedure wins).
 **Chain:** sdlc-process
 
 > Snapshot of the issue on the fetched date plus the decisions below. If the issue changes,
@@ -32,6 +32,7 @@ board items and two handoffs.
 **In scope**
 - `dev-workflow/skills/intaking-work-items/chain-sdlc-process.md`: stage 4 (label override for to-spec and to-tickets; the one-slice rule; the coverage check and plan-pass wording at `:109-111`), stage 5 records (`:138-139`), and Controls → Resume (`:179-181`) for the one-slice delivery issue (decision 10, R1–R3, R5).
 - `dev-workflow/skills/intaking-work-items/SKILL.md`: step 1 **Resume status** (one-slice record), step 8 PR-body rule (`:343-345`) and the Full-tier plan-pass wording (`:350-351`) (decision 10, R4, R5).
+- `dev-workflow/skills/intaking-work-items/template.md`: one clause in Chain artifacts (`:116-118`) for the `tickets: none — one slice` record (decision 11/R10).
 - `dev-workflow/tests/run.sh`: a new section `== intaking-work-items one-slice / ready-label ==` with one assertion per AC-1, AC-2, AC-5, AC-6; the pinned version assertion labelled "AC-8" (`run.sh:900,906,914,916`) updated in place (decision 10, R7).
 - dev-workflow version 0.2.4 → 0.2.5 in `dev-workflow/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`.
 
@@ -46,7 +47,7 @@ board items and two handoffs.
 - **FR-1** At stage 4, intake publishes the spec issue and every to-tickets child issue without a `ready-for-*` label, in the repo's refining state where the tracker doc read at step 0 (e.g. `docs/agents/issue-tracker.md`) defines one, otherwise with no triage label. Only the readiness gate applies `ready-for-*`. This overrides the label defaults of `sdlc-process:to-spec` and `sdlc-process:to-tickets` (to-tickets permits it: "unless instructed otherwise", `to-tickets/SKILL.md:62`), in every repo (decisions 1, 2, 10/R7).
 - **FR-2** When a spec issue was published and to-tickets' proposed breakdown has one slice, intake publishes no child issue; the spec issue is the delivery issue. Chain artifacts record `tickets: none — one slice`. This is not the plan-skip rule: no skip warning and no "Intake: plan skipped" line. The AC coverage check runs against the spec issue; on Full tier the plan pass runs on the spec issue alone; stage 5 takes the "One ticket, or no decomposition" route. When `to-spec` was skipped, the rule does not apply: to-tickets publishes its one ticket as the delivery issue, as today (decisions 3, 10/R1).
 - **FR-3** A one-slice delivery issue has no children, so the board's "parent carries no `ready-for-*`" rule (`setting-up-project-boards/templates/issue-tracker.md:71`) does not apply to it; it gets `ready-for-*` through the readiness gate like any delivery issue (decisions 1, 3, 10/R3).
-- **FR-4** With `tickets: none — one slice`, stage 5's records (`integrated @<sha>`) are written against the spec issue. On resume, an AC reopened by the refetch diff makes intake refresh the spec issue body as a per-action confirmed writeback (to-tickets does not modify the parent, `to-tickets/SKILL.md:66`), then re-run to-tickets' breakdown (which may now yield more than one slice and publish children), then repeat the coverage check, readiness and, on Full tier, the plan pass (decision 10/R2).
+- **FR-4** With `tickets: none — one slice`, stage 5's records (`integrated @<sha>`) are written against the spec issue. On resume, an AC reopened by the refetch diff makes intake refresh the spec issue body as a per-action confirmed writeback (to-tickets does not modify the parent, `to-tickets/SKILL.md:66`), then re-run to-tickets' breakdown (which may now yield more than one slice and publish children), then repeat the coverage check, readiness and, on Full tier, the plan pass (decision 10/R2). In piece mode the refresh is not offered (`piece-mode.md:53-55`; piece mode wins, `chain-sdlc-process.md:7-8`): a reopened AC on a one-slice spec issue makes the piece report STUCK, naming the spec refresh it needs, and resume once the parent session has refreshed the issue; decomposition never re-runs on a stale spec (decision 11/R8).
 - **FR-5** Step 8's PR body lists a one-slice spec issue as the delivery issue and gives it the `Refs` (or closing keyword, where the repo allows) line, instead of "sdlc-process: no tickets published" alone. The Full-tier plan-pass wording in `SKILL.md:350-351` and `chain-sdlc-process.md:111` says "(the spec issue alone with one slice)" (decision 10/R4, R5).
 
 ### Non-functional
@@ -64,11 +65,11 @@ Each AC is testable as written and names how it is verified. Plans and PRs cite 
   *Verify:* run the suite (exit 0); delete each phrase in a scratch copy and rerun (non-zero, the AC's failure line).
 - **AC-4** (DoD) dev-workflow is 0.2.5 in `dev-workflow/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`; the existing assertion labelled "AC-8" (`run.sh:900,906,914,916`) is updated to 0.2.5 and run.sh passes.
   *Verify:* that assertion; `grep -n '"version"'` on both files.
-- **AC-5** (FR-4) Given `tickets: none — one slice`, the chain doc says stage 5's `integrated @<sha>` record is written against the spec issue, and that on resume a reopened AC leads to a per-action confirmed refresh of the spec issue body, a re-run of to-tickets' breakdown (possibly publishing children), then the coverage check, readiness and the Full-tier plan pass again.
+- **AC-5** (FR-4) Given `tickets: none — one slice`, the chain doc says stage 5's `integrated @<sha>` record is written against the spec issue, and that on resume a reopened AC leads to a per-action confirmed refresh of the spec issue body, a re-run of to-tickets' breakdown (possibly publishing children), then the coverage check, readiness and the Full-tier plan pass again; and that in piece mode the refresh is not offered: the piece reports STUCK naming the needed spec refresh, resumes once the parent refreshed the issue, and never re-runs decomposition on a stale spec.
   *Verify:* `run.sh` assertion "AC-5" greps the resume phrase; reviewer reads stage 5 records and Controls → Resume.
-- **AC-6** (FR-5) `SKILL.md` step 8 lists a one-slice spec issue as the delivery issue with its `Refs` line; `SKILL.md` step 1 Resume status names the `tickets: none — one slice` record; the plan-pass wording in `SKILL.md:350-351` and `chain-sdlc-process.md:111` covers "the spec issue alone with one slice".
+- **AC-6** (FR-5) `SKILL.md` step 8 lists a one-slice spec issue as the delivery issue with its `Refs` line; `SKILL.md` step 1 Resume status and `template.md`'s Chain artifacts (`:116-118`) name the `tickets: none — one slice` record; the plan-pass wording in `SKILL.md:350-351` and `chain-sdlc-process.md:111` covers "the spec issue alone with one slice".
   *Verify:* `run.sh` assertions "AC-6" grep each phrase; reviewer reads step 1, step 8 and **Review = tier**.
-- **AC-7** (FR-2, FR-4, FR-5) A reviewer walks the one-slice scenario (spec published, one slice → stage 5 → step 8 → resume with a reopened AC) and the to-spec-skipped scenario through the changed docs and finds no step that contradicts them or leaves the delivery issue undefined. Recorded as separate person-readable evidence, not as the suite result (decision 10/R6).
+- **AC-7** (FR-2, FR-4, FR-5) A reviewer walks the one-slice scenario (spec published, one slice → stage 5 → step 8 → resume with a reopened AC), the same resume in piece mode (STUCK, no issue edit, no decomposition on a stale spec), and the to-spec-skipped scenario through the changed docs and finds no step that contradicts them or leaves the delivery issue undefined; and confirms the chain doc states the board parent rule does not apply *because the issue has no children* (decision 11/F-4). Recorded as separate person-readable evidence, not as the suite result (decision 10/R6).
   *Verify:* diff-pass reviewer's scenario walk-through, cited in the Verification evidence table.
 
 ## Definition of done
@@ -95,7 +96,7 @@ Each AC is testable as written and names how it is verified. Plans and PRs cite 
 | AC-6 | unit (doc assertion), agent-verifiable | `SKILL.md`, `chain-sdlc-process.md` text | catches removal of the step 1, step 8 and plan-pass phrases / misses contradicting text elsewhere (AC-7 covers) | `AC-6 SKILL.md: one-slice delivery issue in Resume status, PR body, plan pass` | `dev-workflow/tests/run.sh` |
 | AC-7 | review (scenario walk-through), agent-verifiable | the changed docs, read end to end | catches contradictions and undefined delivery issue / misses runtime agent behaviour | diff-pass scenario walk-through | diff-pass reviewer report |
 
-Repo-wide checks: `bash dev-workflow/tests/run.sh`. Existing run.sh pins on chain-doc and SKILL.md sentences that the edits must not reword (insert new text instead): `run.sh:311-325`, `:354-355`, `:395-404`, `:424`, `:431-433`, `:545`, `:708-715` (decision 10/R7).
+Repo-wide checks: `bash dev-workflow/tests/run.sh`. Existing run.sh pins on chain-doc and SKILL.md sentences that the edits must not reword (insert new text instead): `run.sh:269` (SKILL.md under 500 lines), `:311-325`, `:354-355`, `:393-394`, `:395-404`, `:411-421` (incl. the removed-text list at `:420-421`), `:423` (the plan-pass sentence R5 touches: insert the clause, keep `'(between to-tickets and Implement)'`, `'after code-review and before Verify'`, `'PR gate accepts'` verbatim), `:424`, `:431-433`, `:438-443`, `:545`, `:547` (piece-mode no-edit rule), `:708-715` (decisions 10/R7, 11/R9).
 
 ## Verification evidence
 
@@ -112,7 +113,9 @@ None — step 7 not run.
 | 17:46 | 5 | Writeback: comment posted on cjsteigarwald/ai-crew#50 (issuecomment-6353836654), read back | 1 | — |
 | 17:47 | 6.1 | `review-ledger.sh link branch:feat/intake-one-slice-ready-label plan:ai-crew-50` → 0 rows | 1 | — |
 | 17:48 | 6.4 | User chose "Skip both" to-spec and to-tickets: #50 + this doc are the spec, one slice. Intake: plan skipped; no spec issue. Plan pass runs on this doc | 1 | — |
-| 17:55 | 6.4 | Plan pass @68a9074: both revise; R1–R7 accepted (decision 10); doc revised (AC-5–AC-7 added) | 1 | — |
+| 17:55 | 6.4 | Plan pass @68a9074: both revise; R1–R7 accepted (decision 10); doc revised (AC-5–AC-7 added) → 8a5ab29 | 1 | — |
+| 18:00 | 6.4 | Bounded re-check 68a9074..8a5ab29: NEEDS FULL PASS (churn 50/144 = 34.7% > 20%) | 1 | — |
+| 18:10 | 6.4 | Plan pass #2 @8a5ab29 (Codex round 2/3, trigger: changed input): verifier pass w/ comments, Codex needs-attention; R8–R10 accepted (decision 11) | 2 | — |
 
 ## Risks
 
@@ -127,12 +130,13 @@ None — step 7 not run.
 | 2 | Does the override also cover to-tickets' children (`to-tickets/SKILL.md:62,76`)? | Yes; AC-1 widened | Christopher Steigerwald, 2026-10-22 |
 | 3 | How is one slice detected; is it a plan-skip? | to-tickets runs its breakdown; one slice → no child published, spec issue is delivery issue, recorded `tickets: none — one slice`, not a plan-skip | Christopher Steigerwald, 2026-10-22 |
 | 4 | Contradiction C2: issue AC-2 "stage 5" vs to-tickets at stage 4 (`chain-sdlc-process.md:100`, inside stage 4 at `:92`) | Stage 4 | Christopher Steigerwald, 2026-10-22 |
-| 5 | Out of scope | Upstream sdlc-process, board templates, wayfinder publications; intake SKILL.md only for a one-line Resume-status mention | Christopher Steigerwald, 2026-10-22 |
+| 5 | Out of scope | Upstream sdlc-process, board templates, wayfinder publications; intake SKILL.md only for a one-line Resume-status mention (SKILL.md part superseded by decision 10) | Christopher Steigerwald, 2026-10-22 |
 | 6 | Definition of done | Patch bump 0.2.5 with the run.sh assertion updated; draft PR with `Refs` | Christopher Steigerwald, 2026-10-22 |
-| 7 | Tests | One mandatory run.sh assertion per AC-1, AC-2, named by AC | Christopher Steigerwald, 2026-10-22 |
+| 7 | Tests | One mandatory run.sh assertion per AC-1, AC-2, named by AC (extended to AC-5, AC-6 by decision 10) | Christopher Steigerwald, 2026-10-22 |
 | 8 | NFR and risks | None beyond current; low risk, revert to roll back | Christopher Steigerwald, 2026-10-22 |
 | 9 | Settled AC-1 to AC-4 | "agree" | Christopher Steigerwald, 2026-10-22 |
 | 10 | Plan pass @68a9074 (fresh-verifier: revise, 0 must-fix / 4 should-fix; codex-adversary: revise, 1 must-fix / 2 should-fix / 1 flagged): accept R1 (one-slice only with a published spec; to-spec skipped → to-tickets' one ticket is the delivery issue), R2 (records + resume for the spec delivery issue), R3 (AC-2 covers plan pass and readiness/parent), R4 (step 8 PR body), R5 (plan-pass wording), R6 (separate scenario evidence, AC-7), R7 (citations, run.sh section, "AC-8" label, step-0 tracker source, existing pins)? Scope widens to SKILL.md step 1, step 8, Review = tier | "accept R1–R7" | Christopher Steigerwald, 2026-10-22 |
+| 11 | Plan pass #2 @8a5ab29 (anchor; fresh-verifier: pass with comments, 0 must-fix / 3 should-fix / 4 flagged; codex-adversary round 2/3: needs-attention, 1 should-fix): accept R8 (piece mode: no spec refresh, STUCK until the parent refreshes; AC-5, AC-7), R9 (complete run.sh pin list incl. `:423`), R10 (`template.md:116-118` record clause; AC-6), housekeeping (records, superseded decisions, frontmatter, F-4 check in AC-7)? | "accept R8–R10" | Christopher Steigerwald, 2026-10-22 |
 
 ## Deferred and out-of-scope items
 
@@ -154,5 +158,7 @@ None — step 3 completed.
 - Spec issue: none — `to-spec` skipped (user, 2026-10-22)
 - Tickets: none — `to-tickets` skipped (user, 2026-10-22); Intake: plan skipped. Owning issue: cjsteigarwald/ai-crew#50
 - Writeback: cjsteigarwald/ai-crew#50 issuecomment-6353836654
-- Plan pass @68a9074: revise (both); R1–R7 accepted (decision 10); bounded re-check pending
+- Plan pass @68a9074: revise (both); R1–R7 accepted (decision 10)
+- Bounded re-check 68a9074..8a5ab29: NEEDS FULL PASS (churn 34.7%)
+- `plan pass @8a5ab29` (anchor; Codex round 2/3): revise; R8–R10 accepted (decision 11); bounded re-review of the fix pending
 - **Last completed stage:** 6.4 (plan stage skipped)
