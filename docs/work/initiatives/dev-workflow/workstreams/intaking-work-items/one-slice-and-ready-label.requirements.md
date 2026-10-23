@@ -22,7 +22,7 @@ canonical: docs/work/initiatives/dev-workflow/workstreams/intaking-work-items/on
 ## Story
 
 As an agent running `dev-workflow:intaking-work-items` through the sdlc-process chain, I want
-`chain-sdlc-process.md` to say that intake publishes spec and child issues without a `ready-for-*`
+`chain-sdlc-process.md` to say that intake publishes the spec issue and every issue to-tickets publishes without a `ready-for-*`
 label, and that one-slice work uses the spec issue as its delivery issue, so that published issues
 follow the readiness gate and the repo's board lifecycle, and one piece of work does not become two
 board items and two handoffs.
@@ -33,7 +33,7 @@ board items and two handoffs.
 - `dev-workflow/skills/intaking-work-items/chain-sdlc-process.md`: stage 4 (label override for to-spec and to-tickets; the one-slice rule; the coverage check and plan-pass wording at `:109-111`), stage 5 records (`:138-139`), and Controls → Resume (`:179-181`) for the one-slice delivery issue (decision 10, R1–R3, R5).
 - `dev-workflow/skills/intaking-work-items/SKILL.md`: step 1 **Resume status** (one-slice record), step 8 PR-body rule (`:343-345`) and the Full-tier plan-pass wording (`:350-351`) (decision 10, R4, R5).
 - `dev-workflow/skills/intaking-work-items/template.md`: one clause in Chain artifacts (`:116-118`) for the `tickets: none — one slice` record (decision 11/R10).
-- `dev-workflow/tests/run.sh`: a new section `== intaking-work-items one-slice / ready-label ==` with one assertion per AC-1, AC-2, AC-5, AC-6; the pinned version assertion labelled "AC-8" (`run.sh:900,906,914,916`) updated in place (decision 10, R7).
+- `dev-workflow/tests/run.sh`: a new section `== intaking-work-items one-slice / ready-label ==` with one assertion per AC-1, AC-2, AC-5, AC-6; the pinned version assertion labelled "AC-8" (`run.sh:939,945,953,955`) updated in place (decision 10, R7).
 - dev-workflow version 0.2.4 → 0.2.5 in `dev-workflow/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`.
 
 **Out of scope**
@@ -63,7 +63,7 @@ Each AC is testable as written and names how it is verified. Plans and PRs cite 
   *Verify:* `run.sh` assertions "AC-2" grep the one-slice phrase, the to-spec-skipped exception and the readiness-gate/parent phrase; reviewer reads stage 4, stage 5 and Controls.
 - **AC-3** (FR-1–FR-5) `bash dev-workflow/tests/run.sh` exits 0 and includes the new section's assertions for AC-1, AC-2, AC-5 and AC-6, named by AC number; deleting any asserted phrase makes it fail. A green suite proves text presence only; behaviour is evidenced separately (AC-7).
   *Verify:* run the suite (exit 0); delete each phrase in a scratch copy and rerun (non-zero, the AC's failure line).
-- **AC-4** (DoD) dev-workflow is 0.2.5 in `dev-workflow/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`; the existing assertion labelled "AC-8" (`run.sh:900,906,914,916`) is updated to 0.2.5 and run.sh passes.
+- **AC-4** (DoD) dev-workflow is 0.2.5 in `dev-workflow/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`; the existing assertion labelled "AC-8" (`run.sh:939,945,953,955`) is updated to 0.2.5 and run.sh passes.
   *Verify:* that assertion; `grep -n '"version"'` on both files.
 - **AC-5** (FR-4) Given `tickets: none — one slice`, the chain doc says stage 5's `integrated @<sha>` record is written against the spec issue, and that on resume a reopened AC leads to a per-action confirmed refresh of the spec issue body, a re-run of to-tickets' breakdown (possibly publishing children), then the coverage check, readiness and the Full-tier plan pass again; and that in piece mode the refresh is not offered: the piece reports STUCK naming the needed spec refresh, resumes once the parent refreshed the issue, and never re-runs decomposition on a stale spec.
   *Verify:* `run.sh` assertion "AC-5" greps the resume phrase; reviewer reads stage 5 records and Controls → Resume.
@@ -91,12 +91,12 @@ Each AC is testable as written and names how it is verified. Plans and PRs cite 
 | AC-1 | unit (doc assertion), agent-verifiable | `chain-sdlc-process.md` text | catches the rule's removal / misses wording that is present but unclear (review covers) | `AC-1 chain doc: publish without ready-for-*, readiness gate only` | `dev-workflow/tests/run.sh` |
 | AC-2 | unit (doc assertion), agent-verifiable | `chain-sdlc-process.md` text | catches removal of the one-slice rule, the to-spec-skipped exception or the readiness/parent phrase / misses a contradicting sentence elsewhere (AC-7 covers) | `AC-2 chain doc: one slice, spec issue is the delivery issue` (+ exception, + readiness) | `dev-workflow/tests/run.sh` |
 | AC-3 | unit (suite run + mutation), agent-verifiable | `run.sh` exit code | catches assertions that cannot fail / misses behaviour (AC-7 covers) | suite run + phrase-deletion check | `dev-workflow/tests/run.sh` |
-| AC-4 | unit (manifest assertion), agent-verifiable | `plugin.json`, `marketplace.json` | catches a missed manifest / misses nothing in scope | existing assertion labelled "AC-8", updated | `dev-workflow/tests/run.sh:900-916` |
+| AC-4 | unit (manifest assertion), agent-verifiable | `plugin.json`, `marketplace.json` | catches a missed manifest / misses nothing in scope | existing assertion labelled "AC-8", updated | `dev-workflow/tests/run.sh:939-955` |
 | AC-5 | unit (doc assertion), agent-verifiable | `chain-sdlc-process.md` text | catches removal of the resume/records rule / misses wrong ordering (AC-7 covers) | `AC-5 chain doc: one-slice records and resume` | `dev-workflow/tests/run.sh` |
 | AC-6 | unit (doc assertion), agent-verifiable | `SKILL.md`, `chain-sdlc-process.md` text | catches removal of the step 1, step 8 and plan-pass phrases / misses contradicting text elsewhere (AC-7 covers) | `AC-6 SKILL.md: one-slice delivery issue in Resume status, PR body, plan pass` | `dev-workflow/tests/run.sh` |
 | AC-7 | review (scenario walk-through), agent-verifiable | the changed docs, read end to end | catches contradictions and undefined delivery issue / misses runtime agent behaviour | diff-pass scenario walk-through | diff-pass reviewer report |
 
-Repo-wide checks: `bash dev-workflow/tests/run.sh`. Existing run.sh pins on chain-doc and SKILL.md sentences that the edits must not reword (insert new text instead): `run.sh:269` (SKILL.md under 500 lines), `:311-325`, `:354-355`, `:393-394`, `:395-404`, `:411-421` (incl. the removed-text list at `:420-421`), `:423` (the plan-pass sentence R5 touches: insert the clause, keep `'(between to-tickets and Implement)'`, `'after code-review and before Verify'`, `'PR gate accepts'` verbatim), `:424`, `:431-433`, `:438-443`, `:545`, `:547` (piece-mode no-edit rule), `:708-715` (decisions 10/R7, 11/R9).
+Repo-wide checks: `bash dev-workflow/tests/run.sh`. Existing run.sh pins on chain-doc and SKILL.md sentences that the edits must not reword (insert new text instead): `run.sh:269` (SKILL.md under 500 lines), `:311-325`, `:354-355`, `:393-394`, `:395-404`, `:411-421` (incl. the removed-text list at `:420-421`), `:423` (the plan-pass sentence R5 touches: insert the clause, keep `'(between to-tickets and Implement)'`, `'after code-review and before Verify'`, `'PR gate accepts'` verbatim), `:424`, `:431-433`, `:438-443`, `:584`, `:586` (piece-mode no-edit rule), `:747-754` (decisions 10/R7, 11/R9) (line numbers as of 581145c).
 
 ## Verification evidence
 

@@ -79,9 +79,9 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
   gates. Publication labelling is the one carve-out: intake publishes without `ready-for-*` even
   where the repo applies it at creation, and publication labelling needs no second confirmation
   (step 0; [chain-sdlc-process.md](chain-sdlc-process.md) stage 4 **Labels**).
-  Only the **user** can override the start procedure: state the repo rule and that skipping it
-  means acting outside the repo's process, and proceed only on an explicit second confirmation,
-  recorded in the doc.
+  Only the **user** can override the start procedure or a gate: state the repo rule and that
+  skipping it means acting outside the repo's process, and proceed only on an explicit second
+  confirmation, recorded in the doc.
 - **Cancel:** stop immediately. Make no further tool call that posts anywhere and no local write,
   except the single edit that marks an existing requirements doc CANCELLED — the single
   cancel-marker edit (first line plus the Status field): first line
