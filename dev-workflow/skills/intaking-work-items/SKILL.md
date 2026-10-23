@@ -162,7 +162,9 @@ recorded review tier does not require is `n.a. (<tier>)` (Routine: no plan pass 
 pass; Exempt: no reviews), never a missing record. On resume (the doc exists, or "continue <KEY>"),
 show ONE compact status
 block from those records plus live git and tracker reads: branch @ HEAD short SHA; Requirements
-status and Wayfinding state; spec issue; each ticket and whether it is integrated; each review
+status and Wayfinding state; spec issue; each ticket and whether it is integrated
+(a one-slice run records `tickets: none — one slice`; the spec issue is then the delivery issue
+and carries `integrated @<sha>`); each review
 record with its SHA and "N commits behind HEAD"; Verify; draft PR (number, head SHA). A record
 whose SHA is not an ancestor of HEAD is marked "not on branch" (the only automatic check). Then
 **Suggested next:** the first stage in the normal order with no record (skipped and n.a. count as
@@ -342,13 +344,16 @@ skipped intake step — e.g. "Intake: gap analysis skipped — requirements not 
 user chose "no doc at all", the PR body also carries the stub doc's content.
 The PR body also lists the spec issue (none if `to-spec` was skipped) and `Refs owner/repo#N` for
 each issue sdlc-process published (a closing keyword only where the repo allows a merge to close
-it), or "sdlc-process: no tickets published".
+it), or "sdlc-process: no tickets published". When no child issue was published because
+a one-slice spec issue is the delivery issue, list it as the delivery issue with its `Refs owner/repo#N`
+line (a closing keyword only where the repo allows a merge to close it) instead of that phrase.
 
 **Review = tier.** `dev-workflow:review-policy` owns the tiers; intake only cites them. The
 `sdlc-process:code-review` run inside Implement (Standards and Spec axes) is the Routine pass;
 Exempt runs none. **Full** adds two passes, each one message dispatching
 `dev-workflow:fresh-verifier` + `dev-workflow:codex-adversary`: the plan pass on the published
-spec and tickets (between to-tickets and Implement), and the diff pass at the end of Implement,
+spec and tickets (between to-tickets and Implement) (the spec issue alone with one slice), and
+the diff pass at the end of Implement,
 after code-review and before Verify, with the code-review report as input (independence and
 refutation). Record the diff pass as `full-tier diff pass @A (base B)`. Every Codex brief carries
 `ledger: <repo-path>` (the branch key; add `| plan:<ticket>` only when no ticket branch exists

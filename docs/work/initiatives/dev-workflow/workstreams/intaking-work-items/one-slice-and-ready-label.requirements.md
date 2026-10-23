@@ -1,7 +1,7 @@
 ---
 id: dev-workflow-intake-one-slice-and-ready-label-requirements
 type: requirements
-status: draft
+status: ready
 owner: dev-workflow
 representation: canonical
 canonical: docs/work/initiatives/dev-workflow/workstreams/intaking-work-items/one-slice-and-ready-label.requirements.md
@@ -110,13 +110,16 @@ None — step 7 not run.
 | 17:30 | 2 | Gap table: rows 3, 5, 8, 10 Missing; 4, 6, 9, 13 Vague (C1, C2) | 1 | — |
 | 17:40 | 3 | sdlc-process entry + orchestrator loaded; grill-with-docs (grilling, domain-modeling); round 1 accepted; AC agreed | 1 | — |
 | 17:44 | 6.1 | Work branch `feat/intake-one-slice-ready-label`; review base `c23c119` (merge-base with origin/main) | 1 | — |
-| 17:46 | 5 | Writeback: comment posted on cjsteigarwald/ai-crew#50 (issuecomment-6353836654), read back | 1 | — |
+| 17:46 | 5 | Writeback: comment posted on cjsteigerwald/ai-crew#50 (issuecomment-6353836654), read back | 1 | — |
 | 17:47 | 6.1 | `review-ledger.sh link branch:feat/intake-one-slice-ready-label plan:ai-crew-50` → 0 rows | 1 | — |
 | 17:48 | 6.4 | User chose "Skip both" to-spec and to-tickets: #50 + this doc are the spec, one slice. Intake: plan skipped; no spec issue. Plan pass runs on this doc | 1 | — |
 | 17:55 | 6.4 | Plan pass @68a9074: both revise; R1–R7 accepted (decision 10); doc revised (AC-5–AC-7 added) → 8a5ab29 | 1 | — |
 | 18:00 | 6.4 | Bounded re-check 68a9074..8a5ab29: NEEDS FULL PASS (churn 50/144 = 34.7% > 20%) | 1 | — |
 | 18:10 | 6.4 | Plan pass #2 @8a5ab29 (Codex round 2/3, trigger: changed input): verifier pass w/ comments, Codex needs-attention; R8–R10 accepted (decision 11) → c627c6d | 2 | — |
 | 18:20 | 6.4 | `bounded re-review @c627c6d (8a5ab29..c627c6d): resolved` (churn 17.7%) | 1 | — |
+| 04:37 | 6.4 | Plan-skip restated before stage 5 (no spec issue, no tickets, no coverage check; PR body says "Intake: plan skipped"); user confirmed | 1 | — |
+| 04:37 | 5 | Policy review (sdlc-policy-reviewer) for starting implementation: conditional pass, held on live user go; F1 skip restatement, F2 doc hygiene, F3 Codex 3/3 is last | 1 | — |
+| 04:37 | 5 | User go for stage 5 Implement (2026-10-22) | 1 | — |
 
 ## Risks
 
@@ -157,8 +160,8 @@ None — step 3 completed.
 - Work branch: `feat/intake-one-slice-ready-label`; review base `c23c119`
 - Review tier: Full (skill definition change)
 - Spec issue: none — `to-spec` skipped (user, 2026-10-22)
-- Tickets: none — `to-tickets` skipped (user, 2026-10-22); Intake: plan skipped. Owning issue: cjsteigarwald/ai-crew#50
-- Writeback: cjsteigarwald/ai-crew#50 issuecomment-6353836654
+- Tickets: none — `to-tickets` skipped (user, 2026-10-22); Intake: plan skipped. Owning issue: cjsteigerwald/ai-crew#50
+- Writeback: cjsteigerwald/ai-crew#50 issuecomment-6353836654
 - Plan pass @68a9074: revise (both); R1–R7 accepted (decision 10)
 - `bounded re-review @8a5ab29 (68a9074..8a5ab29): NEEDS FULL PASS` (churn 34.7%)
 - `plan pass @8a5ab29` (anchor; Codex round 2/3): verifier pass with comments, Codex needs-attention; R8–R10 accepted (decision 11)

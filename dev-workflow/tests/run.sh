@@ -469,6 +469,37 @@ if [ "$INTAKE_FAILS" -eq 0 ]; then
   echo "ok: intaking-work-items skill present (description $desc_len chars, SKILL.md $lines lines), supporting files linked, gate rules pinned"
 fi
 
+echo "== intaking-work-items one-slice / ready-label =="
+# Text-presence pins for ai-crew#50 (docs/work/.../one-slice-and-ready-label.requirements.md).
+# A green run proves the phrases exist, not that an agent follows them.
+OSL_CHAIN="$ROOT/skills/intaking-work-items/chain-sdlc-process.md"
+OSL_SKILL="$ROOT/skills/intaking-work-items/SKILL.md"
+OSL_TEMPLATE="$ROOT/skills/intaking-work-items/template.md"
+OSL_FAILS=0
+osl_pin() { # osl_pin <file> <AC label> <description> <fixed phrase>
+  if ! grep -qF -- "$4" "$1"; then
+    OSL_FAILS=$((OSL_FAILS + 1))
+    fail "$2 ${1#"$ROOT"/}: missing $3"
+  fi
+}
+osl_pin "$OSL_CHAIN" "AC-1" "the publish-without-ready-for-* rule" 'published without a `ready-for-*` label'
+osl_pin "$OSL_CHAIN" "AC-1" "the readiness gate as the only path to ready-for-*" 'Only the readiness gate applies `ready-for-*`'
+osl_pin "$OSL_CHAIN" "AC-2" "the one-slice rule (spec issue is the delivery issue)" 'the spec issue is the delivery issue'
+osl_pin "$OSL_CHAIN" "AC-2" "the one-slice Chain artifacts record" '`tickets: none — one slice`'
+osl_pin "$OSL_CHAIN" "AC-2" "the to-spec-skipped exception" 'When `to-spec` was skipped, this rule does not apply'
+osl_pin "$OSL_CHAIN" "AC-2" "the readiness-gate / no-children parent phrase" 'has no children, so the board'
+osl_pin "$OSL_CHAIN" "AC-5" "the one-slice stage 5 record against the spec issue" 'written against the spec issue'
+osl_pin "$OSL_CHAIN" "AC-5" "the resume spec-issue refresh" 'refresh the spec issue body'
+osl_pin "$OSL_CHAIN" "AC-5" "the piece-mode STUCK rule" 'the piece reports STUCK, naming the spec refresh it needs'
+osl_pin "$OSL_SKILL" "AC-6" "the step 1 one-slice record" 'a one-slice run records `tickets: none — one slice`'
+osl_pin "$OSL_SKILL" "AC-6" "the step 8 one-slice delivery issue in the PR body" 'a one-slice spec issue is the delivery issue'
+osl_pin "$OSL_SKILL" "AC-6" "the one-slice plan-pass wording" '(the spec issue alone with one slice)'
+osl_pin "$OSL_CHAIN" "AC-6" "the one-slice plan-pass wording" '(the spec issue alone with one slice)'
+osl_pin "$OSL_TEMPLATE" "AC-6" "the Chain artifacts one-slice record" '`tickets: none — one slice`'
+if [ "$OSL_FAILS" -eq 0 ]; then
+  echo "ok: intaking-work-items one-slice / ready-label rules pinned"
+fi
+
 echo "== orchestrating-pieces scripts =="
 OPS_DIR="$ROOT/skills/orchestrating-pieces/scripts"
 for s in piece-track.sh ff-merge.sh render-handoff.sh; do
@@ -897,13 +928,13 @@ prb_chk "AC-7" "$prb_row" 'pr-body.md'
 prb_chk "AC-7" "$prb_row" 'Adapted from mattpocock/skills (MIT'
 prb_ac_done "AC-7 README opening-pull-requests row mentions the template and the adaptation credit"
 
-# AC-8: version 0.2.4 in the plugin manifest and the dev-workflow marketplace entry.
+# AC-8: version 0.2.5 in the plugin manifest and the dev-workflow marketplace entry.
 if python3 - "$ROOT/.claude-plugin/plugin.json" "$ROOT/../.claude-plugin/marketplace.json" <<'PY'
 import json, sys
 plugin = json.load(open(sys.argv[1]))
 market = json.load(open(sys.argv[2]))
 entry = [p for p in market["plugins"] if p.get("name") == "dev-workflow"]
-ok = plugin.get("version") == "0.2.4" and len(entry) == 1 and entry[0].get("version") == "0.2.4"
+ok = plugin.get("version") == "0.2.5" and len(entry) == 1 and entry[0].get("version") == "0.2.5"
 if not ok:
     print("plugin.json=%s marketplace=%s" % (plugin.get("version"), [e.get("version") for e in entry]))
 sys.exit(0 if ok else 1)
@@ -911,9 +942,9 @@ PY
 then
   :
 else
-  pfail "AC-8: dev-workflow version is not 0.2.4 in both plugin.json and marketplace.json"
+  pfail "AC-8: dev-workflow version is not 0.2.5 in both plugin.json and marketplace.json"
 fi
-prb_ac_done "AC-8 dev-workflow is 0.2.4 in plugin.json and marketplace.json"
+prb_ac_done "AC-8 dev-workflow is 0.2.5 in plugin.json and marketplace.json"
 
 echo "== setting-up-project-boards agent docs =="
 # Static structure checks only (NFR-4). Local counters, same convention as the PR-body section.
