@@ -478,6 +478,7 @@ OSL_TEMPLATE="$ROOT/skills/intaking-work-items/template.md"
 OSL_PIECE="$ROOT/skills/intaking-work-items/piece-mode.md"
 OSL_ORCH="$ROOT/skills/orchestrating-pieces/SKILL.md"
 OSL_PRBODY="$ROOT/skills/opening-pull-requests/pr-body.md"
+OSL_HANDOFF="$ROOT/skills/orchestrating-pieces/references/handoff-prompt.md"
 OSL_FAILS=0
 oslfail() {
   OSL_FAILS=$((OSL_FAILS + 1))
@@ -510,7 +511,9 @@ osl_pin "$OSL_CHAIN" "AC-5" "the one-slice supersession on resume" 'the children
 osl_pin "$OSL_PIECE" "AC-8" "the stage 4 to-spec row (the piece's issue is the spec)" "the piece's issue is the spec and the delivery issue"
 osl_pin "$OSL_PIECE" "AC-8" "to-tickets only when splitting" '`to-tickets` runs only when splitting'
 osl_pin "$OSL_PIECE" "AC-9" "the spec-refresh reason form" '`STUCK #N spec-refresh #<issue> AC-n`'
-osl_pin "$OSL_PIECE" "AC-9" "the when-woken rule" 'When woken'
+osl_pin "$OSL_PIECE" "AC-9" "the when-woken rule" '**When woken** ('
+osl_pin "$OSL_PIECE" "AC-8" "a split piece's own issue is the to-tickets parent" 'your own issue is the parent they are published under'
+osl_pin "$OSL_HANDOFF" "AC-9" "STATUS? applies the when-woken rule on spec-refresh" 'If you are STUCK on `spec-refresh`, apply piece-mode.md **When woken** first'
 osl_pin "$OSL_PIECE" "AC-9" "the wake rule continues at stage 5" 'continue at stage 5 (Implement)'
 osl_pin "$OSL_ORCH" "AC-9" "the spec-refresh reason form" '`STUCK #N spec-refresh #<issue> AC-n`'
 osl_pin "$OSL_ORCH" "AC-9" "spec-refresh as the one STUCK reason the parent acts on" '`spec-refresh` is the one STUCK reason the parent acts on'
