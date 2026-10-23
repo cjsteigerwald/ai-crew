@@ -501,6 +501,9 @@ osl_pin "$OSL_CHAIN" "AC-6" "the one-slice plan-pass wording" '(the spec issue a
 osl_pin "$OSL_TEMPLATE" "AC-6" "the Chain artifacts one-slice record" '`tickets: none — one slice`'
 osl_pin "$OSL_CHAIN" "AC-1" "the publication-label exception to repo-procedure precedence" 'the one exception to "the repo procedure wins"'
 osl_pin "$OSL_SKILL" "AC-1" "the publication-label exception in step 0" 'Publication labelling is the one exception'
+osl_pin "$OSL_SKILL" "AC-1" "the label exception needs no second confirmation" 'publication labelling needs no second confirmation'
+osl_pin "$OSL_CHAIN" "AC-1" "the label rule covers every issue to-tickets publishes" 'every issue `to-tickets` publishes'
+osl_pin "$OSL_CHAIN" "AC-5" "the one-slice supersession on resume" 'the children become the delivery issues'
 if [ "$OSL_FAILS" -eq 0 ]; then
   echo "ok: intaking-work-items one-slice / ready-label rules pinned"
 fi

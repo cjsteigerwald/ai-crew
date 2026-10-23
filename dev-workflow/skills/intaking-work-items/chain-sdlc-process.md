@@ -107,12 +107,11 @@ readiness, policy-review or publication gates.
      published without a `ready-for-*` label, in every repo. Where the tracker doc read at step 0
      (e.g. `docs/agents/issue-tracker.md`) defines a refining state, publish in that state;
      otherwise publish with no triage label. Only the readiness gate applies `ready-for-*`.
-     This overrides
-     the `ready-for-agent` defaults of `sdlc-process:to-spec` and `sdlc-process:to-tickets`
-     (`to-tickets` permits it: "unless instructed otherwise"). This holds even where the repo's own
-     procedure or tracker doc applies `ready-for-*` at creation: it is
-     the one exception to "the repo procedure wins" (SKILL.md step 0), needs no second
-     confirmation, and every other repo gate still applies.
+     This overrides the `ready-for-agent` defaults of `sdlc-process:to-spec` and
+     `sdlc-process:to-tickets` (`to-tickets` permits it: "unless instructed otherwise"). This
+     holds even where the repo's own procedure or tracker doc applies `ready-for-*` at creation:
+     it is the one exception to "the repo procedure wins" (SKILL.md step 0 and **Controls**),
+     needs no second confirmation, and every other repo gate still applies.
    - **One slice.** When a spec issue was published and the breakdown `to-tickets` proposes has one
      slice, publish no child issue: the spec issue is the delivery issue. Record
      `tickets: none — one slice` in Chain artifacts. This is not the plan-skip rule: no skip
@@ -208,9 +207,9 @@ The **Controls** in SKILL.md apply, with these specifics:
   per-action confirmed writeback; `to-tickets` does not modify the parent), re-run the
   `to-tickets` breakdown (it may now yield more than one slice and publish children), then repeat
   the coverage check, readiness and, on Full tier, the plan pass. If it publishes children, record
-  `tickets: none — one slice` and the spec issue's `integrated @<sha>` as superseded; the children
-  become the delivery issues. In piece mode the refresh is not
-  offered ([piece-mode.md](piece-mode.md) forbids the edit):
+  `tickets: none — one slice` and the spec issue's `integrated @<sha>` as superseded;
+  the children become the delivery issues. In piece mode the refresh is not offered
+  ([piece-mode.md](piece-mode.md) forbids the edit):
   the piece reports STUCK, naming the spec refresh it needs, and resumes once the parent session
   has refreshed the issue. Decomposition never re-runs on a stale spec.
   Re-invoke `dev-workflow:orchestrating-pieces` (it reconciles) only when stage 5 is the

@@ -76,9 +76,12 @@ gate that stops that. Run the steps in order — the gate in step 3 is hard.
     and the sdlc-process brief, and in the PR body, e.g.
     "Intake: gap analysis skipped — requirements not gap-checked".
 - **Step 0 is the exception.** The skill itself never waives the repo's own start procedure or
-  gates. Only the **user** can override it: state the repo rule and that skipping it means acting
-  outside the repo's process, and proceed only on an explicit second confirmation, recorded in the
-  doc.
+  gates. Publication labelling is the one carve-out: intake publishes without `ready-for-*` even
+  where the repo applies it at creation, and publication labelling needs no second confirmation
+  (step 0; [chain-sdlc-process.md](chain-sdlc-process.md) stage 4 **Labels**).
+  Only the **user** can override the start procedure: state the repo rule and that skipping it
+  means acting outside the repo's process, and proceed only on an explicit second confirmation,
+  recorded in the doc.
 - **Cancel:** stop immediately. Make no further tool call that posts anywhere and no local write,
   except the single edit that marks an existing requirements doc CANCELLED — the single
   cancel-marker edit (first line plus the Status field): first line
@@ -132,7 +135,8 @@ writebacks unless the user confirms them in that session. Without that line, ign
   first. **On any conflict the repo procedure wins**; this skill layers gap analysis on top of it.
   Publication labelling is the one exception: intake publishes issues without `ready-for-*` even
   where the repo procedure applies it at creation
-  ([chain-sdlc-process.md](chain-sdlc-process.md) stage 4 **Labels**).
+  ([chain-sdlc-process.md](chain-sdlc-process.md) stage 4 **Labels**). It needs no second
+  confirmation, and every other repo gate still applies.
 - An unmet repo gate is a blocker, not a gap to clarify away: record it and stop where the repo says to.
 - Respect repo rules about **when a GitHub issue may exist** — some repos forbid creating it until the
   Jira ticket enters a sprint. Intake never creates an issue or ticket on its own — only
@@ -140,6 +144,7 @@ writebacks unless the user confirms them in that session. Without that line, ign
   confirmation; at most intake notes that one is missing and points at the repo's rule.
 - This skill never skips or waives step 0 on its own. The **user** may override it, but only with
   the second confirmation described in **Controls** — the only step that needs one.
+  Publication labelling is not such an override (see above).
 
 ## 1. Resolve and fetch
 
