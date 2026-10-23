@@ -1,7 +1,7 @@
 ---
 id: dev-workflow-intake-one-slice-and-ready-label-requirements
 type: requirements
-status: ready
+status: draft
 owner: dev-workflow
 representation: canonical
 canonical: docs/work/initiatives/dev-workflow/workstreams/intaking-work-items/one-slice-and-ready-label.requirements.md
@@ -115,7 +115,8 @@ None — step 7 not run.
 | 17:48 | 6.4 | User chose "Skip both" to-spec and to-tickets: #50 + this doc are the spec, one slice. Intake: plan skipped; no spec issue. Plan pass runs on this doc | 1 | — |
 | 17:55 | 6.4 | Plan pass @68a9074: both revise; R1–R7 accepted (decision 10); doc revised (AC-5–AC-7 added) → 8a5ab29 | 1 | — |
 | 18:00 | 6.4 | Bounded re-check 68a9074..8a5ab29: NEEDS FULL PASS (churn 50/144 = 34.7% > 20%) | 1 | — |
-| 18:10 | 6.4 | Plan pass #2 @8a5ab29 (Codex round 2/3, trigger: changed input): verifier pass w/ comments, Codex needs-attention; R8–R10 accepted (decision 11) | 2 | — |
+| 18:10 | 6.4 | Plan pass #2 @8a5ab29 (Codex round 2/3, trigger: changed input): verifier pass w/ comments, Codex needs-attention; R8–R10 accepted (decision 11) → c627c6d | 2 | — |
+| 18:20 | 6.4 | `bounded re-review @c627c6d (8a5ab29..c627c6d): resolved` (churn 17.7%) | 1 | — |
 
 ## Risks
 
@@ -159,6 +160,7 @@ None — step 3 completed.
 - Tickets: none — `to-tickets` skipped (user, 2026-10-22); Intake: plan skipped. Owning issue: cjsteigarwald/ai-crew#50
 - Writeback: cjsteigarwald/ai-crew#50 issuecomment-6353836654
 - Plan pass @68a9074: revise (both); R1–R7 accepted (decision 10)
-- Bounded re-check 68a9074..8a5ab29: NEEDS FULL PASS (churn 34.7%)
-- `plan pass @8a5ab29` (anchor; Codex round 2/3): revise; R8–R10 accepted (decision 11); bounded re-review of the fix pending
+- `bounded re-review @8a5ab29 (68a9074..8a5ab29): NEEDS FULL PASS` (churn 34.7%)
+- `plan pass @8a5ab29` (anchor; Codex round 2/3): verifier pass with comments, Codex needs-attention; R8–R10 accepted (decision 11)
+- `bounded re-review @c627c6d (8a5ab29..c627c6d): resolved`
 - **Last completed stage:** 6.4 (plan stage skipped)
