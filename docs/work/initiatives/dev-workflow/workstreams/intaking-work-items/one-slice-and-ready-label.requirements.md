@@ -74,8 +74,8 @@ Each AC is testable as written and names how it is verified. Plans and PRs cite 
 
 ## Definition of done
 
-- [ ] AC-1 to AC-7 verified with recorded evidence
-- [ ] Full-tier review: plan pass and diff pass (fresh-verifier + codex-adversary)
+- [x] AC-1 to AC-7 verified with recorded evidence (Verification evidence, verify @562ad5e)
+- [ ] Full-tier review: plan pass and diff pass (fresh-verifier + codex-adversary): plan pass @8a5ab29 + bounded @c627c6d; diff pass @9f04e17 + bounded @b393ca3 (partial) and @581145c (resolved); the final delta 581145c..562ad5e is under human review (pending human review)
 - [ ] Draft PR opened with `Refs cjsteigerwald/ai-crew#50` (no closing keyword; the user closes the issue at close-out, decision 6)
 
 ## Dependencies and gates
@@ -100,7 +100,17 @@ Repo-wide checks: `bash dev-workflow/tests/run.sh`. Existing run.sh pins on chai
 
 ## Verification evidence
 
-None — step 7 not run.
+Repo checks (head `562ad5e`, 07:48): `bash dev-workflow/tests/run.sh` exit 0, last line `PASSED`, 0 `^FAIL` lines. Lint and typecheck: n/a, AGENTS.md names none for these files (prose, JSON, bash).
+
+| AC | Check | Kind | Result | Evidence | Base / head / time |
+|---|---|---|---|---|---|
+| AC-1 | `bash dev-workflow/tests/run.sh`, section `== intaking-work-items one-slice / ready-label ==` | automated, new | verified | base (run.sh from head copied onto a throwaway worktree, no skill or doc files; assertion failures, not setup): `FAIL: AC-1 skills/intaking-work-items/chain-sdlc-process.md: missing the publish-without-ready-for-* rule` (+ 5 more AC-1 FAIL lines); head ×2: `ok: intaking-work-items one-slice / ready-label rules pinned` | `c23c119` / `562ad5e` 07:48 |
+| AC-2 | same section | automated, new | verified | base: `FAIL: AC-2 skills/intaking-work-items/chain-sdlc-process.md: missing the one-slice rule (spec issue is the delivery issue)` (+ 3 more AC-2 FAIL lines); head ×2: `ok: intaking-work-items one-slice / ready-label rules pinned` | `c23c119` / `562ad5e` 07:48 |
+| AC-3 | `bash dev-workflow/tests/run.sh` x2, then phrase-deletion in a scratch full-repo worktree at head | automated (suite + mutation) | verified | head exit 0 twice (`PASSED`); each of the 19 asserted phrases deleted in turn (chain doc, SKILL.md, template.md): exit 1 and that pin's `FAIL: AC-n ... missing ...` line. One pin (`tickets: none — one slice` in the chain doc, 6 occurrences) survived a first-occurrence-only deletion by design and failed (`FAIL: AC-2 ... missing the one-slice Chain artifacts record`) once all occurrences were removed. Prior reviewers mutation-checked all 19 pins. Green suite proves text presence only (AC-7 covers behaviour) | `562ad5e` 07:53 |
+| AC-4 | `grep -n '"version"'` on both manifests; run.sh assertion labelled "AC-8" (`run.sh:939-955`) | automated, existing pin updated | verified | `dev-workflow/.claude-plugin/plugin.json:3: "version": "0.2.5",`; `.claude-plugin/marketplace.json:45` (dev-workflow entry): `"version": "0.2.5",`; head ×2: `ok: AC-8 dev-workflow is 0.2.5 in plugin.json and marketplace.json`; base: `FAIL: AC-8: dev-workflow version is not 0.2.5 in both plugin.json and marketplace.json` | `c23c119` / `562ad5e` 07:48 |
+| AC-5 | same section | automated, new | verified | base: `FAIL: AC-5 skills/intaking-work-items/chain-sdlc-process.md: missing the one-slice stage 5 record against the spec issue` (+ 3 more AC-5 FAIL lines); head ×2: `ok: intaking-work-items one-slice / ready-label rules pinned` | `c23c119` / `562ad5e` 07:48 |
+| AC-6 | same section | automated, new | verified | base: `FAIL: AC-6 skills/intaking-work-items/SKILL.md: missing the step 1 one-slice record` (+ 4 more AC-6 FAIL lines); head ×2: `ok: intaking-work-items one-slice / ready-label rules pinned` | `c23c119` / `562ad5e` 07:48 |
+| AC-7 | reviewer scenario walk-through | review | verified (review) | fresh-verifier diff pass @9f04e17: scenarios i-iii, no contradiction, delivery issue defined; cold read in bounded re-review @581145c: resolved. The delta 581145c..562ad5e is under the user's human review (pending) | — / `581145c` 2026-10-23 |
 
 ## Run log
 
@@ -125,6 +135,9 @@ None — step 7 not run.
 | 06:06 | 5 | Full-tier diff pass @9f04e17 (base c23c119): fresh-verifier pass with comments (AC-1–AC-7 met; AC-7 walk-through recorded), codex-adversary 3/3 needs-attention (label precedence); decision 12 | 1 | — |
 | 06:06 | 5 | Diff-pass fixes (decision 12) red→green; run.sh exit 0 | 1 | — |
 | 06:24 | 5 | Bounded re-review @b393ca3 (eligible, churn 10.1%): C-1 partial (SKILL.md Controls/step 0 still absolute), SHOULD-1 and FLAG-2 resolved; bounded code-review: 3 should-fix; consolidated fixes (decision 12 scope) red→green | 1 | — |
+| 07:30 | 5 | Bounded re-review @581145c: resolved (churn 19.4%); user chose human review for the remaining delta (Codex at cap) | 1 | — |
+| 07:30 | 5 | FLAG-1 / FLAG-2 fixes @562ad5e | 1 | — |
+| 07:53 | 7 | Verify @562ad5e: repo checks + AC-1–AC-7 | 1 | — |
 
 ## Risks
 
@@ -179,4 +192,7 @@ None — step 3 completed.
 - `full-tier diff pass @9f04e17 (base c23c119)`: fresh-verifier pass with comments; codex-adversary (round 3/3) needs-attention; decision 12 fixes @2cccde6
 - AC-7 scenario walk-through: fresh-verifier diff pass @9f04e17 (scenarios i–iii, no contradiction, delivery issue defined; F-4 at chain-sdlc-process.md:118-120)
 - bounded re-review @b393ca3 (9f04e17..b393ca3): C-1 partial; fixes @6b12eb7
-- **Last completed stage:** 5 (Implement; diff pass + bounded re-review; Verify pending)
+- bounded re-review @581145c (9f04e17..581145c): resolved (fresh-verifier; churn 19.4%)
+- final delta 581145c..562ad5e: human review (user, 2026-10-23; Codex 3/3, churn past 20%) — pending
+- verify @562ad5e
+- **Last completed stage:** 7 (Verify)
