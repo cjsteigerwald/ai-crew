@@ -120,6 +120,7 @@ None — step 7 not run.
 | 04:37 | 6.4 | Plan-skip restated before stage 5 (no spec issue, no tickets, no coverage check; PR body says "Intake: plan skipped"); user confirmed | 1 | — |
 | 04:37 | 5 | Policy review (sdlc-policy-reviewer) for starting implementation: conditional pass, held on live user go; F1 skip restatement, F2 doc hygiene, F3 Codex 3/3 is last | 1 | — |
 | 04:37 | 5 | User go for stage 5 Implement (2026-10-22) | 1 | — |
+| 04:39 | 5 | Implement + tdd: AC-1, AC-2, AC-5, AC-6, AC-4 red→green; run.sh exit 0 | 1 | — |
 
 ## Risks
 
@@ -166,4 +167,5 @@ None — step 3 completed.
 - `bounded re-review @8a5ab29 (68a9074..8a5ab29): NEEDS FULL PASS` (churn 34.7%)
 - `plan pass @8a5ab29` (anchor; Codex round 2/3): verifier pass with comments, Codex needs-attention; R8–R10 accepted (decision 11)
 - `bounded re-review @c627c6d (8a5ab29..c627c6d): resolved`
-- **Last completed stage:** 6.4 (plan stage skipped)
+- integrated @3a37f4e6675f94fc5665605ba88844b34fc642f2
+- **Last completed stage:** 5 (Implement; code-review pending)
