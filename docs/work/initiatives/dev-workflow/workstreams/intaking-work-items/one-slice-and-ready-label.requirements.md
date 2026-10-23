@@ -35,6 +35,7 @@ board items and two handoffs.
 - `dev-workflow/skills/intaking-work-items/template.md`: one clause in Chain artifacts (`:116-118`) for the `tickets: none — one slice` record (decision 11/R10).
 - `dev-workflow/tests/run.sh`: a new section `== intaking-work-items one-slice / ready-label ==` with one assertion per AC-1, AC-2, AC-5, AC-6; the pinned version assertion labelled "AC-8" (`run.sh:939,945,953,955`) updated in place (decision 10, R7).
 - dev-workflow version 0.2.4 → 0.2.5 in `dev-workflow/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`.
+- Added by decision 13 (FR-6–FR-8, AC-8–AC-10): `dev-workflow/skills/intaking-work-items/piece-mode.md` (a stage 4 `to-spec` row in **What changes**, the `spec-refresh` STUCK reason, and a "when woken" rule), `dev-workflow/skills/orchestrating-pieces/SKILL.md` §4 STUCK bullet (the parent acts on `spec-refresh`), `dev-workflow/skills/opening-pull-requests/pr-body.md:46,212` (the "Spec issue" line names the one-slice delivery issue), and their `run.sh` pins. The version stays 0.2.5 (unreleased, same PR).
 
 **Out of scope**
 - Upstream `sdlc-process` (sidkik-plugins) sources: this repo only consumes them (decision 5).
@@ -49,6 +50,9 @@ board items and two handoffs.
 - **FR-3** A one-slice delivery issue has no children, so the board's "parent carries no `ready-for-*`" rule (`setting-up-project-boards/templates/issue-tracker.md:71`) does not apply to it; it gets `ready-for-*` through the readiness gate like any delivery issue (decisions 1, 3, 10/R3).
 - **FR-4** With `tickets: none — one slice`, stage 5's records (`integrated @<sha>`) are written against the spec issue. On resume, an AC reopened by the refetch diff makes intake refresh the spec issue body as a per-action confirmed writeback (to-tickets does not modify the parent, `to-tickets/SKILL.md:66`), then re-run to-tickets' breakdown (which may now yield more than one slice and publish children), then repeat the coverage check, readiness and, on Full tier, the plan pass (decision 10/R2). In piece mode the refresh is not offered (`piece-mode.md:53-55`; piece mode wins, `chain-sdlc-process.md:7-8`): a reopened AC on a one-slice spec issue makes the piece report STUCK, naming the spec refresh it needs, and resume once the parent session has refreshed the issue; decomposition never re-runs on a stale spec (decision 11/R8). If the re-run publishes children, `tickets: none — one slice` and the spec issue's `integrated @<sha>` are recorded as superseded (decision 12).
 - **FR-5** Step 8's PR body lists a one-slice spec issue as the delivery issue and gives it the `Refs` (or closing keyword, where the repo allows) line, instead of "sdlc-process: no tickets published" alone. The Full-tier plan-pass wording in `SKILL.md:350-351` and `chain-sdlc-process.md:111` says "(the spec issue alone with one slice)" (decision 10/R4, R5).
+- **FR-6** In piece mode, stage 4's `to-spec` is skipped: the piece's issue is the spec and the delivery issue, so a piece never publishes a second spec issue. `to-tickets` runs only when splitting the piece (`piece-mode.md` **Splitting the piece**). The one-slice rule therefore never fires in piece mode (decision 13).
+- **FR-7** A piece that needs its issue's body refreshed (an AC reopened by the refetch diff; it may not edit issues, `piece-mode.md:53-55`) reports `STUCK #N spec-refresh #<issue> AC-n`. When woken (`STATUS? #N`, or the user answers in its session), it refetches as in step 1. If the reopened AC is now in the issue, it continues from the stage 4 breakdown; otherwise it stays STUCK. In `orchestrating-pieces` §4, `spec-refresh` is the one STUCK reason the parent acts on: it offers the user the issue-body refresh as a per-action confirmed writeback, then wakes the piece with `STATUS? #N` (decision 13).
+- **FR-8** `opening-pull-requests/pr-body.md`'s "Spec issue" line (`:46` placeholder, `:212` guidance) says the spec issue is marked as the **delivery issue** when `tickets: none — one slice`, or else `sdlc-process: no tickets published` (decision 13).
 
 ### Non-functional
 - **NFR-1** None beyond current behaviour (decision 8).
@@ -71,12 +75,19 @@ Each AC is testable as written and names how it is verified. Plans and PRs cite 
   *Verify:* `run.sh` assertions "AC-6" grep each phrase; reviewer reads step 1, step 8 and **Review = tier**.
 - **AC-7** (FR-2, FR-4, FR-5) A reviewer walks the one-slice scenario (spec published, one slice → stage 5 → step 8 → resume with a reopened AC), the same resume in piece mode (STUCK, no issue edit, no decomposition on a stale spec), and the to-spec-skipped scenario through the changed docs and finds no step that contradicts them or leaves the delivery issue undefined; and confirms the chain doc states the board parent rule does not apply *because the issue has no children* (decision 11/F-4). Recorded as separate person-readable evidence, not as the suite result (decision 10/R6).
   *Verify:* diff-pass reviewer's scenario walk-through, cited in the Verification evidence table.
+- **AC-8** (FR-6) `piece-mode.md` **What changes** has a stage 4 `to-spec` row: skipped, because the piece's issue is the spec and the delivery issue, with `to-tickets` only when splitting.
+  *Verify:* `run.sh` assertion "AC-8" (one-slice section) greps the row's phrase; reviewer reads the table and **Splitting the piece**. Note: the pre-existing `run.sh` "AC-8" version label belongs to the earlier PR-body work, not to this doc.
+- **AC-9** (FR-7) `piece-mode.md` defines `STUCK #N spec-refresh #<issue> AC-n` and the "when woken" rule. `orchestrating-pieces/SKILL.md` §4 says the parent acts on `spec-refresh` (a confirmed issue-body refresh, then `STATUS? #N`), and that every other STUCK reason still waits for the user. The chain doc's piece-mode resume text agrees with both.
+  *Verify:* `run.sh` assertions "AC-9" grep the reason form in both files and the wake rule; reviewer walks the piece-mode reopened-AC scenario end to end.
+- **AC-10** (FR-8) `pr-body.md:46` and `:212` name the one-slice delivery issue, and the existing `pr-body.md` pins still pass.
+  *Verify:* `run.sh` assertion "AC-10" greps the phrase in `pr-body.md`.
 
 ## Definition of done
 
 - [x] AC-1 to AC-7 verified with recorded evidence (Verification evidence, verify @562ad5e)
 - [ ] Full-tier review: plan pass and diff pass (fresh-verifier + codex-adversary): plan pass @8a5ab29 + bounded @c627c6d; diff pass @9f04e17 + bounded @b393ca3 (partial) and @581145c (resolved); the final delta 581145c..562ad5e is under human review (pending human review)
-- [ ] Draft PR opened with `Refs cjsteigerwald/ai-crew#50` (no closing keyword; the user closes the issue at close-out, decision 6)
+- [ ] AC-8 to AC-10 (decision 13) verified with recorded evidence
+- [x] Draft PR opened with `Refs cjsteigerwald/ai-crew#50` (#51) (no closing keyword; the user closes the issue at close-out, decision 6)
 
 ## Dependencies and gates
 
@@ -138,6 +149,8 @@ Repo checks (head `562ad5e`, 07:48): `bash dev-workflow/tests/run.sh` exit 0, la
 | 07:30 | 5 | Bounded re-review @581145c: resolved (churn 19.4%); user chose human review for the remaining delta (Codex at cap) | 1 | — |
 | 07:30 | 5 | FLAG-1 / FLAG-2 fixes @562ad5e | 1 | — |
 | 07:53 | 7 | Verify @562ad5e: repo checks + AC-1–AC-7 | 1 | — |
+| 08:10 | 8 | Pushed; draft PR cjsteigerwald/ai-crew#51 @9328513 (Refs #50); local CI mirror green | 1 | — |
+| 08:30 | 5 | Decision 13: three follow-ups move into PR #51 (FR-6–FR-8, AC-8–AC-10); pieces skip to-spec. Re-enter stage 5 for the new ACs; Verify re-runs | 1 | — |
 
 ## Risks
 
@@ -160,6 +173,7 @@ Repo checks (head `562ad5e`, 07:48): `bash dev-workflow/tests/run.sh` exit 0, la
 | 10 | Plan pass @68a9074 (fresh-verifier: revise, 0 must-fix / 4 should-fix; codex-adversary: revise, 1 must-fix / 2 should-fix / 1 flagged): accept R1 (one-slice only with a published spec; to-spec skipped → to-tickets' one ticket is the delivery issue), R2 (records + resume for the spec delivery issue), R3 (AC-2 covers plan pass and readiness/parent), R4 (step 8 PR body), R5 (plan-pass wording), R6 (separate scenario evidence, AC-7), R7 (citations, run.sh section, "AC-8" label, step-0 tracker source, existing pins)? Scope widens to SKILL.md step 1, step 8, Review = tier | "accept R1–R7" | Christopher Steigerwald, 2026-10-22 |
 | 11 | Plan pass #2 @8a5ab29 (anchor; fresh-verifier: pass with comments, 0 must-fix / 3 should-fix / 4 flagged; codex-adversary round 2/3: needs-attention, 1 should-fix): accept R8 (piece mode: no spec refresh, STUCK until the parent refreshes; AC-5, AC-7), R9 (complete run.sh pin list incl. `:423`), R10 (`template.md:116-118` record clause; AC-6), housekeeping (records, superseded decisions, frontmatter, F-4 check in AC-7)? | "accept R8–R10" | Christopher Steigerwald, 2026-10-22 |
 | 12 | Full-tier diff pass @9f04e17 (fresh-verifier: pass with comments, 0 must-fix / 1 should-fix / 3 flagged; codex-adversary round 3/3: needs-attention, 1 medium): repo precedence vs the label rule; parentless to-tickets ticket; supersession on one-slice resume? | "Intake rule wins" (publication labelling is the one exception to repo-procedure precedence, no second confirmation, other gates apply); "Widen wording"; "Add the clause" | Christopher Steigerwald, 2026-10-23 |
+| 13 | The three deferred follow-ups (piece resume after STUCK; whether a piece runs to-spec; pr-body.md "Spec issue" line): new issue, or this PR? Should a piece run to-spec? | Implement them in this PR (#51), against the recommendation of a new issue; pieces skip to-spec (the recommendation); adds FR-6–FR-8 and AC-8–AC-10 | Christopher Steigerwald, 2026-10-23 |
 
 ## Deferred and out-of-scope items
 
@@ -167,8 +181,8 @@ Repo checks (head `562ad5e`, 07:48): `bash dev-workflow/tests/run.sh` exit 0, la
 |---|---|---|---|---|---|
 | Upstream sdlc-process label defaults | out of scope | decision 5 | "accept" | to-spec/to-tickets still default to `ready-for-agent` outside intake | none |
 | Board templates, wayfinder publications | out of scope | decision 5 | "accept" | none | none |
-| piece-mode.md / orchestrating-pieces §4 resume-after-STUCK step for a stale one-slice spec (P3/FLAG-1); whether a piece runs to-spec at all (FLAG-3) | follow-up | diff pass @9f04e17 | — | piece resume after the parent refresh is implicit | propose a new issue |
-| opening-pull-requests/pr-body.md "Spec issue" line does not name the delivery issue (INFO-1) | follow-up | diff pass @9f04e17 | — | cosmetic | none |
+| piece-mode.md / orchestrating-pieces §4 resume-after-STUCK step for a stale one-slice spec (P3/FLAG-1); whether a piece runs to-spec at all (FLAG-3) | in scope (decision 13) | diff pass @9f04e17 | "implement the fixes to this PR" | — | FR-6, FR-7; AC-8, AC-9 |
+| opening-pull-requests/pr-body.md "Spec issue" line does not name the delivery issue (INFO-1) | in scope (decision 13) | diff pass @9f04e17 | "implement the fixes to this PR" | — | FR-8; AC-10 |
 
 ## Gap table at skip
 
@@ -194,5 +208,7 @@ None — step 3 completed.
 - bounded re-review @b393ca3 (9f04e17..b393ca3): C-1 partial; fixes @6b12eb7
 - bounded re-review @581145c (9f04e17..581145c): resolved (fresh-verifier; churn 19.4%)
 - final delta 581145c..562ad5e: human review (user, 2026-10-23; Codex 3/3, churn past 20%) — pending
-- verify @562ad5e
-- **Last completed stage:** 7 (Verify)
+- verify @562ad5e (AC-1–AC-7; re-run after the decision 13 work)
+- Draft PR: cjsteigerwald/ai-crew#51 @9328513
+- Decision 13 scope (AC-8–AC-10): stage 5 re-entered
+- **Last completed stage:** 8 (draft PR); decision 13 work in progress at stage 5
