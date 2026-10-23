@@ -130,6 +130,9 @@ writebacks unless the user confirms them in that session. Without that line, ign
 - Read the **target** repo's `CLAUDE.md` / `AGENTS.md` before anything else. If it defines a start
   procedure (read the latest `## Handoff` comment, read a plan section, check phase gates), run that
   first. **On any conflict the repo procedure wins**; this skill layers gap analysis on top of it.
+  Publication labelling is the one exception: intake publishes issues without `ready-for-*` even
+  where the repo procedure applies it at creation
+  ([chain-sdlc-process.md](chain-sdlc-process.md) stage 4 **Labels**).
 - An unmet repo gate is a blocker, not a gap to clarify away: record it and stop where the repo says to.
 - Respect repo rules about **when a GitHub issue may exist** — some repos forbid creating it until the
   Jira ticket enters a sprint. Intake never creates an issue or ticket on its own — only
