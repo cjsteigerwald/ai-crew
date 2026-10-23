@@ -121,6 +121,7 @@ None — step 7 not run.
 | 04:37 | 5 | Policy review (sdlc-policy-reviewer) for starting implementation: conditional pass, held on live user go; F1 skip restatement, F2 doc hygiene, F3 Codex 3/3 is last | 1 | — |
 | 04:37 | 5 | User go for stage 5 Implement (2026-10-22) | 1 | — |
 | 04:39 | 5 | Implement + tdd: AC-1, AC-2, AC-5, AC-6, AC-4 red→green; run.sh exit 0 | 1 | — |
+| 04:44 | 5 | code-review @44a3737 (Standards + Spec): 0 must-fix; fixed S1 oslfail wrapper, S2/S3 wraps, P1 one-slice coverage, P2 stage 5 route; kept S3 five-place mention (spec-mandated), S4/S5 accepted; P3 piece-mode resume step out of scope (follow-up) | 1 | — |
 
 ## Risks
 
@@ -168,4 +169,5 @@ None — step 3 completed.
 - `plan pass @8a5ab29` (anchor; Codex round 2/3): verifier pass with comments, Codex needs-attention; R8–R10 accepted (decision 11)
 - `bounded re-review @c627c6d (8a5ab29..c627c6d): resolved`
 - integrated @3a37f4e6675f94fc5665605ba88844b34fc642f2
+- code-review @44a3737: Standards 1 should-fix / 4 flagged, Spec 0 must-fix / 3 flagged; fixes @459780c
 - **Last completed stage:** 5 (Implement; code-review pending)
