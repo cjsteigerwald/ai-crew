@@ -43,7 +43,7 @@ keep prose brief.
 
 **Not in this PR:** <known-open issues, deferred/skipped/out-of-scope AC>
 
-<Intake: lines, spec issue or "sdlc-process: no tickets published", stub-doc content>
+<Intake: lines, spec issue (marked as the **delivery issue** when one slice) or "sdlc-process: no tickets published", stub-doc content>
 ```
 
 ## Sections
@@ -209,5 +209,6 @@ applied-before-merge disclosure): what was applied, where, and from which commit
 - **Not in this PR:** known-open issues, and any acceptance criteria that were deferred, skipped or
   out of scope, so nothing is assumed delivered.
 - **Intake lines:** each `Intake: …` skipped-step line from intake's step 8.
-- **Spec issue:** the spec issue, or `sdlc-process: no tickets published`.
+- **Spec issue:** the spec issue, marked as the **delivery issue** when `tickets: none — one slice`,
+  or `sdlc-process: no tickets published`.
 - **Stub doc:** when the user chose "no doc at all", the stub-doc content.

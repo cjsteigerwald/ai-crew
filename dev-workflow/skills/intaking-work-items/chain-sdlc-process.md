@@ -103,15 +103,38 @@ readiness, policy-review or publication gates.
      confirmation — never publish to GitHub without the user's explicit confirmation, issue by
      issue. If the user declines, or GitHub access is missing, that is a hold: relay it (resolve /
      skip / cancel).
+   - **Labels.** The spec issue and every issue `to-tickets` publishes are
+     published without a `ready-for-*` label, in every repo. Where the tracker doc read at step 0
+     (e.g. `docs/agents/issue-tracker.md`) defines a refining state, publish in that state;
+     otherwise publish with no triage label. Only the readiness gate applies `ready-for-*`.
+     This overrides the `ready-for-agent` defaults of `sdlc-process:to-spec` and
+     `sdlc-process:to-tickets` (`to-tickets` permits it: "unless instructed otherwise"). This
+     holds even where the repo's own procedure or tracker doc applies `ready-for-*` at creation:
+     it is the one exception to "the repo procedure wins" (SKILL.md step 0 and **Controls**),
+     needs no second confirmation, and every other repo gate still applies.
+   - **One slice.** When a spec issue was published and the breakdown `to-tickets` proposes has one
+     slice, publish no child issue: the spec issue is the delivery issue. Record
+     `tickets: none — one slice` in Chain artifacts. This is not the plan-skip rule: no skip
+     warning and no "Intake: plan skipped" line. Check AC coverage against the spec issue, run
+     the Full-tier plan pass on the spec issue alone, and take stage 5's "One ticket, or no
+     decomposition" route. The delivery issue gets `ready-for-*` through the readiness gate like
+     any delivery issue: it has no children, so the board's "parent carries no `ready-for-*`"
+     rule does not apply to it. When `to-spec` was skipped, this rule does not apply:
+     `to-tickets` publishes its one ticket as the delivery issue, as before.
    - A step-0 repo rule forbidding issues (e.g. "no GitHub issue until the Jira ticket is in a
      sprint") still applies: publication is then a hold, and proceeding needs the step-0 second
      confirmation (Controls).
    - Every ticket cites the `AC-n` it satisfies. Check coverage: every active AC is cited by at least
      one ticket and no ticket cites a non-active AC. Take any gap back to the user.
-   - On Full tier, run the plan pass on the published spec and tickets after `to-tickets` and
+     With `tickets: none — one slice`, check coverage against the spec issue: every active AC appears
+     in it and it states no non-active AC.
+   - On Full tier, run the plan pass on the published spec and tickets
+     (the spec issue alone with one slice) after `to-tickets` and
      before stage 5 (SKILL.md **Review = tier**); record `plan pass @<revisions>`. The Codex brief's
      `ledger:` line names the repo path only (the ticket branch exists, so the branch key applies).
-5. **Implement.** Route by the number of published tickets. The implementer gets the requirements
+5. **Implement.** Route by the number of published tickets. With `tickets: none — one slice`, take
+   the "One ticket, or no decomposition" route with the spec issue as the delivery issue and its
+   scope. The implementer gets the requirements
    doc, the tickets and the settled AC list as the only scope:
    - **One ticket, or no decomposition:** `sdlc-process:implement`, which runs `sdlc-process:tdd`
      then `sdlc-process:code-review`.
@@ -141,6 +164,7 @@ readiness, policy-review or publication gates.
    code-review and before Verify. A Verify fix that changes code re-runs the bounded
    code-review and the bounded re-review here, or the diff pass when eligibility fails, recording
    `bounded re-review @N (A..N): resolved|NEEDS FULL PASS` (SKILL.md **Review = tier**).
+   With `tickets: none — one slice`, the `integrated @<sha>` record is written against the spec issue.
 
    **After the review completes, before Verify:** check the diff and tests against the active AC
    list, and flag back to the user any change that implements a non-active AC.
@@ -178,7 +202,18 @@ The **Controls** in SKILL.md apply, with these specifics:
   artifacts** (work branch, spec issue, published issues, holds, last completed stage) are the
   records it reads. AC rows reopened by the refetch diff invalidate the tickets that cite
   them — regenerate those through `sdlc-process:to-tickets` (again with per-issue confirmation)
-  and record the superseded ones.
+  and record the superseded ones. With `tickets: none — one slice` there is no ticket to
+  regenerate: an AC reopened by the refetch diff makes intake refresh the spec issue body (a
+  per-action confirmed writeback; `to-tickets` does not modify the parent), re-run the
+  `to-tickets` breakdown (it may now yield more than one slice and publish children), then repeat
+  the coverage check, readiness and, on Full tier, the plan pass. If it publishes children, record
+  `tickets: none — one slice` and the spec issue's `integrated @<sha>` as superseded;
+  the children become the delivery issues. Piece mode skips `to-spec`
+  ([piece-mode.md](piece-mode.md)), so the one-slice rule never fires there: an AC reopened by the
+  refetch diff concerns the piece's own issue, which the piece may not edit. So
+  the piece reports STUCK with a `spec-refresh` reason and resumes when woken, once the parent
+  session has refreshed the issue (piece-mode.md **Reports**). Decomposition never re-runs on a
+  stale spec.
   Re-invoke `dev-workflow:orchestrating-pieces` (it reconciles) only when stage 5 is the
   first incomplete stage and the tracking file at `$(git rev-parse --git-common-dir)/piece-tracking/`
   (`piece-track.sh path` prints it) exists. A finished or cancelled run leaves its tracking file in

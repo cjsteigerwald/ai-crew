@@ -64,7 +64,7 @@ STUCK #N [needs=#M] <reason>
 ## Requests from the orchestrator
 
 Handle a repeated request once.
-- `STATUS? #N`: reply with the report line for your current state.
+- `STATUS? #N`: reply with the report line for your current state. If you are STUCK on `spec-refresh`, apply piece-mode.md **When woken** first.
 - `RESYNC #N <head-sha>`: merge that head into your branch, re-run `{{TEST_COMMAND}}`, commit, send
   `DONE` again.
 - `CANCEL #N`: send nothing, commit nothing, end your turn quietly. The orchestrator ends the

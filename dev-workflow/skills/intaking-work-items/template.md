@@ -113,7 +113,8 @@ skipped".>
 
 <Filled in steps 3 and 6; the pointers resume reads. `Wayfinding: <none | active <map URL> | hold — <what's missing> | complete>`;
 `CONTEXT.md` and ADR paths grilling changed; the work branch (also the integration branch);
-the spec issue (`owner/repo#N`); the published ticket issue links (each with `AC-n`); the
+the spec issue (`owner/repo#N`); the published ticket issue links (each with `AC-n`; one slice:
+`tickets: none — one slice`, the spec issue is the delivery issue); the
 commit-bound records, each with its SHA (`plan pass @<revisions>`, ticket `integrated @<sha>`,
 `code-review @<sha>`, `full-tier diff pass @A (base B)`, `bounded re-review @N (A..N): resolved|NEEDS FULL PASS`, `verify @<sha>`; a deliberate skip is
 `skipped (user)`, and a stage the review tier does not require is `n.a. (<tier>)`, not a missing

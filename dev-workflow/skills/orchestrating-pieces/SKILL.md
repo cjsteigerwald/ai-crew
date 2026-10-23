@@ -86,9 +86,12 @@ tell the user.
 - `STARTED`: nothing more to do.
 - `DONE`: the piece is ready for the merge loop.
 - `STUCK`: print one line to the user with the piece, its reason and the needed sibling, and
-  resolve nothing. The piece agent is already asking the user in its own session. When the needed
-  sibling merges, wake the piece with `STATUS? #N` (or `RESYNC #N <head-sha>` when it has
-  work to bring in). Any other stuck piece waits for the user: answer in its session, drop, or cancel.
+  resolve nothing, bar `spec-refresh` below. The piece agent is already asking the user in its own
+  session. When the needed sibling merges, wake the piece with `STATUS? #N` (or
+  `RESYNC #N <head-sha>` when it has work to bring in). `spec-refresh` is the one STUCK reason the parent acts on
+  (`STUCK #N spec-refresh #<issue> AC-n`): offer the user the refresh of that issue's body for
+  AC-n as a per-action confirmed writeback, and once it lands, wake the piece with `STATUS? #N`.
+  Every other stuck piece waits for the user: answer in its session, drop, or cancel.
 
 ## 5. Merge loop
 
