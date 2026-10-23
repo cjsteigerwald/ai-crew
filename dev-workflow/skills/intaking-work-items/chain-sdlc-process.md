@@ -106,7 +106,8 @@ readiness, policy-review or publication gates.
    - **Labels.** The spec issue and every `to-tickets` child issue are
      published without a `ready-for-*` label, in every repo. Where the tracker doc read at step 0
      (e.g. `docs/agents/issue-tracker.md`) defines a refining state, publish in that state;
-     otherwise publish with no triage label. Only the readiness gate applies `ready-for-*`. This overrides
+     otherwise publish with no triage label. Only the readiness gate applies `ready-for-*`.
+     This overrides
      the `ready-for-agent` defaults of `sdlc-process:to-spec` and `sdlc-process:to-tickets`
      (`to-tickets` permits it: "unless instructed otherwise").
    - **One slice.** When a spec issue was published and the breakdown `to-tickets` proposes has one
@@ -123,11 +124,15 @@ readiness, policy-review or publication gates.
      confirmation (Controls).
    - Every ticket cites the `AC-n` it satisfies. Check coverage: every active AC is cited by at least
      one ticket and no ticket cites a non-active AC. Take any gap back to the user.
+     With `tickets: none — one slice`, check coverage against the spec issue: every active AC appears
+     in it and it states no non-active AC.
    - On Full tier, run the plan pass on the published spec and tickets
      (the spec issue alone with one slice) after `to-tickets` and
      before stage 5 (SKILL.md **Review = tier**); record `plan pass @<revisions>`. The Codex brief's
      `ledger:` line names the repo path only (the ticket branch exists, so the branch key applies).
-5. **Implement.** Route by the number of published tickets. The implementer gets the requirements
+5. **Implement.** Route by the number of published tickets. With `tickets: none — one slice`, take
+   the "One ticket, or no decomposition" route with the spec issue as the delivery issue and its
+   scope. The implementer gets the requirements
    doc, the tickets and the settled AC list as the only scope:
    - **One ticket, or no decomposition:** `sdlc-process:implement`, which runs `sdlc-process:tdd`
      then `sdlc-process:code-review`.

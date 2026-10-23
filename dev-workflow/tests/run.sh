@@ -476,10 +476,13 @@ OSL_CHAIN="$ROOT/skills/intaking-work-items/chain-sdlc-process.md"
 OSL_SKILL="$ROOT/skills/intaking-work-items/SKILL.md"
 OSL_TEMPLATE="$ROOT/skills/intaking-work-items/template.md"
 OSL_FAILS=0
+oslfail() {
+  OSL_FAILS=$((OSL_FAILS + 1))
+  fail "$1"
+}
 osl_pin() { # osl_pin <file> <AC label> <description> <fixed phrase>
   if ! grep -qF -- "$4" "$1"; then
-    OSL_FAILS=$((OSL_FAILS + 1))
-    fail "$2 ${1#"$ROOT"/}: missing $3"
+    oslfail "$2 ${1#"$ROOT"/}: missing $3"
   fi
 }
 osl_pin "$OSL_CHAIN" "AC-1" "the publish-without-ready-for-* rule" 'published without a `ready-for-*` label'
