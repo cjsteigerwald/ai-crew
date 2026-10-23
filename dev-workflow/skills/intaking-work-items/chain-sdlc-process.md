@@ -208,10 +208,12 @@ The **Controls** in SKILL.md apply, with these specifics:
   `to-tickets` breakdown (it may now yield more than one slice and publish children), then repeat
   the coverage check, readiness and, on Full tier, the plan pass. If it publishes children, record
   `tickets: none — one slice` and the spec issue's `integrated @<sha>` as superseded;
-  the children become the delivery issues. In piece mode the refresh is not offered
-  ([piece-mode.md](piece-mode.md) forbids the edit):
-  the piece reports STUCK, naming the spec refresh it needs, and resumes once the parent session
-  has refreshed the issue. Decomposition never re-runs on a stale spec.
+  the children become the delivery issues. Piece mode skips `to-spec`
+  ([piece-mode.md](piece-mode.md)), so the one-slice rule never fires there: an AC reopened by the
+  refetch diff concerns the piece's own issue, which the piece may not edit. So
+  the piece reports STUCK with a `spec-refresh` reason and resumes when woken, once the parent
+  session has refreshed the issue (piece-mode.md **Reports**). Decomposition never re-runs on a
+  stale spec.
   Re-invoke `dev-workflow:orchestrating-pieces` (it reconciles) only when stage 5 is the
   first incomplete stage and the tracking file at `$(git rev-parse --git-common-dir)/piece-tracking/`
   (`piece-track.sh path` prints it) exists. A finished or cancelled run leaves its tracking file in

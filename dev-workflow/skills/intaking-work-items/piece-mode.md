@@ -17,6 +17,7 @@ confirmations are never asked, and nothing is pushed.
 |---|---|
 | Primary item | The piece's issue. Its acceptance criteria are the starting AC. Fetch it as step 1 says. |
 | Steps 0 to 7 | Run as written, through Verify, attended, against that issue. A gap table with no Vague or Missing row and no contradiction takes step 3's fast path: no questions, and step 4 still writes the requirements doc. Open questions are asked as step 3 says, one at a time, by you, to the user. |
+| Stage 4 `to-spec` | Skipped, the exception to the Steps 0 to 7 row: the piece's issue is the spec and the delivery issue, so no second spec issue is published. `to-tickets` runs only when splitting the piece (**Splitting the piece**). |
 | Chain | Fixed to sdlc-process, per [chain-sdlc-process.md](chain-sdlc-process.md). There is no chain choice; record `Chain: sdlc-process` in the doc. If sdlc-process is not installed, report `STUCK` with that reason. |
 | Wayfinder | Never loaded. If grilling shows the issue needs a map, report `STUCK` with a scope reason. |
 | Doc key | `<repo>-<issue number>` per step 1 (for example `ai-crew-37`), never the ticket key, so sibling pieces do not collide. The doc is `docs/specs/<repo>-<issue number>-requirements.md`. |
@@ -35,6 +36,13 @@ prompt gives. Each is a single line with no tab or other control character:
 - `STARTED #N` when you begin.
 - `STUCK #N [needs=#M] <reason>` at any stop under **Run log and stops**, or when a chained gate
   cannot proceed. Add `needs=#M` when sibling issue #M must merge first.
+  `spec-refresh #<issue> AC-n` is one `<reason>` form, sent as
+  `STUCK #N spec-refresh #<issue> AC-n` with no `needs=`: the refetch diff reopened AC-n, and the
+  piece's own issue needs a body refresh that only the parent's user can apply (**Hard limits**).
+
+**When woken** (`STATUS? #N`, or the user answers in your session) while STUCK on `spec-refresh`:
+refetch the issue as step 1 says. If the reopened AC is now in the issue, re-run the AC coverage
+check against it and continue at stage 5 (Implement). Otherwise stay STUCK.
 
 ## Hand back instead of Ship
 

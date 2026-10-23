@@ -475,6 +475,9 @@ echo "== intaking-work-items one-slice / ready-label =="
 OSL_CHAIN="$ROOT/skills/intaking-work-items/chain-sdlc-process.md"
 OSL_SKILL="$ROOT/skills/intaking-work-items/SKILL.md"
 OSL_TEMPLATE="$ROOT/skills/intaking-work-items/template.md"
+OSL_PIECE="$ROOT/skills/intaking-work-items/piece-mode.md"
+OSL_ORCH="$ROOT/skills/orchestrating-pieces/SKILL.md"
+OSL_PRBODY="$ROOT/skills/opening-pull-requests/pr-body.md"
 OSL_FAILS=0
 oslfail() {
   OSL_FAILS=$((OSL_FAILS + 1))
@@ -493,7 +496,7 @@ osl_pin "$OSL_CHAIN" "AC-2" "the to-spec-skipped exception" 'When `to-spec` was 
 osl_pin "$OSL_CHAIN" "AC-2" "the readiness-gate / no-children parent phrase" 'has no children, so the board'
 osl_pin "$OSL_CHAIN" "AC-5" "the one-slice stage 5 record against the spec issue" 'written against the spec issue'
 osl_pin "$OSL_CHAIN" "AC-5" "the resume spec-issue refresh" 'refresh the spec issue body'
-osl_pin "$OSL_CHAIN" "AC-5" "the piece-mode STUCK rule" 'the piece reports STUCK, naming the spec refresh it needs'
+osl_pin "$OSL_CHAIN" "AC-5" "the piece-mode STUCK rule" 'the piece reports STUCK with a `spec-refresh` reason'
 osl_pin "$OSL_SKILL" "AC-6" "the step 1 one-slice record" 'a one-slice run records `tickets: none — one slice`'
 osl_pin "$OSL_SKILL" "AC-6" "the step 8 one-slice delivery issue in the PR body" 'a one-slice spec issue is the delivery issue'
 osl_pin "$OSL_SKILL" "AC-6" "the one-slice plan-pass wording" '(the spec issue alone with one slice)'
@@ -504,6 +507,16 @@ osl_pin "$OSL_SKILL" "AC-1" "the publication-label exception in step 0" 'Publica
 osl_pin "$OSL_SKILL" "AC-1" "the label exception needs no second confirmation" 'publication labelling needs no second confirmation'
 osl_pin "$OSL_CHAIN" "AC-1" "the label rule covers every issue to-tickets publishes" 'every issue `to-tickets` publishes'
 osl_pin "$OSL_CHAIN" "AC-5" "the one-slice supersession on resume" 'the children become the delivery issues'
+osl_pin "$OSL_PIECE" "AC-8" "the stage 4 to-spec row (the piece's issue is the spec)" "the piece's issue is the spec and the delivery issue"
+osl_pin "$OSL_PIECE" "AC-8" "to-tickets only when splitting" '`to-tickets` runs only when splitting'
+osl_pin "$OSL_PIECE" "AC-9" "the spec-refresh reason form" '`STUCK #N spec-refresh #<issue> AC-n`'
+osl_pin "$OSL_PIECE" "AC-9" "the when-woken rule" 'When woken'
+osl_pin "$OSL_PIECE" "AC-9" "the wake rule continues at stage 5" 'continue at stage 5 (Implement)'
+osl_pin "$OSL_ORCH" "AC-9" "the spec-refresh reason form" '`STUCK #N spec-refresh #<issue> AC-n`'
+osl_pin "$OSL_ORCH" "AC-9" "spec-refresh as the one STUCK reason the parent acts on" '`spec-refresh` is the one STUCK reason the parent acts on'
+osl_pin "$OSL_CHAIN" "AC-9" "piece mode skips to-spec, so the one-slice rule never fires" 'the one-slice rule never fires there'
+osl_pin "$OSL_PRBODY" "AC-10" "the placeholder marks the one-slice spec issue as the delivery issue" 'spec issue (marked as the **delivery issue** when one slice)'
+osl_pin "$OSL_PRBODY" "AC-10" "the Spec issue guidance marks the one-slice spec issue as the delivery issue" 'marked as the **delivery issue** when `tickets: none — one slice`'
 if [ "$OSL_FAILS" -eq 0 ]; then
   echo "ok: intaking-work-items one-slice / ready-label rules pinned"
 fi
