@@ -114,7 +114,7 @@ Repo-wide checks: `bash dev-workflow/tests/run.sh`. Existing run.sh pins on chai
 
 ## Verification evidence
 
-Repo checks (head `7021dbc`, 09:30): `bash dev-workflow/tests/run.sh` exit 0, last line `PASSED`, 0 `^FAIL` lines. Lint and typecheck: n/a, AGENTS.md names none for these files (prose, JSON, bash).
+Repo checks (head `7021dbc`, 09:30): `bash dev-workflow/tests/run.sh` exit 0, last line `PASSED`, 0 `^FAIL` lines. CI mirror (`.github/workflows/tests.yml`: every `*/tests/run.sh`), run on `70ec194` (tree = `7021dbc` + this doc): claude-crew `RESULT: 155 passed, 0 failed`; codex-crew `729 passed, 0 failed, 0 skipped`; crew-gates exit 0 (`RESULT: 346 passed, 0 failed`, `176 passed`, `13 passed`); dev-workflow `PASSED`; harness-skills `harness-skills tests: PASSED`; tech-research `tech-research tests: PASSED`. Lint and typecheck: n/a, AGENTS.md names none for these files (prose, JSON, bash).
 
 | AC | Check | Kind | Result | Evidence | Base / head / time |
 |---|---|---|---|---|---|
