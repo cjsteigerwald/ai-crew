@@ -1792,15 +1792,17 @@ fi
 
 # Case 37f: an EMPTY argv element. cmdline() used to drop every empty element,
 # so argv ["node", "", <script>, "serve", "--cwd", /gone] normalized into the
-# accepted shape and was reported REAP. `cat` fails on "" and then blocks
-# opening the FIFO for read, which keeps that argv alive on darwin and Linux.
-# POSIXLY_CORRECT: GNU cat otherwise permutes and rejects `--cwd` as its own
-# option; `--` would change the argv shape under test. BSD cat ignores it.
+# accepted shape and was reported REAP. `sed` takes "" as an empty script and
+# then blocks opening the FIFO for read, which keeps that argv alive on darwin
+# and Linux. POSIXLY_CORRECT: GNU sed otherwise permutes and rejects `--cwd` as
+# its own option; `--` would change the argv shape under test. BSD sed stops at
+# the first operand anyway. Not `cat`: Ubuntu 26.04's uutils cat ignores
+# POSIXLY_CORRECT, rejects `--cwd` and exits before the FIFO opens.
 EMPTY_PAT="crewtest-emptyarg-$$"
 EMPTY_GONE="/nonexistent-$EMPTY_PAT"
 mkdir -p "$TMP/$EMPTY_PAT"
 mkfifo "$TMP/$EMPTY_PAT/app-server-broker.mjs"
-bash -c 'export POSIXLY_CORRECT=1; exec -a node cat "" "$1" serve --cwd "$2"' _ "$TMP/$EMPTY_PAT/app-server-broker.mjs" "$EMPTY_GONE" 2>/dev/null & EMPTY_PID=$!
+bash -c 'export POSIXLY_CORRECT=1; exec -a node sed "" "$1" serve --cwd "$2"' _ "$TMP/$EMPTY_PAT/app-server-broker.mjs" "$EMPTY_GONE" 2>/dev/null & EMPTY_PID=$!
 STUB_PIDS="$STUB_PIDS $EMPTY_PID"
 sleep 0.5
 empty_args="$(ps -o args= -p "$EMPTY_PID" 2>/dev/null)" || empty_args=""
