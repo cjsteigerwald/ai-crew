@@ -31,8 +31,11 @@ substitute your own and update the cross-references in each skill/agent.
    Full; image tag/digest bumps that only affect non-prod follow the size thresholds; the
    other triggers apply on their own); OR >3 files
    changed; OR >~150 changed lines; OR cross-cutting/architectural. Dispatch
-   `dev-workflow:fresh-verifier` + `dev-workflow:codex-adversary` in one message, both in
-   plan mode (on the plan) and again before `gh pr create` (on `git diff main...HEAD`).
+   `dev-workflow:codex-adversary` alone on the plan (the verifier checks requirements
+   against written code and re-runs tests, which a plan does not have), and
+   `dev-workflow:fresh-verifier` + `dev-workflow:codex-adversary` in one message before
+   `gh pr create` (on `git diff main...HEAD`). Dispatch `fresh-verifier` with
+   `run_in_background` so its time overlaps the Codex wait.
    At least one adversarial pass is required; cap three per PR in aggregate, counted per
    key in the review ledger across sessions (see **Codex round ledger**); every pass
    beyond the first declares its trigger in the transcript **before** dispatch. Effort
@@ -64,7 +67,12 @@ A fix after a review does not default to a full re-run. Which re-review applies 
 the tier and on whether the fix is still within what the last full pass saw.
 
 - **Routine:** a bounded `sdlc-process:code-review` on the fix delta.
-- **Full:** the same, plus **one bounded `fresh-verifier`**. No Codex round.
+- **Full:** the same, plus **one bounded `fresh-verifier`**, which may be dispatched with
+  `model: sonnet` (delta-only work; the full diff pass uses the agent's default). No Codex
+  round.
+
+Apply every finding from a review round first, then run **one** bounded re-review on the
+batch, not one per fix commit.
 
 **Anchor.** The last full pass records the reviewed SHA `A` and its comparison base `B`
 (the merge-base with the PR's target branch, pinned when that pass runs).

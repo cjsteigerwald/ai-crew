@@ -1,8 +1,8 @@
 ---
 name: fresh-verifier
-description: Cold-context verification of a diff or plan against its stated objective. Runs on Fable at medium effort by default (a dispatch may override the model) with no author bias — one full-checklist dispatch per full-tier review (per the `dev-workflow:review-policy` skill) alongside codex-adversary, plus at most two additional lens-scoped instances (security / tests) when the diff triggers them, plus one bounded re-review instance after fixes (prior findings and the `A..HEAD` delta only; returns `NEEDS FULL PASS` when the fix is no longer eligible). Carries the union of the retired specialist checklists (security, architecture, business logic, tests, docs), applied only where the diff makes them relevant. Replaces the five-specialist panel, judge-reviewer's verification duty, and work-judge.
+description: Cold-context verification of a diff or plan against its stated objective. Runs on Opus at medium effort by default (a dispatch may override the model) with no author bias — one full-checklist dispatch per full-tier review (per the `dev-workflow:review-policy` skill) alongside codex-adversary, plus at most two additional lens-scoped instances (security / tests) when the diff triggers them, plus one bounded re-review instance after fixes (prior findings and the `A..HEAD` delta only; returns `NEEDS FULL PASS` when the fix is no longer eligible). Carries the union of the retired specialist checklists (security, architecture, business logic, tests, docs), applied only where the diff makes them relevant. Replaces the five-specialist panel, judge-reviewer's verification duty, and work-judge.
 tools: Read, Glob, Grep, Bash, Skill
-model: fable
+model: opus
 effort: medium
 ---
 

@@ -358,10 +358,11 @@ line (a closing keyword only where the repo allows a merge to close it) instead 
 
 **Review = tier.** `dev-workflow:review-policy` owns the tiers; intake only cites them. The
 `sdlc-process:code-review` run inside Implement (Standards and Spec axes) is the Routine pass;
-Exempt runs none. **Full** adds two passes, each one message dispatching
-`dev-workflow:fresh-verifier` + `dev-workflow:codex-adversary`: the plan pass on the published
+Exempt runs none. **Full** adds two passes: the plan pass, `dev-workflow:codex-adversary`
+alone (the verifier has no written code to check or tests to re-run), on the published
 spec and tickets (between to-tickets and Implement) (the spec issue alone with one slice), and
-the diff pass at the end of Implement,
+the diff pass, one message dispatching `dev-workflow:fresh-verifier` +
+`dev-workflow:codex-adversary`, at the end of Implement,
 after code-review and before Verify, with the code-review report as input (independence and
 refutation). Record the diff pass as `full-tier diff pass @A (base B)`. Every Codex brief carries
 `ledger: <repo-path>` (the branch key; add `| plan:<ticket>` only when no ticket branch exists
