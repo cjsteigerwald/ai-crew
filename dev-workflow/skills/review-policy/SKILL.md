@@ -136,8 +136,9 @@ boundary.
 
 **At the cap**, ask with `AskUserQuestion`; exceeding the cap is never the recommended
 option:
-- **Recommended when the remaining fix is bounded-eligible:** "Stop Codex: bounded
+- **Recommended when the remaining diff fix is bounded-eligible:** "Stop Codex: bounded
   fresh-verifier on the remaining fix".
-- **Recommended when it is not eligible:** "Stop: hand to human review" (a bounded verifier
-  cannot cover a change that needs a full pass).
+- **Recommended otherwise** (a diff fix that is not eligible, or any plan-pass fix): "Stop:
+  hand to human review" (a bounded verifier cannot cover a change that needs a full pass,
+  and plan-pass reviews are Codex-only).
 - **Always second:** "One more Codex round", which must name its trigger.

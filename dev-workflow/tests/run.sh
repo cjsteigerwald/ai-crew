@@ -172,7 +172,7 @@ echo "== review-policy skill =="
 # evidence rule; the hash catches wording changes the heading checks can't.
 # The frontmatter description is excluded on purpose — description tuning
 # shouldn't trip this.
-REVIEW_POLICY_SHA256="d77970563c4b4963b43e089d83553527beae70b1b5a5d47d2a9a14159f22c45f"
+REVIEW_POLICY_SHA256="fcb71d2d8634e6ddc8dacc9212409c01ccae815589803a3c7bf8d257fac3fe5f"
 
 # extract_skill_body <file> — prints everything after the frontmatter's
 # closing '---' line.
