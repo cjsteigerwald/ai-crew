@@ -72,7 +72,9 @@ the tier and on whether the fix is still within what the last full pass saw.
   round.
 
 Apply every finding from a review round first, then run **one** bounded re-review on the
-batch, not one per fix commit.
+batch, not one per fix commit. On the plan pass, re-reviews and changed-input passes are
+Codex-only (each counted under the cap); the bounded `fresh-verifier`, the verifier half of
+the changed-input row and the at-cap bounded-verifier option apply to the diff pass.
 
 **Anchor.** The last full pass records the reviewed SHA `A` and its comparison base `B`
 (the merge-base with the PR's target branch, pinned when that pass runs).

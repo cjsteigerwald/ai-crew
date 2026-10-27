@@ -99,8 +99,9 @@ Tier review effort to blast radius:
 3. **Full chain** — touches infra-as-code, CI/CD, auth/credential handling,
    hooks/settings that gate behavior, or agent/command/skill definitions; OR more than a
    few files changed; OR more than roughly 150 changed lines; OR cross-cutting/
-   architectural. Dispatch an independent verifier and an adversarial reviewer in ONE
-   message, on the plan and on the diff before opening a PR.
+   architectural. On the plan, dispatch the adversarial reviewer alone. On the diff
+   before opening a PR, dispatch an independent verifier and an adversarial reviewer in
+   ONE message.
 4. **Routine** — everything else: small, low-blast-radius changes. A lighter single-pass
    review suffices.
 

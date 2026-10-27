@@ -16,7 +16,7 @@ import re
 import sys
 
 FRONTIER = "fable"                       # tier alias; full ids look like claude-fable-*
-DEFAULT_VERIFIER = "fresh-verifier"      # designed to run on the session model
+DEFAULT_VERIFIER = "fresh-verifier"      # exempt by name; its frontmatter pins the model
 RE_ESCALATE = re.compile(r"^\s*escalate:\s*\S", re.I | re.M)
 
 

@@ -38,8 +38,8 @@ Rough cost ratio per token: Fable ≈ 2× Opus ≈ 3.3× Sonnet ≈ 10× Haiku.
 (Fable itself: $10/$50. Sonnet intro pricing $2/$10 through 2026-08-31.)
 
 Deliberately **not** included: a Fable-tier lane (that's the orchestrator's
-own loop, and cold-context Fable verification already exists as
-`fresh-verifier` in the review architecture) and reviewer agents (the
+own loop, and cold-context verification already exists as `fresh-verifier`
+(Opus) and `fresh-verifier-high` (Fable) in the review architecture) and reviewer agents (the
 project-level reviewer/verifier/adversary agents own that space).
 
 ## Relationship to codex-crew
