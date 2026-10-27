@@ -952,13 +952,13 @@ prb_chk "AC-7" "$prb_row" 'pr-body.md'
 prb_chk "AC-7" "$prb_row" 'Adapted from mattpocock/skills (MIT'
 prb_ac_done "AC-7 README opening-pull-requests row mentions the template and the adaptation credit"
 
-# AC-8: version 0.2.6 in the plugin manifest and the dev-workflow marketplace entry.
+# AC-8: version 0.2.7 in the plugin manifest and the dev-workflow marketplace entry.
 if python3 - "$ROOT/.claude-plugin/plugin.json" "$ROOT/../.claude-plugin/marketplace.json" <<'PY'
 import json, sys
 plugin = json.load(open(sys.argv[1]))
 market = json.load(open(sys.argv[2]))
 entry = [p for p in market["plugins"] if p.get("name") == "dev-workflow"]
-ok = plugin.get("version") == "0.2.6" and len(entry) == 1 and entry[0].get("version") == "0.2.6"
+ok = plugin.get("version") == "0.2.7" and len(entry) == 1 and entry[0].get("version") == "0.2.7"
 if not ok:
     print("plugin.json=%s marketplace=%s" % (plugin.get("version"), [e.get("version") for e in entry]))
 sys.exit(0 if ok else 1)
@@ -966,9 +966,9 @@ PY
 then
   :
 else
-  pfail "AC-8: dev-workflow version is not 0.2.6 in both plugin.json and marketplace.json"
+  pfail "AC-8: dev-workflow version is not 0.2.7 in both plugin.json and marketplace.json"
 fi
-prb_ac_done "AC-8 dev-workflow is 0.2.6 in plugin.json and marketplace.json"
+prb_ac_done "AC-8 dev-workflow is 0.2.7 in plugin.json and marketplace.json"
 
 echo "== setting-up-project-boards agent docs =="
 # Static structure checks only (NFR-4). Local counters, same convention as the PR-body section.
@@ -1219,6 +1219,20 @@ bdocs_ac_done "AC-10 skill reconciled"
 bdocs_row="$(grep -F '| `setting-up-project-boards` |' "$ROOT/README.md")"
 bdocs_chki "AC-12" "$bdocs_row" 'agent docs'
 bdocs_ac_done "AC-12 README row mentions installing the board's agent docs"
+
+echo "== fresh-verifier variants =="
+# The two verifier files differ only in frontmatter; both may dispatch the read lanes.
+FV="$ROOT/agents/fresh-verifier.md"
+FVH="$ROOT/agents/fresh-verifier-high.md"
+if [ -f "$FV" ] && [ -f "$FVH" ]; then
+  diff -q <(sed 1,6d "$FV") <(sed 1,6d "$FVH") >/dev/null || fail "fresh-verifier.md and fresh-verifier-high.md bodies differ"
+  for f in "$FV" "$FVH"; do
+    extract_frontmatter "$f" | grep -qE '^tools:.*[[:space:],]Agent([[:space:],]|$)' || fail "$(basename "$f"): frontmatter tools must include Agent"
+    grep -qF '## Delegate bulk reading' "$f" || fail "$(basename "$f"): missing the Delegate bulk reading section"
+  done
+else
+  fail "fresh-verifier agent files not found"
+fi
 
 echo "== review ledger and codex-cap gate =="
 # Skills call the ledger CLI directly as ${CLAUDE_PLUGIN_ROOT}/scripts/review-ledger.sh.
