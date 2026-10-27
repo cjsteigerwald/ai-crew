@@ -42,7 +42,7 @@
     {
       "name": "dev-workflow",
       "source": "./dev-workflow",
-      "version": "0.2.7",
+      "version": "0.2.8",
       "description": "Engineering workflow skills (ticket intake and requirements gap analysis, PR gates, orchestrated plan implementation, incident investigation and write-ups, skill retrospectives, Copilot readiness, GitHub project-board setup) plus verifier, adversarial reviewer, worker, and specialist review agents."
     }
   ]

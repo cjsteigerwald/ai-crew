@@ -364,7 +364,10 @@ spec and tickets (between to-tickets and Implement) (the spec issue alone with o
 the diff pass, one message dispatching `dev-workflow:fresh-verifier` +
 `dev-workflow:codex-adversary`, at the end of Implement,
 after code-review and before Verify, with the code-review report as input (independence and
-refutation). Record the diff pass as `full-tier diff pass @A (base B)`. Every Codex brief carries
+refutation). Read the verifier's Lens recommendation (`lens_recommendation`).
+For each lens it names, dispatch one lens-scoped fresh-verifier or record why not.
+At most two lens-scoped instances per full-tier review (security, tests).
+Record the diff pass as `full-tier diff pass @A (base B)`. Every Codex brief carries
 `ledger: <repo-path>` (the branch key; add `| plan:<ticket>` only when no ticket branch exists
 yet). The PR gate accepts the coverage chain at the PR's current head. A Verify fix that changes
 code re-runs, at the same position, a bounded `sdlc-process:code-review` of the fix diff and then,

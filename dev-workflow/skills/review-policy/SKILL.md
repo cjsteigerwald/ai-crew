@@ -36,6 +36,9 @@ substitute your own and update the cross-references in each skill/agent.
    `dev-workflow:fresh-verifier` + `dev-workflow:codex-adversary` in one message before
    `gh pr create` (on `git diff main...HEAD`). Dispatch `fresh-verifier` with
    `run_in_background` so its time overlaps the Codex wait.
+   Read the verifier's Lens recommendation (`lens_recommendation`).
+   For each lens it names, dispatch one lens-scoped fresh-verifier or record why not.
+   At most two lens-scoped instances per full-tier review (security, tests).
    At least one adversarial pass is required; cap three per PR in aggregate, counted per
    key in the review ledger across sessions (see **Codex round ledger**); every pass
    beyond the first declares its trigger in the transcript **before** dispatch. Effort
