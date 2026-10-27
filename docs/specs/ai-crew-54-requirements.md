@@ -4,8 +4,8 @@
 **Linked items:** cjsteigerwald/ai-crew#52 — related (origin of the findings: Codex [high] PR comment 6444673937, verifier I-1/I-2/I-3, S-1; merged as 55a2ac4). No equivalent tracker item.
 **Fetched:** 2026-10-27 — ticket status `OPEN`, no comments, sprint `none`, estimate `none`
 **Intake by:** Christopher Steigerwald (owner) with Claude, using the `dev-workflow:intaking-work-items` skill
-**Status:** Ready — step 4 written; steps 1–3 ran in session 2 via the draft plan: grilling = owner decisions in "Round 1 resolutions"; gate passed by Codex plan round 2 PASS WITH NITS (nits folded into rev 3). No steps skipped.
-**Chain:** — (not yet started)
+**Status:** Ready — implemented and verified locally (AC-1..AC-19 at `9e79f40`); AC-20 (CI on PR head) and AC-21..AC-23 (live, post-merge) pending. No steps skipped.
+**Chain:** sdlc-process
 
 > Snapshot of the ticket on the fetched date plus the decisions below. If the ticket changes,
 > re-run intake for the changed rows rather than editing this doc by memory.
@@ -158,7 +158,14 @@ Repo-wide checks: GitHub workflow `tests` (jobs `ubuntu` run steps and `macos`):
 
 ## Verification evidence
 
-None — step 7 not run.
+| AC | Check | Kind | Result | Evidence | Base / head / time |
+|---|---|---|---|---|---|
+| AC-1..AC-12 | `bash` and `/bin/bash dev-workflow/tests/verifier-dispatch-gate.test.sh` | automated, new | verified | RED per slice before the hook existed (`hooks/verifier-dispatch-gate.py not found`, then 52 and 12 failing cases); head: 115 PASS, "all tests passed", rc 0 under bash 5.3 and 3.2 | `55a2ac4` / `9e79f40` 11:38 |
+| AC-13..AC-17 | `bash` and `/bin/bash dev-workflow/tests/run.sh` | automated, new assertions | verified | RED 19 failures before the edits; head: "PASSED", rc 0 | `55a2ac4` / `9e79f40` 11:38 |
+| AC-18 | imports and file mode | automated | verified | imports `json`, `os`, `sys` only; `git ls-tree` mode 100755; run.sh executable list | — / `9e79f40` |
+| AC-19 | CI mirror (`.github/workflows/tests.yml`) | automated | verified | scrub-check, check-vendored-libs, test-crew-config, test-scrub-check, test-scrub-history rc 0; all six `*/tests/run.sh` rc 0 under bash and `/bin/bash` | — / `9e79f40` 11:38 |
+| AC-20 | `tests` workflow on the PR head | CI | pending | PR not opened | — |
+| AC-21..AC-23 | live capture and dispatch attempts | live read | pending | runs after merge and plugin update | — |
 
 ## Run log
 
@@ -171,6 +178,14 @@ None — step 7 not run.
 | 09:51 | step 5 | owner-approved writeback: intake comment on cjsteigerwald/ai-crew#54 (issuecomment-6448027991) | 1 | — |
 | 09:53 | stage 5 | policy review (sdlc-policy-reviewer) for start implementation: PASS; holds: no commit/push/PR without owner OK; Codex diff pass is round 3 of 3 | 1 | — |
 | 09:53 | stage 5 | implementer dispatched (claude-crew:claude-implementer-opus), uncommitted; code-review reviews the pinned uncommitted patch | 1 | — |
+| 10:05 | stage 5 | implementer done (RED→GREEN per slice); orchestrator re-ran scrub, hook tests, dev-workflow run.sh: green | 1 | — |
+| 10:10 | stage 5 | owner OK: local commit; committed `52fef9c` (unpushed) | 1 | — |
+| 10:15 | stage 5 | policy review: hand to code-review and diff pass — PASS | 1 | — |
+| 10:25 | stage 5 | code-review @52fef9c: Standards 0/0/7 flagged, Spec 0/0 | 1 | — |
+| 10:50 | stage 5 | full-tier diff pass @52fef9c: fresh-verifier (Opus) APPROVE_WITH_COMMENTS 0/0/5 info, lens_recommendation none; codex-adversary round 3 of 3 PASS | 1 | — |
+| 11:20 | stage 5 | fix wave committed `9e79f40` (owner OK: fix + doc-status commits); churn 13/622 = 2.1% | 1 | — |
+| 11:30 | stage 5 | policy review: bounded re-review + Verify — PASS; hold H1: anchor the bounded re-review at the final head | 1 | — |
+| 11:38 | step 7 | Verify at `9e79f40`: AC-1..AC-19 verified (table above) | 1 | — |
 
 ## Risks
 
@@ -216,5 +231,12 @@ None — step 3 completed.
 - Plan pass: `plan pass @rev3 (codex-adversary round 2 PASS WITH NITS, ledger plan:verifier-dispatch-guard)`
 - Spec issue: cjsteigerwald/ai-crew#54
 - Tickets: none — one slice (the spec issue is the delivery issue)
+- Code-review: `code-review @52fef9c` (Standards 0 must / 0 should / 7 flagged; Spec 0 must / 0 should)
+- Diff pass: `full-tier diff pass @52fef9c (base 55a2ac4)` — fresh-verifier (Opus) APPROVE_WITH_COMMENTS; codex-adversary PASS (ledger `branch:feat/verifier-dispatch-guard` round 3 of 3, cap reached)
+- S-1: `lens_recommendation` = none ("security swept in full; test gaps already scheduled"); no lens-scoped instance dispatched
+- Review dispositions: accepted — duplicated `emit()` and test helpers (standalone hooks), separate hooks.json entry, verbatim S-1 sentence in two skills (run.sh enforces it), `RecursionError` catch, extra tests, test section order; fixed in `9e79f40` — docstring clause (fv-3), spec path in test header, tests for padded scout name, `model` false/0/[], `isolation` false, Bash with `agent_type: 42` (fv-4); kept — `agent_type: null` → ask per FR-9, AC-21 decides (fv-1); no change — top-level exit 1 on emit failure matches codex-cap-gate, out of scope (fv-2); fixed in the doc-status commit — stale status sections (fv-5)
+- Fix: `9e79f40`, churn A..HEAD ÷ B..A = 13 / 622 = 2.1% before this doc commit
+- Bounded re-review: pending, anchored at the final head (policy hold H1)
+- Verify: `verify @9e79f40` (AC-1..AC-19)
 - Draft PR: none yet
-- **Last completed stage:** requirements doc
+- **Last completed stage:** Verify (bounded re-review pending)
