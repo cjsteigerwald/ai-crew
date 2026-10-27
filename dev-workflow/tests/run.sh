@@ -1220,6 +1220,20 @@ bdocs_row="$(grep -F '| `setting-up-project-boards` |' "$ROOT/README.md")"
 bdocs_chki "AC-12" "$bdocs_row" 'agent docs'
 bdocs_ac_done "AC-12 README row mentions installing the board's agent docs"
 
+echo "== fresh-verifier variants =="
+# The two verifier files differ only in frontmatter; both may dispatch the read lanes.
+FV="$ROOT/agents/fresh-verifier.md"
+FVH="$ROOT/agents/fresh-verifier-high.md"
+if [ -f "$FV" ] && [ -f "$FVH" ]; then
+  diff -q <(sed 1,6d "$FV") <(sed 1,6d "$FVH") >/dev/null || fail "fresh-verifier.md and fresh-verifier-high.md bodies differ"
+  for f in "$FV" "$FVH"; do
+    extract_frontmatter "$f" | grep -qE '^tools:.*[[:space:],]Agent([[:space:],]|$)' || fail "$(basename "$f"): frontmatter tools must include Agent"
+    grep -qF '## Delegate bulk reading' "$f" || fail "$(basename "$f"): missing the Delegate bulk reading section"
+  done
+else
+  fail "fresh-verifier agent files not found"
+fi
+
 echo "== review ledger and codex-cap gate =="
 # Skills call the ledger CLI directly as ${CLAUDE_PLUGIN_ROOT}/scripts/review-ledger.sh.
 for x in scripts/review-ledger.sh scripts/review_ledger.py hooks/codex-cap-gate.py; do
