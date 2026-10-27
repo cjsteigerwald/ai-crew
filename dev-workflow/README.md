@@ -90,7 +90,9 @@ The `NEEDS_LOOKUP` recipient enforcement for `code-writer` (only `main` may be
 messaged) also comes from `claude-crew`'s `sendmessage-recipient-gate` hook;
 without claude-crew installed, that rule is prose only.
 
-dev-workflow ships one hook, `codex-cap-gate` (PreToolUse on `Agent|Task`). It counts
+dev-workflow ships two hooks, both PreToolUse on `Agent|Task`.
+
+`codex-cap-gate` counts
 every `codex-adversary`, `dev-workflow:codex-adversary` and `codex-crew:codex-reviewer`
 dispatch in a per-clone review ledger and asks before round 4. Each Codex brief must
 carry one `ledger: <repo-path>[ | plan:<ticket>]` line outside code fences, or the
@@ -98,3 +100,12 @@ dispatch is denied with a recovery message. `scripts/review-ledger.sh` inspects 
 corrects the count (`show`, `count`, `link`, `void`, `reset`, `record`); see
 `review-policy` § Codex round ledger. Turn the hook off with `CLAUDE_CODEX_CAP_GATE=off`.
 It needs `python3` and `git`.
+
+`verifier-dispatch-gate` acts only when the caller is a `fresh-verifier` or
+`fresh-verifier-high` (subagent or `claude --agent` session). Such a caller may dispatch
+only `claude-crew:claude-scout` or `claude-crew:claude-reader`, with no `model` and no
+`isolation`; anything else is denied, and the verifier reads inline instead. The two
+names are hardcoded: crew config renames (`lanes.scout` / `lanes.reader`) are
+not honoured for verifiers, so a renamed read lane means the verifier reads inline.
+Unreadable hook input asks. Turn the hook off with `CLAUDE_VERIFIER_DISPATCH_GATE=off`.
+It needs `python3`.

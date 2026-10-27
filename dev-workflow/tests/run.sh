@@ -172,7 +172,7 @@ echo "== review-policy skill =="
 # evidence rule; the hash catches wording changes the heading checks can't.
 # The frontmatter description is excluded on purpose — description tuning
 # shouldn't trip this.
-REVIEW_POLICY_SHA256="fcb71d2d8634e6ddc8dacc9212409c01ccae815589803a3c7bf8d257fac3fe5f"
+REVIEW_POLICY_SHA256="377e6571de4a19ed28f242c10186600c1ace66a061e7f2a57291c8af7f7ad205"
 
 # extract_skill_body <file> — prints everything after the frontmatter's
 # closing '---' line.
@@ -952,13 +952,13 @@ prb_chk "AC-7" "$prb_row" 'pr-body.md'
 prb_chk "AC-7" "$prb_row" 'Adapted from mattpocock/skills (MIT'
 prb_ac_done "AC-7 README opening-pull-requests row mentions the template and the adaptation credit"
 
-# AC-8: version 0.2.7 in the plugin manifest and the dev-workflow marketplace entry.
+# AC-8: version 0.2.8 in the plugin manifest and the dev-workflow marketplace entry.
 if python3 - "$ROOT/.claude-plugin/plugin.json" "$ROOT/../.claude-plugin/marketplace.json" <<'PY'
 import json, sys
 plugin = json.load(open(sys.argv[1]))
 market = json.load(open(sys.argv[2]))
 entry = [p for p in market["plugins"] if p.get("name") == "dev-workflow"]
-ok = plugin.get("version") == "0.2.7" and len(entry) == 1 and entry[0].get("version") == "0.2.7"
+ok = plugin.get("version") == "0.2.8" and len(entry) == 1 and entry[0].get("version") == "0.2.8"
 if not ok:
     print("plugin.json=%s marketplace=%s" % (plugin.get("version"), [e.get("version") for e in entry]))
 sys.exit(0 if ok else 1)
@@ -966,9 +966,9 @@ PY
 then
   :
 else
-  pfail "AC-8: dev-workflow version is not 0.2.7 in both plugin.json and marketplace.json"
+  pfail "AC-8: dev-workflow version is not 0.2.8 in both plugin.json and marketplace.json"
 fi
-prb_ac_done "AC-8 dev-workflow is 0.2.7 in plugin.json and marketplace.json"
+prb_ac_done "AC-8 dev-workflow is 0.2.8 in plugin.json and marketplace.json"
 
 echo "== setting-up-project-boards agent docs =="
 # Static structure checks only (NFR-4). Local counters, same convention as the PR-body section.
@@ -1229,6 +1229,12 @@ if [ -f "$FV" ] && [ -f "$FVH" ]; then
   for f in "$FV" "$FVH"; do
     extract_frontmatter "$f" | grep -qE '^tools:.*[[:space:],]Agent([[:space:],]|$)' || fail "$(basename "$f"): frontmatter tools must include Agent"
     grep -qF '## Delegate bulk reading' "$f" || fail "$(basename "$f"): missing the Delegate bulk reading section"
+    # ai-crew#54: the dispatch hook is named, renamed lanes are gone, the cost sentence is tier-neutral.
+    grep -qF 'A dispatch hook (`verifier-dispatch-gate`) enforces' "$f" || fail "$(basename "$f"): missing the verifier-dispatch-gate hook sentence"
+    grep -qF 'a denial means read inline and declare `reading → inline: <denied: reason>`' "$f" || fail "$(basename "$f"): hook sentence lacks the read-inline recovery"
+    grep -qF 'lanes.scout' "$f" && fail "$(basename "$f"): still names crew config lanes.scout (renames are not honoured)"
+    grep -qF 'costs the most it can' "$f" && fail "$(basename "$f"): still carries the frontier-tier cost sentence"
+    grep -qF 'Your context runs on a costlier tier than the read lanes, so every file you open here costs more than it would there.' "$f" || fail "$(basename "$f"): missing the tier-neutral cost sentence"
   done
 else
   fail "fresh-verifier agent files not found"
@@ -1236,7 +1242,7 @@ fi
 
 echo "== review ledger and codex-cap gate =="
 # Skills call the ledger CLI directly as ${CLAUDE_PLUGIN_ROOT}/scripts/review-ledger.sh.
-for x in scripts/review-ledger.sh scripts/review_ledger.py hooks/codex-cap-gate.py; do
+for x in scripts/review-ledger.sh scripts/review_ledger.py hooks/codex-cap-gate.py hooks/verifier-dispatch-gate.py; do
   if [ -x "$ROOT/$x" ]; then
     echo "ok: $x is executable"
   else
@@ -1265,8 +1271,41 @@ then
 else
   fail "hooks/hooks.json does not parse or references a missing script"
 fi
+# ai-crew#54: verifier-dispatch-gate is a PreToolUse hook whose matcher covers both Agent and Task.
+if python3 - "$ROOT/hooks/hooks.json" <<'PY2'
+import json, re, sys
+data = json.load(open(sys.argv[1]))
+ok = False
+for e in data.get("hooks", {}).get("PreToolUse", []):
+    if not any("hooks/verifier-dispatch-gate.py" in h.get("command", "") for h in e.get("hooks", [])):
+        continue
+    m = e.get("matcher", "")
+    try:
+        ok = ok or all(re.fullmatch(m, tool) for tool in ("Agent", "Task"))
+    except re.error:
+        pass
+sys.exit(0 if ok else 1)
+PY2
+then
+  echo "ok: verifier-dispatch-gate is registered on PreToolUse for Agent and Task"
+else
+  fail "hooks/hooks.json: verifier-dispatch-gate.py is not registered under PreToolUse with a matcher matching Agent and Task"
+fi
+# ai-crew#54 S-1: both skills carry the lens-scoped verifier sentence exactly once.
+for f in skills/review-policy/SKILL.md skills/intaking-work-items/SKILL.md; do
+  n="$(grep -cF 'At most two lens-scoped instances per full-tier review (security, tests).' "$ROOT/$f")"
+  [ "$n" = 1 ] || fail "$f: the S-1 lens sentence appears $n times, want 1"
+  for s in 'Read the verifier'"'"'s Lens recommendation (`lens_recommendation`).' \
+           'For each lens it names, dispatch one lens-scoped fresh-verifier or record why not.'; do
+    grep -qF "$s" "$ROOT/$f" || fail "$f: missing the S-1 sentence '$s'"
+  done
+done
+# ai-crew#54: README names the hook, its off switch and the renamed-lanes note.
+for s in 'verifier-dispatch-gate' 'CLAUDE_VERIFIER_DISPATCH_GATE=off' 'not honoured'; do
+  grep -qF "$s" "$ROOT/README.md" || fail "README.md does not mention '$s' (verifier-dispatch-gate)"
+done
 # Run with the interpreter running this file, so `/bin/bash run.sh` exercises bash 3.2.
-for t in review-ledger codex-cap-gate; do
+for t in review-ledger codex-cap-gate verifier-dispatch-gate; do
   if "$BASH" "$HERE/$t.test.sh"; then
     :
   else
