@@ -172,7 +172,7 @@ echo "== review-policy skill =="
 # evidence rule; the hash catches wording changes the heading checks can't.
 # The frontmatter description is excluded on purpose — description tuning
 # shouldn't trip this.
-REVIEW_POLICY_SHA256="e871c6e6e2437e0c8eda5971df112070bcf188f8ed296c947dc565077bd5eabe"
+REVIEW_POLICY_SHA256="fcb71d2d8634e6ddc8dacc9212409c01ccae815589803a3c7bf8d257fac3fe5f"
 
 # extract_skill_body <file> — prints everything after the frontmatter's
 # closing '---' line.
@@ -952,13 +952,13 @@ prb_chk "AC-7" "$prb_row" 'pr-body.md'
 prb_chk "AC-7" "$prb_row" 'Adapted from mattpocock/skills (MIT'
 prb_ac_done "AC-7 README opening-pull-requests row mentions the template and the adaptation credit"
 
-# AC-8: version 0.2.5 in the plugin manifest and the dev-workflow marketplace entry.
+# AC-8: version 0.2.6 in the plugin manifest and the dev-workflow marketplace entry.
 if python3 - "$ROOT/.claude-plugin/plugin.json" "$ROOT/../.claude-plugin/marketplace.json" <<'PY'
 import json, sys
 plugin = json.load(open(sys.argv[1]))
 market = json.load(open(sys.argv[2]))
 entry = [p for p in market["plugins"] if p.get("name") == "dev-workflow"]
-ok = plugin.get("version") == "0.2.5" and len(entry) == 1 and entry[0].get("version") == "0.2.5"
+ok = plugin.get("version") == "0.2.6" and len(entry) == 1 and entry[0].get("version") == "0.2.6"
 if not ok:
     print("plugin.json=%s marketplace=%s" % (plugin.get("version"), [e.get("version") for e in entry]))
 sys.exit(0 if ok else 1)
@@ -966,9 +966,9 @@ PY
 then
   :
 else
-  pfail "AC-8: dev-workflow version is not 0.2.5 in both plugin.json and marketplace.json"
+  pfail "AC-8: dev-workflow version is not 0.2.6 in both plugin.json and marketplace.json"
 fi
-prb_ac_done "AC-8 dev-workflow is 0.2.5 in plugin.json and marketplace.json"
+prb_ac_done "AC-8 dev-workflow is 0.2.6 in plugin.json and marketplace.json"
 
 echo "== setting-up-project-boards agent docs =="
 # Static structure checks only (NFR-4). Local counters, same convention as the PR-body section.

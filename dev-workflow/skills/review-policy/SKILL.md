@@ -31,8 +31,11 @@ substitute your own and update the cross-references in each skill/agent.
    Full; image tag/digest bumps that only affect non-prod follow the size thresholds; the
    other triggers apply on their own); OR >3 files
    changed; OR >~150 changed lines; OR cross-cutting/architectural. Dispatch
-   `dev-workflow:fresh-verifier` + `dev-workflow:codex-adversary` in one message, both in
-   plan mode (on the plan) and again before `gh pr create` (on `git diff main...HEAD`).
+   `dev-workflow:codex-adversary` alone on the plan (the verifier checks requirements
+   against written code and re-runs tests, which a plan does not have), and
+   `dev-workflow:fresh-verifier` + `dev-workflow:codex-adversary` in one message before
+   `gh pr create` (on `git diff main...HEAD`). Dispatch `fresh-verifier` with
+   `run_in_background` so its time overlaps the Codex wait.
    At least one adversarial pass is required; cap three per PR in aggregate, counted per
    key in the review ledger across sessions (see **Codex round ledger**); every pass
    beyond the first declares its trigger in the transcript **before** dispatch. Effort
@@ -64,7 +67,14 @@ A fix after a review does not default to a full re-run. Which re-review applies 
 the tier and on whether the fix is still within what the last full pass saw.
 
 - **Routine:** a bounded `sdlc-process:code-review` on the fix delta.
-- **Full:** the same, plus **one bounded `fresh-verifier`**. No Codex round.
+- **Full:** the same, plus **one bounded `fresh-verifier`**, which may be dispatched with
+  `model: sonnet` (delta-only work; the full diff pass uses the agent's default). No Codex
+  round.
+
+Apply every finding from a review round first, then run **one** bounded re-review on the
+batch, not one per fix commit. On the plan pass, re-reviews and changed-input passes are
+Codex-only (each counted under the cap); the bounded `fresh-verifier`, the verifier half of
+the changed-input row and the at-cap bounded-verifier option apply to the diff pass.
 
 **Anchor.** The last full pass records the reviewed SHA `A` and its comparison base `B`
 (the merge-base with the PR's target branch, pinned when that pass runs).
@@ -126,8 +136,9 @@ boundary.
 
 **At the cap**, ask with `AskUserQuestion`; exceeding the cap is never the recommended
 option:
-- **Recommended when the remaining fix is bounded-eligible:** "Stop Codex: bounded
+- **Recommended when the remaining diff fix is bounded-eligible:** "Stop Codex: bounded
   fresh-verifier on the remaining fix".
-- **Recommended when it is not eligible:** "Stop: hand to human review" (a bounded verifier
-  cannot cover a change that needs a full pass).
+- **Recommended otherwise** (a diff fix that is not eligible, or any plan-pass fix): "Stop:
+  hand to human review" (a bounded verifier cannot cover a change that needs a full pass,
+  and plan-pass reviews are Codex-only).
 - **Always second:** "One more Codex round", which must name its trigger.

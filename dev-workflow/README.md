@@ -26,7 +26,7 @@ two domain specialists.
 
 | Agent | Model | Purpose |
 |---|---|---|
-| `fresh-verifier` | Fable, medium effort (cold context) | Cold-context verification of a diff or plan against its stated objective — no author bias. |
+| `fresh-verifier` | Opus, medium effort (cold context) | Cold-context verification of a diff against its stated objective — no author bias. |
 | `fresh-verifier-high` | Fable, high effort (cold context) | High-effort variant of `fresh-verifier` — dispatch only when deeper verification is explicitly requested. |
 | `codex-adversary` | Sonnet (dispatcher) | Adversarial cross-model review via Codex (GPT family) — mandatory at least once per full-tier review. |
 | `code-writer` | Sonnet | Focused implementer for a single well-scoped coding task. |
