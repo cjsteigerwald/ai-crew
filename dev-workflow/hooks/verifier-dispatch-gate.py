@@ -4,9 +4,9 @@ stock read lanes.
 
 Acts only when the caller's agent_type is a fresh-verifier variant (subagent or
 `claude --agent` main session): dev-workflow:fresh-verifier,
-dev-workflow:fresh-verifier-high, fresh-verifier, fresh-verifier-high. A
-payload without agent_type (main session), another agent, or a tool other than
-Agent/Task exits 0 silently.
+dev-workflow:fresh-verifier-high, fresh-verifier, fresh-verifier-high. After a
+successful parse, a payload without agent_type (main session), another agent, or
+a tool other than Agent/Task exits 0 silently.
 
 Outcomes:
   - unknown caller (stdin unparseable or not a JSON object, or agent_type present

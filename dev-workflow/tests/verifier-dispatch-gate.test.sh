@@ -7,6 +7,7 @@
 # and a malformed tool_input; crew config never read; non-verifier callers and
 # non-Agent tools passing silently; unreadable input answering ask; the off
 # switch. Every dispatch case runs under both tool names, Agent and Task.
+# Spec: docs/specs/ai-crew-54-requirements.md (AC-n labels below refer to it).
 # Runnable standalone.
 #
 # Bash 3.2 compatible: no associative arrays, no `mapfile`, no `${var,,}`.
@@ -111,6 +112,7 @@ for tool in $TOOLS; do
                 dev-workflow:fresh-verifier dev-workflow:codex-adversary claude-scout; do
     run_case "deny $target" deny "$tool" "$V" "$(ti "\"$target\"")" "subagent_type"
   done
+  run_case "deny leading-space scout" deny "$tool" "$V" "$(ti "\" $SCOUT\"")" "subagent_type"
 done
 
 # --- AC-3: missing, empty, non-string, unhashable subagent_type: denied ------
@@ -131,6 +133,10 @@ for tool in $TOOLS; do
   run_case "deny reader with model" deny "$tool" "$V" "$(ti "\"$READER\"" '"model": "haiku"')" "model"
   run_case "deny reader with isolation" deny "$tool" "$V" "$(ti "\"$READER\"" '"isolation": "worktree"')" "isolation"
   run_case "deny scout with non-string model" deny "$tool" "$V" "$(ti "\"$SCOUT\"" '"model": ["opus"]')" "model"
+  run_case "deny scout with model false" deny "$tool" "$V" "$(ti "\"$SCOUT\"" '"model": false')" "model"
+  run_case "deny scout with model 0" deny "$tool" "$V" "$(ti "\"$SCOUT\"" '"model": 0')" "model"
+  run_case "deny scout with model []" deny "$tool" "$V" "$(ti "\"$SCOUT\"" '"model": []')" "model"
+  run_case "deny scout with isolation false" deny "$tool" "$V" "$(ti "\"$SCOUT\"" '"isolation": false')" "isolation"
 done
 
 # --- AC-6: tool_input missing or not an object: denied -----------------------
@@ -142,6 +148,7 @@ done
 
 # --- AC-10: other tools pass silently, even from a verifier -------------------
 run_case "pass-through Bash from verifier" none Bash "$V" '{"command": "git diff"}'
+run_case "pass-through Bash with agent_type 42" none Bash 42 '{"command": "git diff"}'
 run_case "pass-through Read from verifier" none Read "$V" '{"file_path": "/etc/hosts"}'
 
 # --- AC-9: non-verifier callers pass silently --------------------------------
